@@ -64,7 +64,10 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
 
 ## Konventionen
 
-- Kommentare und Nutzertexte auf **Deutsch mit echten Umlauten (ä/ö/ü/ß)**, UTF-8.
+- Kommentare und Nutzertexte auf **Deutsch mit echten Umlauten (ä/ö/ü/ß)**, UTF-8 –
+  auch in Git-Commit-Nachrichten. **Ausnahme:** Strings, die als `title`/`body` an
+  Bark gehen (`ALARM_TITLE`, `ALARM_BODY`, die `sendStatus()`-Texte), müssen **ASCII
+  (ae/ue/oe)** sein, weil die Bark-Notification keine Umlaute korrekt darstellt.
 - Editierbare Werte in den Config-Dateien klar oben markiert lassen
   (`>>> HIER STEHEN ALLE WERTE … <<<`).
 - Secrets niemals in `config.example.h` oder die `.ino` schreiben.

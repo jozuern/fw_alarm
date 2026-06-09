@@ -41,8 +41,10 @@ static const char* BARK_KEYS_ALARM[] = {
 // ===========================================================================
 //  3) ALARM-INHALT  (optional anpassbar)
 // ===========================================================================
+// ACHTUNG: Bark zeigt in der Notification KEINE Umlaute -> hier bewusst
+// ae/ue/oe statt ä/ü/ö verwenden (gilt nur fuer an Bark gesendete Texte).
 #define ALARM_TITLE     "FEUERWEHR-ALARM"
-#define ALARM_BODY      "Melder hat ausgelöst!"
+#define ALARM_BODY      "Melder hat ausgeloest!"
 #define ALARM_SOUND     "alarm_fw"  // Bark-Soundname (hier ein eigener importierter)
 #define ALARM_VOLUME    10          // 0-10, gilt nur bei level=critical
 #define ALARM_CALL      true        // call=1 -> Ton wiederholt sich ~30 s

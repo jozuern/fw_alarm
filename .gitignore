@@ -1,5 +1,5 @@
 # ============================================================================
-#  Secrets NIEMALS committen!  config.h enthaelt WLAN-Passwort und Bark-Keys.
+#  Secrets NIEMALS committen!  config.h enthält WLAN-Passwort und Bark-Keys.
 # ============================================================================
 boss925_alarm_bark/config.h
 config.h

@@ -217,6 +217,8 @@ void sendAlarmToAll() {
 }
 
 // Leiser Status-/Heartbeat-Ping nur an dich.
+// WICHTIG: title/body landen in der Bark-Notification -> NUR ASCII (ae/ue/oe),
+// da Bark dort keine Umlaute korrekt darstellt. Gilt auch fuer ALARM_TITLE/_BODY.
 void sendStatus(const String& title, const String& body) {
   sendBark(BARK_KEY_STATUS, title, timePrefix() + body,
            "passive", STATUS_SOUND, STATUS_VOLUME, false);
@@ -273,7 +275,7 @@ void handleHeartbeat() {
     struct tm t;
     if (getLocalTime(&t, 50)) {
       if (t.tm_hour >= HEARTBEAT_HOUR && t.tm_yday != lastHeartbeatDay) {
-        sendStatus("Alarm-Wächter aktiv", "Tages-Check: System läuft.");
+        sendStatus("Alarm-Waechter aktiv", "Tages-Check: System laeuft.");
         lastHeartbeatDay = t.tm_yday;
       }
       return;
@@ -308,8 +310,8 @@ void setup() {
 
   lastHeartbeatMs = millis();
   // Start-Meldung leise nur an dich (ersetzt nicht den täglichen Heartbeat).
-  sendStatus("Alarm-Wächter online",
-             "System gestartet und überwacht den Relaiskontakt.");
+  sendStatus("Alarm-Waechter online",
+             "System gestartet und ueberwacht den Relaiskontakt.");
 }
 
 void loop() {

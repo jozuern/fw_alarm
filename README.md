@@ -283,17 +283,17 @@ alarmiert.
 
 **Was du beim Start sehen solltest (serieller Monitor):**
 ```
-BOSS-925 Alarm-Waechter startet...
+BOSS-925 Alarm-Wächter startet...
 Watchdog aktiv (30 s).
 Zeit synchronisiert: 14:23:05
 === SELBSTTEST ===
 Eingang Pin 27, ACTIVE_LOW=ja, aktueller Stand: offen (Ruhe)
-Alarm-Empfaenger (gueltige Keys): 2
+Alarm-Empfänger (gültige Keys): 2
 WLAN: verbunden
 IP-Adresse: 192.168.x.x
 === SELBSTTEST ENDE ===
 ```
-Außerdem kommt auf **dein** iPhone eine leise Nachricht „Alarm-Waechter online".
+Außerdem kommt auf **dein** iPhone eine leise Nachricht „Alarm-Wächter online".
 
 ---
 
