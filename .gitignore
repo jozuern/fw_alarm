@@ -1,0 +1,21 @@
+# ============================================================================
+#  Secrets NIEMALS committen!  config.h enthaelt WLAN-Passwort und Bark-Keys.
+# ============================================================================
+boss925_alarm_bark/config.h
+config.h
+
+# PlatformIO Build-Artefakte
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Arduino IDE Build-Ordner
+build/
+*.bin
+*.elf
+*.hex
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
