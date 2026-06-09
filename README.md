@@ -143,14 +143,37 @@ kann diesem iPhone eine Nachricht schicken.
 > Wiederhole das für **jede Person**, die alarmiert werden soll. Sammle alle
 > Device-Keys – sie kommen gleich in die `config.h`.
 
-> 🔔 **Eigener Alarm-Ton `alarm_fw`:** Dieses Projekt verwendet als Alarmton den
-> Namen **`alarm_fw`** (in `config.h` über `ALARM_SOUND` eingestellt). Das ist ein
-> **selbst importierter** Ton. Er muss in der **Bark-App auf JEDEM Empfänger-iPhone**
-> vorhanden sein, sonst nimmt Bark den Standardton. So fügst du ihn hinzu:
-> Bark-App → unten **„Settings/Einstellungen"** → **„Sounds"** → Ton-Datei
-> (`alarm_fw`) importieren bzw. über die geteilte Audiodatei „In Bark öffnen".
-> Wer keinen eigenen Ton einrichten will, trägt in `config.h` einfach einen der
-> mitgelieferten Namen ein (z. B. `alarm`, `bell`, `alarm2`).
+### 4a. Alarm-Ton `alarm_fw` auf JEDEM iPhone installieren (PFLICHT)
+
+Dieses Projekt benutzt als Alarmton den eigenen, langen Ton **`alarm_fw`**
+(eingestellt in `config.h` über `ALARM_SOUND`). Damit der Alarm bei jedem
+Empfänger **laut und ~30 Sekunden lang** klingelt, muss die Tondatei in der
+**Bark-App auf JEDEM Empfänger-iPhone** importiert sein. Fehlt sie, spielt Bark
+nur einen kurzen Standardton ab.
+
+Die fertige Datei liegt im Projekt: **`alarm_fw.mp3`** (im Wurzelverzeichnis,
+auch im GitHub-Repo).
+
+**So bekommst du sie auf jedes iPhone und in Bark:**
+
+1. **Datei aufs iPhone bringen** – ein Weg genügt:
+   - Im **Safari** auf dem iPhone die Datei im GitHub-Repo öffnen
+     (`alarm_fw.mp3` → „Download"), **oder**
+   - per **AirDrop** / **iMessage** / **E-Mail** an das iPhone schicken.
+2. **In Bark importieren:** Die Datei antippen → **Teilen-Symbol** (Quadrat mit
+   Pfeil nach oben) → in der App-Liste **„Bark"** wählen bzw. **„In Bark öffnen / In
+   Bark importieren"**. Alternativ in der Bark-App unten **„Settings/Einstellungen"
+   → „Sounds"** → Ton hinzufügen.
+3. **Prüfen:** In Bark unter **Sounds** sollte **`alarm_fw`** jetzt in der Liste
+   stehen (antippen = Vorhören).
+
+> ⏱️ **Wichtig:** iOS erlaubt für Mitteilungstöne **maximal 30 Sekunden** Länge.
+> `alarm_fw.mp3` hält das ein. Eigene Töne also nie länger als 30 s machen.
+>
+> 💡 **Alternative ohne Import:** Wer sich den Import sparen will, trägt in `config.h`
+> einen der **eingebauten** Bark-Töne ein (z. B. `multiwayinvitation` – ein langer
+> Klingelton, oder `alarm`, `bell`). Diese sind auf jedem iPhone sofort verfügbar,
+> klingen aber weniger nach „Sirene".
 
 > **Eigener Server (optional):** Bark kann man auch selbst hosten. Dann trägst du
 > in `config.h` bei `BARK_HOST` deine eigene Adresse ein (ohne `/` am Ende). Für
