@@ -64,20 +64,30 @@ Mehr „Magie" steckt nicht dahinter. Es wird **kein Funk dekodiert** – der ES
 |------|--------------|-----------|
 | **ESP32 DevKit (WROOM-32)** | Der Mikrocontroller mit WLAN. „DevKit" = fertige Platine mit USB-Buchse. | 6–12 € |
 | **USB-Kabel + 5 V/1 A Netzteil** | Stromversorgung (z. B. altes Handy-Ladegerät). | vorhanden / 5 € |
-| **5-poliger DIN-Stecker (männlich)** | Passt in die DIN-Buchse des Swissphone-Laders. | 2–4 € |
+| **5-poliger DIN-Stecker, 180°, männlich** | Passt in die DIN-Buchse des Swissphone-Laders (LGRA-Familie, z. B. beim BOSS-925). Bestellbegriff: „DIN-Stecker 5-polig 180° Lötversion". | 1–3 € |
 | **2 Dupont-/Litzendrähte** | Verbinden DIN-Stecker mit dem ESP32. | Cent-Beträge |
 | optional: kleines Gehäuse | Damit alles geschützt ist. | 5–10 € |
 
 > Du brauchst **keinen** Lötkolben zwingend, aber ein klein wenig Löten am
-> DIN-Stecker macht die Verbindung zuverlässiger. Stecken/Klemmen geht zur Not auch.
+> DIN-Stecker macht die Verbindung zuverlässiger. Wer gar nicht löten will, nimmt
+> einen **5-poligen DIN-Stecker mit Schraubklemmen** (~5 €, Bestellbegriff
+> „DIN-Stecker 5-polig Schraubklemme") und klemmt die Drähte nur fest.
+>
+> ⚠️ **Anderer Lader?** Der **5-polige DIN** gilt für die **LGRA-Familie** (LGRA /
+> LGRA-Expert / LGRA Pro), in der der BOSS-925 steckt. **Neuere s.QUAD-Lader** nutzen
+> dagegen einen **6-poligen Mini-DIN** (klein, wie ein alter PS/2-Stecker) – dann
+> brauchst du den passenden 6-pol-Mini-DIN-Stecker. Der Relaiskontakt liegt aber auch
+> dort auf **Pin 1 + Pin 3**, die Verdrahtung unten bleibt also gleich.
 
 ---
 
 ## 3. Verkabelung
 
-Der Lader (Swissphone **LGRA-Expert**) gibt den Relaiskontakt an der
-**5-poligen DIN-Buchse** auf **Pin 1 und Pin 3** aus. Diese beiden Pins werden
-bei Alarm intern verbunden.
+Der Lader (Swissphone **LGRA-Familie**, in der der BOSS-925 steckt) gibt den
+Relaiskontakt an der **5-poligen DIN-Buchse** auf **Pin 1 und Pin 3** aus. Diese
+beiden Pins werden bei Alarm intern verbunden. Der Kontakt schließt, sobald
+**Melder im Lader steckt + Netzstecker dran + Alarm empfangen** – je nach
+Einstellung für ca. 10 s oder bis zur Quittierung am Melder.
 
 **So verdrahtest du es:**
 
@@ -95,6 +105,15 @@ bei Alarm intern verbunden.
         (potenzialfreier Kontakt,
          schließt bei Alarm)
 ```
+
+> 🔧 **Welche zwei Stifte nimmst du?** Welcher der beiden „Pin 1" und welcher
+> „Pin 3" heißt, ist **egal** – es ist ein potenzialfreier Relaiskontakt, kein Plus/
+> Minus. Du musst nur die **richtigen zwei von fünf** Stiften erwischen, denn an der
+> Buchse liegen auch **Pin 2 = Masse** und **Pin 4 = Versorgungsspannung** (da darf
+> der ESP32 **nicht** dran!). **Sicherer Weg:** Multimeter auf
+> **Durchgangsprüfung (Piepton)**, am Lader einen **Probealarm** auslösen – die zwei
+> Pins, zwischen denen es genau dann piept, sind dein Relaiskontakt. Diese beiden an
+> GND und GPIO27 (Reihenfolge beliebig) – fertig.
 
 **Warum funktioniert das ohne weitere Bauteile?**
 Der ESP32-Pin ist im Programm als `INPUT_PULLUP` eingestellt. Das bedeutet: Ein
@@ -318,6 +337,7 @@ Alle in `config.h`:
 | `COOLDOWN_MS` | Sperre nach einem Alarm (Standard 5 min), verhindert Dauerfeuer. |
 | `BARK_MAX_TRIES` | Sende-Versuche pro Key bei Netzfehler (Standard 3). |
 | `HEARTBEAT_*` | Täglicher „ich lebe noch"-Ping (siehe unten). |
+| `TESTALARM_*` | Wöchentliches Probealarm-Fenster der ILS (siehe Abschnitt 10a). |
 | `NTP_*` | Holt die Uhrzeit aus dem Internet (für Zeitstempel & Heartbeat-Uhrzeit). |
 | `WDT_*` | Hardware-Watchdog: startet den ESP32 neu, falls er hängt. |
 
@@ -339,6 +359,37 @@ komplett aus, kommt logischerweise **gar nichts** – und du müsstest das aktiv
 Fehlen bemerken. Profis lösen das mit einem **„Dead Man's Switch"-Monitor**: ein
 externer Dienst, der **dich** alarmiert, wenn der erwartete Ping **ausbleibt**.
 Siehe [TODO](#12-sicherheit--offene-punkte-todo).
+
+### 10a. Wöchentlicher Probealarm der ILS (Mittwoch ~19 Uhr)
+
+Ein **Probealarm der Leitstelle** alarmiert deinen Melder genauso wie ein echter
+Einsatz – der Relaiskontakt im Lader schließt also auch dabei. **Ohne Gegenmaßnahme
+würde die Box jeden Mittwoch ~19 Uhr einen lauten Fehlalarm an alle schicken.**
+
+Deshalb gibt es ein **Probealarm-Zeitfenster** (Standard **Mittwoch 18:55–19:10**,
+in `config.h` über `TESTALARM_*` einstellbar). Löst der Kontakt in diesem Fenster
+aus, sendet die Box **keinen** lauten Alarm an alle, sondern nur einen **leisen
+Status-Ping an dich**: „Probealarm erkannt – Kette Melder→Bark funktioniert."
+
+**Doppelter Nutzen:** Damit bestätigt dir der wöchentliche Test automatisch, dass die
+**komplette Kette** (Melder → Relais → ESP32 → WLAN → Bark) funktioniert – ein viel
+stärkerer Nachweis als der reine Heartbeat.
+
+> ⚠️ **Wichtiger Kompromiss:** Ein **echter** Alarm exakt in diesem Fenster würde
+> ebenfalls nur leise gemeldet. Weil dies **Zusatz, kein Ersatz** ist (der Melder
+> alarmiert ja voll), ist das vertretbar – halte das Fenster aber **schmal**.
+>
+> **Einrichten in 3 Schritten:**
+> 1. Trage in `config.h` den richtigen **Wochentag** (`TESTALARM_WDAY`, 3 = Mittwoch)
+>    und die **genaue Uhrzeit** deiner ILS-Probe ein (`TESTALARM_START_MIN` /
+>    `TESTALARM_END_MIN`, in Minuten seit Mitternacht).
+> 2. Beobachte **einmal** einen Mittwoch OHNE Unterdrückung
+>    (`TESTALARM_SUPPRESS false`): Kommt um ~19 Uhr wirklich ein Alarm? Dann weißt du
+>    die **exakte Uhrzeit** und dass der Pin bei der Probe schaltet.
+> 3. Stelle das Fenster passend ein und `TESTALARM_SUPPRESS true`.
+>
+> Benötigt `NTP_ENABLED = true` (für Wochentag/Uhrzeit). Ohne gültige Zeit wird
+> **nicht** unterdrückt – im Zweifel alarmiert die Box also lieber.
 
 ---
 
