@@ -284,9 +284,25 @@ void handleHeartbeat() {
   #endif
   // Ohne NTP: fester Abstand seit Start/letztem Heartbeat.
   if (millis() - lastHeartbeatMs >= HEARTBEAT_MS) {
-    sendStatus("Alarm-Wächter aktiv", "Tages-Check: System läuft.");
+    sendStatus("Alarm-Waechter aktiv", "Tages-Check: System laeuft.");  // Bark-Text: ASCII!
     lastHeartbeatMs = millis();
   }
+#endif
+}
+
+// ============================ PROBEALARM-FENSTER ===========================
+
+// true, wenn JETZT das wöchentliche ILS-Probealarm-Fenster ist (z.B. Mi 18:55-19:10).
+// Ohne gültige NTP-Zeit -> false (sicherheitshalber lieber normal alarmieren).
+bool inTestWindow() {
+#if (TESTALARM_SUPPRESS && NTP_ENABLED)
+  struct tm t;
+  if (!getLocalTime(&t, 50)) return false;        // keine Zeit -> NICHT unterdrücken
+  if (t.tm_wday != TESTALARM_WDAY) return false;  // falscher Wochentag
+  int minuteOfDay = t.tm_hour * 60 + t.tm_min;
+  return (minuteOfDay >= TESTALARM_START_MIN && minuteOfDay <= TESTALARM_END_MIN);
+#else
+  return false;
 #endif
 }
 
@@ -330,8 +346,16 @@ void loop() {
   if (relayActive()) {
     if (activeSince == 0) activeSince = now;          // Beginn merken
     if (now - activeSince >= DEBOUNCE_MS) {           // lange genug aktiv?
-      Serial.println(">>> ALARM erkannt - sende Bark Critical Alert <<<");
-      sendAlarmToAll();
+      if (inTestWindow()) {
+        // Wöchentlicher ILS-Probealarm: KEIN lauter Alarm an alle, nur leiser
+        // Funktionsnachweis an dich. Bestätigt die ganze Kette Melder->Bark.
+        Serial.println(">>> PROBEALARM-Fenster - nur leiser Status an dich <<<");
+        sendStatus("Probealarm erkannt",
+                   "Woechentlicher ILS-Test - Kette Melder->Bark funktioniert.");
+      } else {
+        Serial.println(">>> ALARM erkannt - sende Bark Critical Alert <<<");
+        sendAlarmToAll();
+      }
       lastAlarm = now;
       activeSince = 0;
     }

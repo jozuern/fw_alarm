@@ -83,6 +83,21 @@ static const char* BARK_KEYS_ALARM[] = {
 #define HEARTBEAT_MS        (24UL*60UL*60UL*1000UL)
 
 // ===========================================================================
+//  6b) WÖCHENTLICHER PROBEALARM DER ILS  (z.B. Mittwoch ~19 Uhr)
+// ===========================================================================
+// Ein Probealarm löst denselben Relaiskontakt aus wie ein echter Alarm. Damit
+// nicht jede Woche ein lauter Fehlalarm an alle geht, wird in diesem Zeitfenster
+// KEIN Alarm an alle gesendet, sondern nur ein leiser Status-Ping an dich
+// ("Probealarm erkannt"). Das bestätigt zugleich, dass die ganze Kette läuft.
+//
+// ACHTUNG: Ein ECHTER Alarm genau in diesem Fenster würde ebenfalls nur leise
+// gemeldet. Fenster bewusst schmal halten. Benötigt NTP_ENABLED = true.
+#define TESTALARM_SUPPRESS   true
+#define TESTALARM_WDAY       3            // Wochentag: 0=So,1=Mo,2=Di,3=Mi,4=Do,5=Fr,6=Sa
+#define TESTALARM_START_MIN  (18*60+55)   // Fensterbeginn (Minuten seit Mitternacht) = 18:55
+#define TESTALARM_END_MIN    (19*60+10)   // Fensterende = 19:10
+
+// ===========================================================================
 //  7) NTP-ZEIT  (Zeitstempel in Nachrichten, feste Heartbeat-Uhrzeit)
 // ===========================================================================
 #define NTP_ENABLED     true

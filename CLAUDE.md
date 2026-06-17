@@ -49,6 +49,10 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Alarm). Heartbeat/WLAN laufen auch während des Cooldowns weiter.
 - **Heartbeat** mit NTP = 1×/Kalendertag ab `HEARTBEAT_HOUR`; ohne NTP Fallback auf
   millis-Abstand (`HEARTBEAT_MS`).
+- **Probealarm-Fenster** (`TESTALARM_*`): wöchentlicher ILS-Test (z.B. Mi 18:55–19:10)
+  löst denselben Kontakt aus; in diesem Fenster KEIN Broadcast, nur leiser Status an
+  den Owner. `inTestWindow()` gibt ohne gültige NTP-Zeit `false` zurück (fail-safe:
+  im Zweifel normal alarmieren).
 - Bark-Versand: simple `application/x-www-form-urlencoded`-POST mit manuellem
   `urlEncode()` — **keine JSON-/HTTP-Bibliothek** hinzufügen. Nur ESP32-Core-Libs
   (`WiFi`, `HTTPClient`, `WiFiClientSecure`, `time.h`, `esp_task_wdt`).
