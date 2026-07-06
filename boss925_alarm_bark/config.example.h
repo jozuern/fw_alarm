@@ -71,7 +71,21 @@ static const char* BARK_KEYS_ALARM[] = {
 // ===========================================================================
 #define DEBOUNCE_MS     300UL                   // Kontakt muss so lange aktiv sein
 #define COOLDOWN_MS     (5UL*60UL*1000UL)       // 5 min Sperre nach einem Alarm
-#define BARK_MAX_TRIES  3                        // 1. Versuch + 2 Wiederholungen
+#define BARK_MAX_TRIES  3                       // 1. Versuch + 2 Wiederholungen
+
+// Nach einem Alarm muss der Kontakt erst so lange stabil OFFEN gewesen sein,
+// bevor ein NEUER Alarm ausgelöst werden kann (verhindert Dauerfeuer, wenn der
+// Kontakt lange geschlossen bleibt, z.B. bis jemand den Melder quittiert).
+#define REARM_OPEN_MS   2000UL                  // 2 s stabil offen = wieder scharf
+
+// Bleibt der Kontakt nach einem Alarm SO lange dauerhaft geschlossen, geht
+// einmalig eine leise Warnung an BARK_KEY_STATUS ("Kontakt klemmt?").
+#define STUCK_CONTACT_WARN_MS  (30UL*60UL*1000UL)   // 30 min
+
+// Nachsenden: War WLAN/Internet im Alarm-Moment weg, wird der Alarm gemerkt
+// und regelmäßig erneut versucht (pro Empfänger, bis alle versorgt sind).
+#define ALARM_RETRY_MS         (60UL*1000UL)        // Abstand zwischen Nachsende-Runden
+#define ALARM_RETRY_GIVEUP_MS  (15UL*60UL*1000UL)   // danach aufgeben (Meldung zu alt)
 
 // ===========================================================================
 //  6) HEARTBEAT  ("ich lebe noch"-Ping nur an dich)
@@ -81,21 +95,13 @@ static const char* BARK_KEYS_ALARM[] = {
 #define HEARTBEAT_HOUR      8
 // Fallback ohne NTP: fester Abstand (alle 24 h ab Start).
 #define HEARTBEAT_MS        (24UL*60UL*60UL*1000UL)
+// Schlägt ein Heartbeat-Versand fehl (z.B. WLAN-Schluckauf), wird er nach
+// dieser Wartezeit erneut versucht - nicht erst am nächsten Tag.
+#define HEARTBEAT_RETRY_MS  (5UL*60UL*1000UL)   // 5 min
 
-// ===========================================================================
-//  6b) WÖCHENTLICHER PROBEALARM DER ILS  (z.B. Mittwoch ~19 Uhr)
-// ===========================================================================
-// Ein Probealarm löst denselben Relaiskontakt aus wie ein echter Alarm. Damit
-// nicht jede Woche ein lauter Fehlalarm an alle geht, wird in diesem Zeitfenster
-// KEIN Alarm an alle gesendet, sondern nur ein leiser Status-Ping an dich
-// ("Probealarm erkannt"). Das bestätigt zugleich, dass die ganze Kette läuft.
-//
-// ACHTUNG: Ein ECHTER Alarm genau in diesem Fenster würde ebenfalls nur leise
-// gemeldet. Fenster bewusst schmal halten. Benötigt NTP_ENABLED = true.
-#define TESTALARM_SUPPRESS   true
-#define TESTALARM_WDAY       3            // Wochentag: 0=So,1=Mo,2=Di,3=Mi,4=Do,5=Fr,6=Sa
-#define TESTALARM_START_MIN  (18*60+55)   // Fensterbeginn (Minuten seit Mitternacht) = 18:55
-#define TESTALARM_END_MIN    (19*60+10)   // Fensterende = 19:10
+// Hinweis: Der wöchentliche Probealarm der ILS löst ABSICHTLICH den vollen
+// Alarm an alle aus - so wird die komplette Kette (Melder -> Relais -> ESP32
+// -> WLAN -> Bark -> iPhones) jede Woche automatisch mitgetestet.
 
 // ===========================================================================
 //  7) NTP-ZEIT  (Zeitstempel in Nachrichten, feste Heartbeat-Uhrzeit)

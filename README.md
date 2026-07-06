@@ -334,10 +334,12 @@ Alle in `config.h`:
 | `ACTIVE_LOW` | `true` = Kontakt gegen GND, LOW = Alarm. |
 | `RELAY_PIN2_ENABLED` / `RELAY_PIN2` | Optionaler zweiter Eingang als Reserve. |
 | `DEBOUNCE_MS` | Wie lange der Kontakt mind. zu sein muss (Standard 300 ms). |
-| `COOLDOWN_MS` | Sperre nach einem Alarm (Standard 5 min), verhindert Dauerfeuer. |
+| `COOLDOWN_MS` | Mindestabstand zwischen zwei Alarmen (Standard 5 min). |
+| `REARM_OPEN_MS` | Kontakt muss nach einem Alarm erst so lange **offen** gewesen sein, bevor ein neuer Alarm möglich ist (Standard 2 s). Verhindert Dauerfeuer bei dauerhaft geschlossenem Kontakt. |
+| `STUCK_CONTACT_WARN_MS` | Bleibt der Kontakt nach einem Alarm so lange zu (Standard 30 min), bekommst du eine leise „Kontakt klemmt?"-Warnung. |
 | `BARK_MAX_TRIES` | Sende-Versuche pro Key bei Netzfehler (Standard 3). |
-| `HEARTBEAT_*` | Täglicher „ich lebe noch"-Ping (siehe unten). |
-| `TESTALARM_*` | Wöchentliches Probealarm-Fenster der ILS (siehe Abschnitt 10a). |
+| `ALARM_RETRY_MS` / `ALARM_RETRY_GIVEUP_MS` | Nachsenden: War WLAN/Internet beim Alarm weg, wird jede Minute erneut versucht, bis alle Empfänger versorgt sind – nach 15 min wird aufgegeben (und du bekommst eine Warnung). |
+| `HEARTBEAT_*` | Täglicher „ich lebe noch"-Ping (siehe unten), inkl. Wiederholung nach Fehlversuch (`HEARTBEAT_RETRY_MS`). |
 | `NTP_*` | Holt die Uhrzeit aus dem Internet (für Zeitstempel & Heartbeat-Uhrzeit). |
 | `WDT_*` | Hardware-Watchdog: startet den ESP32 neu, falls er hängt. |
 
@@ -360,36 +362,19 @@ Fehlen bemerken. Profis lösen das mit einem **„Dead Man's Switch"-Monitor**: 
 externer Dienst, der **dich** alarmiert, wenn der erwartete Ping **ausbleibt**.
 Siehe [TODO](#12-sicherheit--offene-punkte-todo).
 
-### 10a. Wöchentlicher Probealarm der ILS (Mittwoch ~19 Uhr)
+### 10a. Wöchentlicher Probealarm der ILS = automatischer Wochentest
 
-Ein **Probealarm der Leitstelle** alarmiert deinen Melder genauso wie ein echter
-Einsatz – der Relaiskontakt im Lader schließt also auch dabei. **Ohne Gegenmaßnahme
-würde die Box jeden Mittwoch ~19 Uhr einen lauten Fehlalarm an alle schicken.**
+Ein **Probealarm der Leitstelle** (z. B. Mittwoch ~19 Uhr) alarmiert deinen Melder
+genauso wie ein echter Einsatz – der Relaiskontakt im Lader schließt also auch
+dabei, und die Box sendet **den vollen lauten Alarm an alle**.
 
-Deshalb gibt es ein **Probealarm-Zeitfenster** (Standard **Mittwoch 18:55–19:10**,
-in `config.h` über `TESTALARM_*` einstellbar). Löst der Kontakt in diesem Fenster
-aus, sendet die Box **keinen** lauten Alarm an alle, sondern nur einen **leisen
-Status-Ping an dich**: „Probealarm erkannt – Kette Melder→Bark funktioniert."
+Das ist **Absicht**: Der wöchentliche Probealarm testet damit automatisch die
+**komplette Kette** (Melder → Relais → ESP32 → WLAN → Bark → iPhones) – ein viel
+stärkerer Nachweis als der reine Heartbeat. Kommt am Probealarm-Tag der laute
+Alarm **nicht**, weißt du sofort, dass etwas in der Kette klemmt.
 
-**Doppelter Nutzen:** Damit bestätigt dir der wöchentliche Test automatisch, dass die
-**komplette Kette** (Melder → Relais → ESP32 → WLAN → Bark) funktioniert – ein viel
-stärkerer Nachweis als der reine Heartbeat.
-
-> ⚠️ **Wichtiger Kompromiss:** Ein **echter** Alarm exakt in diesem Fenster würde
-> ebenfalls nur leise gemeldet. Weil dies **Zusatz, kein Ersatz** ist (der Melder
-> alarmiert ja voll), ist das vertretbar – halte das Fenster aber **schmal**.
->
-> **Einrichten in 3 Schritten:**
-> 1. Trage in `config.h` den richtigen **Wochentag** (`TESTALARM_WDAY`, 3 = Mittwoch)
->    und die **genaue Uhrzeit** deiner ILS-Probe ein (`TESTALARM_START_MIN` /
->    `TESTALARM_END_MIN`, in Minuten seit Mitternacht).
-> 2. Beobachte **einmal** einen Mittwoch OHNE Unterdrückung
->    (`TESTALARM_SUPPRESS false`): Kommt um ~19 Uhr wirklich ein Alarm? Dann weißt du
->    die **exakte Uhrzeit** und dass der Pin bei der Probe schaltet.
-> 3. Stelle das Fenster passend ein und `TESTALARM_SUPPRESS true`.
->
-> Benötigt `NTP_ENABLED = true` (für Wochentag/Uhrzeit). Ohne gültige Zeit wird
-> **nicht** unterdrückt – im Zweifel alarmiert die Box also lieber.
+Alle Empfänger sollten also wissen: **Der Alarm zur wöchentlichen Probezeit ist
+der Test.**
 
 ---
 
@@ -414,10 +399,19 @@ stärkerer Nachweis als der reine Heartbeat.
 - ✅ Secrets (`config.h`) per `.gitignore` aus Git herausgehalten.
 - ✅ Pro Key einzeln senden, 1–2 Wiederholungen bei Fehler, ein toter Key
   blockiert die anderen nicht.
+- ✅ **Nachsenden bei Netzausfall:** War WLAN/Internet im Alarm-Moment weg, wird
+  der Alarm gemerkt und bis 15 min lang jede Minute nachgesendet (pro Empfänger,
+  mit Zeitstempel der Erkennung und Hinweis „verspaetet zugestellt").
+- ✅ **Kein Dauerfeuer:** Nach einem Alarm muss der Kontakt erst wieder öffnen,
+  bevor ein neuer Alarm ausgelöst wird; klemmt er länger, kommt eine Warnung.
+- ✅ **Pin-Interrupt-Latch:** Auch kurze Alarm-Impulse, die während einer
+  laufenden Sendung eintreffen, gehen nicht verloren.
 - ✅ WLAN-Auto-Reconnect (nicht-blockierend).
 - ✅ Selbsttest beim Start.
-- ✅ Hardware-Watchdog (Auto-Reboot bei Hänger).
-- ✅ NTP-Zeitstempel in Nachrichten + feste Heartbeat-Uhrzeit.
+- ✅ Hardware-Watchdog (Auto-Reboot bei Hänger; funktioniert auch mit
+  ESP32-Core 3.x korrekt).
+- ✅ NTP-Zeitstempel in Nachrichten + feste Heartbeat-Uhrzeit; Heartbeat wird
+  bei Fehlversuch nach 5 min wiederholt statt erst am nächsten Tag.
 - ✅ Optionaler zweiter Eingangs-Pin (`RELAY_PIN2_ENABLED`).
 
 **Noch offen / bewusst nicht eingebaut (TODO):**
