@@ -144,6 +144,7 @@ $readonly = $authed && dashboard_role() !== 'admin';
         <button type="button" data-command-cancel hidden>Befehl abbrechen</button>
       <?php endif; ?>
       <p class="hint" data-command-msg></p>
+      <p class="hint" data-watchdog></p>
     </section>
 
     <section class="panel">

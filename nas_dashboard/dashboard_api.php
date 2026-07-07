@@ -34,6 +34,12 @@ if ($action === 'status') {
         // dem keys_version-Feld aus dem ESP32-Status).
         'demo' => demo_mode_info($config),
         'nas_keys_version' => (int)(load_alarm_keys($config)['version'] ?? 0),
+        // Selbstüberwachung des Offline-Wächters: Das Dashboard warnt, wenn
+        // die DSM-Aufgabe nie oder zu lange nicht gelaufen ist.
+        'watchdog' => [
+            'configured' => trim((string)($config['bark_key_status'] ?? '')) !== '',
+            'last_run' => (int)(read_json_file(data_path($config, 'watchdog_state.json'), [])['last_run_at'] ?? 0),
+        ],
         'server_time' => time(),
     ]);
 }
@@ -184,7 +190,9 @@ if ($action === 'log_view') {
         }
         $out[] = $item;
     }
-    json_response(['ok' => true, 'entries' => $out]);
+    // server_time für relative Zeitangaben ("vor 5 min") - so spielt eine
+    // falsch gehende Browser-Uhr keine Rolle.
+    json_response(['ok' => true, 'entries' => $out, 'server_time' => time()]);
 }
 
 // ==== Demo-Modus ein-/ausschalten ===========================================

@@ -169,6 +169,12 @@ button:disabled {
   color: #66717a;
 }
 
+/* Warntext (z.B. Offline-Wächter läuft nicht) - dezent, aber sichtbar. */
+.warn-text {
+  color: #7c3d00;
+  font-weight: 700;
+}
+
 /* Abstände, die vorher als style=""-Attribute im HTML standen - die CSP
    erlaubt bewusst kein 'unsafe-inline' mehr für Styles. */
 [data-command] {

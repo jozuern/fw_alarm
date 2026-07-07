@@ -150,6 +150,25 @@ Das Skript ist auch per HTTPS aufrufbar (POST mit dem Maschinen-Token wie bei
 `bark_key_status` aktiviert außerdem eine Meldung, wenn eine IP wegen zu
 vieler Login-Fehlversuche gesperrt wurde.
 
+Der Wächter übernimmt noch zwei weitere Aufgaben:
+
+- **Demo-Modus-Erinnerung**: Bleibt der Demo-Modus länger als
+  `demo_reminder_after_seconds` (Default 4 h) aktiv, erinnert er leise per
+  Bark daran (danach max. 1× pro Tag) – im Demo-Modus erreichen echte Alarme
+  nur den Test-Empfänger.
+- **Selbstüberwachung**: Jeder Lauf wird protokolliert; das Dashboard zeigt
+  „Offline-Wächter: zuletzt gelaufen vor X min" und warnt, wenn die Aufgabe
+  nie oder seit mehr als 15 Minuten nicht gelaufen ist (z. B. weil sie im
+  Aufgabenplaner deaktiviert wurde).
+
+### Backup der Laufzeitdaten
+
+Empfängerliste, Demo-Zustand und Verlauf leben im `data_dir`
+(z. B. `/volume1/web/fw_alarm_data`). Nimm den Ordner in dein NAS-Backup auf
+(z. B. Hyper Backup), wenn du eins hast. Zusätzlich hält das Dashboard vor
+jeder Änderung der Empfängerliste die Vorversion als `*.bak.php`-Datei fest –
+Wiederherstellen = Datei umbenennen.
+
 ## 6. Härtung
 
 - Wähle ein langes Maschinen-Token und ein separates starkes Dashboard-Passwort.

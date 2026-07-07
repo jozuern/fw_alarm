@@ -42,6 +42,10 @@ return [
     // Wächter-Schwelle in Sekunden (großzügiger als offline_after_seconds,
     // damit nicht jeder kurze WLAN-Schluckauf eine Meldung auslöst).
     'watchdog_offline_after_seconds' => 600,
+    // Bleibt der Demo-Modus länger als diese Zeit aktiv, erinnert der Wächter
+    // leise per Bark daran (danach max. 1x pro Tag) - echte Alarme erreichen
+    // im Demo-Modus nur den Test-Empfänger!
+    'demo_reminder_after_seconds' => 14400,
 
     // Delivered-Kommandos werden nicht erneut ausgeliefert. Nach dieser Zeit
     // darf das Dashboard einen neuen Befehl anlegen, falls die ACK verloren ging.

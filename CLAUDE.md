@@ -171,9 +171,12 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   (`backup_then_write()`). Optionaler Offline-Wächter: `cron/check_offline.php`
   (DSM-Aufgabenplaner alle 5 min, CLI oder POST mit Maschinen-Token) meldet
   per `bark_send_status()` (level=passive, ASCII-Texte!) einmalig
-  Offline/Recovery an `bark_key_status`; derselbe Key aktiviert die Meldung
-  bei ausgelöster Login-IP-Sperre. Ohne `bark_key_status` in config.php sind
-  beide Meldewege inaktiv. Keine Geheimnisse in
+  Offline/Recovery an `bark_key_status`, erinnert an einen zu lange aktiven
+  Demo-Modus (`demo_reminder_after_seconds`, danach max. 1×/Tag) und schreibt
+  bei jedem Lauf `last_run_at` in `watchdog_state.json` — das Dashboard warnt
+  daraus, wenn die DSM-Aufgabe fehlt oder hängt. Derselbe Key aktiviert die
+  Meldung bei ausgelöster Login-IP-Sperre. Ohne `bark_key_status` in
+  config.php sind alle Meldewege inaktiv. Keine Geheimnisse in
   clientseitigem JavaScript. Laufzeitdaten (`data_dir`) bei Nginx möglichst
   außerhalb des Webroots ablegen; zusätzlich heißen alle Laufzeitdateien `*.php`
   mit Guard-Zeile (`DATA_FILE_GUARD`), damit Nginx sie nie als statische Datei

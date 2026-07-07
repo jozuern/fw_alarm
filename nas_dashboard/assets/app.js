@@ -20,6 +20,7 @@
   const demoToggleBtn = document.querySelector('[data-demo-toggle]');
   const demoMsgEl = document.querySelector('[data-demo-msg]');
   const commandMsgEl = document.querySelector('[data-command-msg]');
+  const watchdogEl = document.querySelector('[data-watchdog]');
   const logEl = document.querySelector('[data-log]');
 
   const STATE_LABELS = {
@@ -54,6 +55,18 @@
   function formatTime(epoch) {
     if (!epoch) return 'nie';
     return new Date(epoch * 1000).toLocaleString('de-DE');
+  }
+
+  // Relative Zeit für junge Ereignisse ("vor 5 min"); ältere bekommen das
+  // absolute Datum. Rechnet mit der Server-Zeit, nicht der Browser-Uhr.
+  function fmtRelTime(epoch, serverTime) {
+    if (!epoch) return 'nie';
+    const age = serverTime - epoch;
+    if (!Number.isFinite(age) || age < 0) return formatTime(epoch);
+    if (age < 90) return 'gerade eben';
+    if (age < 3600) return `vor ${Math.round(age / 60)} min`;
+    if (age < 86400) return `vor ${Math.round(age / 3600)} Std`;
+    return formatTime(epoch);
   }
 
   function escapeHtml(value) {
@@ -233,6 +246,33 @@
     if (cancelBtn) cancelBtn.hidden = command.state !== 'pending';
   }
 
+  // Selbstüberwachung des Offline-Wächters: warnen, wenn die DSM-Aufgabe
+  // fehlt oder nicht mehr läuft (der Wächter, der das Schweigen der Box
+  // melden soll, darf nicht selbst unbemerkt schweigen).
+  function renderWatchdog(info, serverTime) {
+    if (!watchdogEl) return;
+    let text;
+    let warn = true;
+    if (!info) {
+      text = '';
+      warn = false;
+    } else if (!info.configured) {
+      text = 'Offline-Wächter: nicht konfiguriert (bark_key_status in config.php setzen, siehe SETUP.md).';
+    } else if (!info.last_run) {
+      text = 'Offline-Wächter: noch nie gelaufen – DSM-Aufgabe im Aufgabenplaner eingerichtet?';
+    } else {
+      const age = Math.max(0, serverTime - info.last_run);
+      if (age > 900) {
+        text = `⚠️ Offline-Wächter: seit ${fmtUptime(age)} nicht gelaufen – DSM-Aufgabe prüfen!`;
+      } else {
+        text = `Offline-Wächter: zuletzt gelaufen ${age < 60 ? 'gerade eben' : 'vor ' + fmtUptime(age)}.`;
+        warn = false;
+      }
+    }
+    watchdogEl.textContent = text;
+    watchdogEl.classList.toggle('warn-text', warn);
+  }
+
   // ==== Demo-Modus ==========================================================
   // Der Wechsel greift auf dem ESP32 erst nach dessen nächstem Poll. Deshalb
   // vergleicht das Banner die Listen-Version des ESP32 mit der des NAS und
@@ -341,6 +381,7 @@
       renderFields(status, !!data.offline,
         data.seen_age_seconds == null ? NaN : Number(data.seen_age_seconds));
       renderCommand(data.command, Number(data.server_time));
+      renderWatchdog(data.watchdog, Number(data.server_time));
       renderDemo(status, !!data.offline);
     } catch (err) {
       // Hier ist das NAS selbst nicht erreichbar (oder die Antwort kaputt) -
@@ -513,10 +554,11 @@
         setHtml(logEl, '<em>Noch keine Ereignisse aufgezeichnet.</em>');
         return;
       }
+      const serverTime = Number(data.server_time) || Math.floor(Date.now() / 1000);
       setHtml(logEl, entries.map((entry) => {
         const { text, cls } = describeLogEntry(entry);
         return `<div class="log-row${cls ? ' ' + cls : ''}">
-          <span class="log-time">${escapeHtml(formatTime(entry.at))}</span>
+          <span class="log-time" title="${escapeHtml(formatTime(entry.at))}">${escapeHtml(fmtRelTime(entry.at, serverTime))}</span>
           <span class="log-text">${escapeHtml(text)}</span>
         </div>`;
       }).join(''));
