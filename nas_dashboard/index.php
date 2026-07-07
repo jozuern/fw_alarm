@@ -41,8 +41,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
                 $role = 'readonly';
             }
         } else {
-            // Dummy-Vergleich gegen einen festen Hash (kein echtes Passwort).
-            password_verify($pass, '$2y$10$858C1CqsgPyCf2rn/7JnvuywARnwod28zxiXtzcCjc6sTGZo0043q');
+            // Dummy-Vergleich gegen einen festen Wegwerf-Hash (KEIN echtes
+            // Passwort, verifiziert gegen nichts Reales): haelt die Antwortzeit
+            // konstant, damit sie nicht verraet, ob der Benutzername existiert.
+            password_verify($pass, '$2y$10$khBdEi9J4PEa.A0wgqTFn.y3qAqDtiUV/swQATVQUKjg1mYQu391y');
         }
         if ($role !== '') {
             login_throttle_clear($config);
@@ -54,7 +56,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
             header('Location: index.php');
             exit;
         }
-        login_throttle_record_failure($config);
+        $failCount = login_throttle_record_failure($config);
+        // Genau beim Erreichen der Sperrschwelle EINMAL den Owner leise per
+        // Bark informieren (nur wenn bark_key_status in config.php gesetzt
+        // ist): Bei einer internetoffenen Seite will man wissen, wenn jemand
+        // am Login rüttelt. Weitere Versuche derselben IP landen im
+        // 429-Zweig oben und lösen keine weitere Meldung aus.
+        [$maxFailures, $lockoutWindow] = login_throttle_limits($config);
+        $statusKey = trim((string)($config['bark_key_status'] ?? ''));
+        if ($failCount === $maxFailures && $statusKey !== '') {
+            bark_send_status($config, $statusKey, 'Dashboard: Login gesperrt',
+                date('[d.m.Y H:i] ') . 'Zu viele fehlgeschlagene Login-Versuche von '
+                . login_client_ip() . ' - IP fuer ' . (int)($lockoutWindow / 60)
+                . ' min gesperrt.');
+        }
         sleep(1);   // einfache Brute-Force-Bremse (DSM Auto-Block greift hier nicht)
         $error = 'Login fehlgeschlagen.';
     }
@@ -72,6 +87,10 @@ $readonly = $authed && dashboard_role() !== 'admin';
   <meta name="csrf" content="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
   <meta name="role" content="<?= $readonly ? 'readonly' : 'admin' ?>">
   <title>BOSS-925 Alarm-Wächter</title>
+  <meta name="theme-color" content="#b42318">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <?php // Für "Zum Home-Bildschirm" auf dem iPhone (iOS ignoriert SVG-Favicons). ?>
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <?php // Dateizeit als Versions-Parameter: Browser laden nach jedem Update
         // frische Dateien, statt tagelang eine alte app.js aus dem Cache zu nutzen. ?>
   <link rel="stylesheet" href="assets/style.css?v=<?= (int)@filemtime(__DIR__ . '/assets/style.css') ?>">
@@ -82,14 +101,18 @@ $readonly = $authed && dashboard_role() !== 'admin';
     <section class="panel">
       <h1>BOSS-925 Alarm-Wächter</h1>
       <p>Dashboard-Login</p>
-      <form method="post" autocomplete="off">
+      <?php // autocomplete-Attribute statt autocomplete="off": So können
+            // Passwort-Manager ein STARKES Passwort speichern und ausfüllen -
+            // bei einer öffentlich erreichbaren Seite wichtiger als das
+            // (von Browsern ohnehin ignorierte) Abschalten. ?>
+      <form method="post">
         <input type="hidden" name="action" value="login">
         <label for="user">Benutzer</label>
-        <input id="user" name="user" required>
+        <input id="user" name="user" required autofocus autocomplete="username">
         <label for="password">Passwort</label>
-        <input id="password" name="password" type="password" required>
+        <input id="password" name="password" type="password" required autocomplete="current-password">
         <p class="error"><?= htmlspecialchars($error, ENT_QUOTES, 'UTF-8') ?></p>
-        <p style="margin-top:16px"><button type="submit">Anmelden</button></p>
+        <p class="submit-row"><button type="submit">Anmelden</button></p>
       </form>
     </section>
   </main>
@@ -116,10 +139,11 @@ $readonly = $authed && dashboard_role() !== 'admin';
 
     <section class="panel">
       <span data-state class="badge badge-offline">OFFLINE</span>
-      <p style="margin-top:10px" data-command>Kein Befehl aktiv.</p>
+      <p data-command>Kein Befehl aktiv.</p>
       <?php if (!$readonly): ?>
         <button type="button" data-command-cancel hidden>Befehl abbrechen</button>
       <?php endif; ?>
+      <p class="hint" data-command-msg></p>
     </section>
 
     <section class="panel">
@@ -146,7 +170,7 @@ $readonly = $authed && dashboard_role() !== 'admin';
       <h2>Betriebsmodus</h2>
       <p data-demo-state>Wird geladen…</p>
       <?php if (!$readonly): ?>
-        <div class="actions" style="margin-top:12px">
+        <div class="actions spaced">
           <select data-demo-target aria-label="Demo-Empfänger"></select>
           <button type="button" data-demo-toggle disabled>Wird geladen…</button>
         </div>
@@ -171,6 +195,14 @@ $readonly = $authed && dashboard_role() !== 'admin';
         <p data-alarm-result hidden></p>
       </section>
     <?php endif; ?>
+
+    <section class="panel">
+      <h2>Verlauf</h2>
+      <p class="hint">Die letzten Ereignisse aus dem NAS-Protokoll: Alarme, Tests, Demo-Wechsel
+        und Änderungen an der Empfängerliste. Anders als „Letzter Alarm" oben übersteht
+        dieser Verlauf auch einen Neustart des ESP32.</p>
+      <div data-log class="log-list">Wird geladen…</div>
+    </section>
   </main>
   <script src="assets/app.js?v=<?= (int)@filemtime(__DIR__ . '/assets/app.js') ?>"></script>
 <?php endif; ?>

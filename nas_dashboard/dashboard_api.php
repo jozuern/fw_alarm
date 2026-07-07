@@ -134,6 +134,59 @@ if ($action === 'keys_list') {
     ]);
 }
 
+// ==== Verlauf (letzte Ereignisse aus commands.log) ==========================
+// Nur lesend, deshalb auch für den Lese-Benutzer erlaubt. Es gehen NUR die
+// hier explizit whitelisteten Felder an den Browser - egal was künftig
+// zusätzlich ins Log geschrieben wird. Bark-Keys stehen im Log ohnehin nur
+// maskiert (mask_bark_key beim Schreiben).
+if ($action === 'log_view') {
+    $out = [];
+    foreach (read_command_log_tail($config, 25) as $entry) {
+        $event = (string)($entry['event'] ?? '');
+        $item = ['at' => (int)($entry['log_at'] ?? 0), 'event' => $event];
+        $cmd = is_array($entry['command'] ?? null) ? $entry['command'] : [];
+        switch ($event) {
+            case 'created':
+            case 'delivered':
+            case 'acked':
+            case 'expired':
+            case 'cancelled':
+                $item['id'] = (int)($cmd['id'] ?? 0);
+                $item['type'] = (string)($cmd['type'] ?? '');
+                $item['by'] = (string)($cmd[$event === 'cancelled' ? 'cancelled_by' : 'created_by'] ?? '');
+                if ($event === 'acked') {
+                    $item['result'] = (string)($cmd['ack_result'] ?? '');
+                    $item['message'] = (string)($cmd['ack_message'] ?? '');
+                }
+                break;
+            case 'late_ack':
+                $item['id'] = (int)($entry['id'] ?? 0);
+                $item['result'] = (string)($entry['result'] ?? '');
+                break;
+            case 'demo_enabled':
+            case 'demo_disabled':
+                $item['by'] = (string)($entry['by'] ?? '');
+                $item['label'] = (string)($entry['label'] ?? '');
+                break;
+            case 'key_added':
+            case 'key_removed':
+                $item['by'] = (string)($entry['by'] ?? '');
+                $item['label'] = (string)($entry['label'] ?? '');
+                $item['key'] = (string)($entry['key'] ?? '');
+                break;
+            case 'nas_alarm':
+                $item['by'] = (string)($entry['by'] ?? '');
+                $item['ok'] = !empty($entry['ok']);
+                $item['message'] = (string)($entry['message'] ?? '');
+                break;
+            default:
+                continue 2;   // unbekannte Events gar nicht erst ausliefern
+        }
+        $out[] = $item;
+    }
+    json_response(['ok' => true, 'entries' => $out]);
+}
+
 // ==== Demo-Modus ein-/ausschalten ===========================================
 // Jeder Wechsel erhöht die Listen-Version, damit der ESP32 beim nächsten Poll
 // die passende Liste (nur Demo-Key bzw. wieder alle) holt. Läuft unter dem
@@ -184,7 +237,8 @@ if ($action === 'demo_set') {
         }
 
         $state['version'] = (int)($state['version'] ?? 0) + 1;
-        if (!write_json_file($demoPath, $demo) || !write_json_file($keysPath, $state)) {
+        if (!backup_then_write($config, 'demo_mode.json', $demo)
+            || !backup_then_write($config, 'alarm_keys.json', $state)) {
             return ['ok' => false, 'message' => 'Demo-Modus konnte nicht gespeichert werden (data_dir pruefen).'];
         }
         append_command_log($config, [
@@ -228,7 +282,7 @@ if ($action === 'keys_add') {
         $state['keys'] = $keys;
         $state['next_id'] = $id + 1;
         $state['version'] = (int)($state['version'] ?? 0) + 1;
-        if (!write_json_file($path, $state)) {
+        if (!backup_then_write($config, 'alarm_keys.json', $state)) {
             return ['ok' => false, 'message' => 'Liste konnte nicht gespeichert werden.'];
         }
         append_command_log($config, [
@@ -277,7 +331,7 @@ if ($action === 'keys_delete') {
         }
         $state['keys'] = $remaining;
         $state['version'] = (int)($state['version'] ?? 0) + 1;
-        if (!write_json_file($path, $state)) {
+        if (!backup_then_write($config, 'alarm_keys.json', $state)) {
             return ['ok' => false, 'message' => 'Liste konnte nicht gespeichert werden.'];
         }
         append_command_log($config, [

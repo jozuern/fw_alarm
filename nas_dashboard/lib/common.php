@@ -9,9 +9,10 @@ date_default_timezone_set('Europe/Berlin');
 // Für den ESP32 sind die Header wirkungslos, aber unschädlich.
 if (!headers_sent()) {
     header('X-Frame-Options: DENY');
-    header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     header('X-Content-Type-Options: nosniff');
     header('Referrer-Policy: strict-origin-when-cross-origin');
+    header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
     if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
         header('Strict-Transport-Security: max-age=31536000');
     }
@@ -98,6 +99,19 @@ function write_json_file(string $path, array $data): bool
     return true;
 }
 
+// Wie write_json_file, hält aber vorher die letzte Version als *.bak-Datei
+// fest (ebenfalls .php-guarded). Gedacht für die Empfängerliste/Demo-Zustand:
+// Die Liste ist die EINE Quelle für beide Alarmwege - geht die Datei kaputt,
+// lässt sich der letzte Stand von Hand zurückholen (Datei umbenennen).
+function backup_then_write(array $config, string $name, array $data): bool
+{
+    $path = data_path($config, $name);
+    if (is_file($path)) {
+        @copy($path, data_path($config, $name . '.bak'));
+    }
+    return write_json_file($path, $data);
+}
+
 function with_lock(array $config, string $name, callable $callback)
 {
     $lockPath = data_path($config, $name . '.lock');
@@ -159,10 +173,12 @@ function login_throttle_blocked(array $config): bool
     return (int)($entry['count'] ?? 0) >= $max;
 }
 
-function login_throttle_record_failure(array $config): void
+// Gibt den neuen Fehlversuchs-Zählerstand der IP zurück - der Aufrufer kann
+// so genau beim Erreichen der Sperrschwelle einmalig den Owner benachrichtigen.
+function login_throttle_record_failure(array $config): int
 {
     [, $window] = login_throttle_limits($config);
-    with_lock($config, 'login', function () use ($config, $window): void {
+    return (int)with_lock($config, 'login', function () use ($config, $window): int {
         $path = data_path($config, 'login_throttle.json');
         $all = read_json_file($path, []);
         $now = time();
@@ -176,6 +192,7 @@ function login_throttle_record_failure(array $config): void
         $entry['count'] = (int)($entry['count'] ?? 0) + 1;
         $all[$ip] = $entry;
         write_json_file($path, $all);
+        return (int)$entry['count'];
     });
 }
 
@@ -355,6 +372,44 @@ function append_command_log(array $config, array $entry): void
     );
 }
 
+// Liest die letzten Einträge aus commands.log für das Verlaufs-Panel.
+// Bewusst nur das Datei-Ende (Tail), damit auch eine 5-MB-Logdatei das
+// Dashboard nicht ausbremst. Neueste Einträge zuerst.
+function read_command_log_tail(array $config, int $limit = 25): array
+{
+    $path = data_path($config, 'commands.log');
+    if (!is_file($path)) {
+        return [];
+    }
+    $size = (int)@filesize($path);
+    $chunk = 64 * 1024;
+    $handle = @fopen($path, 'rb');
+    if ($handle === false) {
+        return [];
+    }
+    $offset = max(0, $size - $chunk);
+    fseek($handle, $offset);
+    $raw = (string)stream_get_contents($handle);
+    fclose($handle);
+
+    $lines = explode("\n", $raw);
+    if ($offset > 0) {
+        array_shift($lines);   // erste Zeile ist evtl. angeschnitten
+    }
+    $entries = [];
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '' || str_starts_with($line, '<?php')) {
+            continue;   // Guard-Zeile überspringen
+        }
+        $data = json_decode($line, true);
+        if (is_array($data)) {
+            $entries[] = $data;
+        }
+    }
+    return array_reverse(array_slice($entries, -$limit));
+}
+
 // ============================ EMPFÄNGERLISTE ================================
 // Die Alarm-Empfänger werden im Dashboard gepflegt und liegen versioniert in
 // alarm_keys.json(.php). Der ESP32 sieht die Version im Poll und holt sich bei
@@ -455,6 +510,48 @@ function effective_alarm_keys(array $config): array
 function mask_bark_key(string $key): string
 {
     return substr($key, 0, 4) . '...';
+}
+
+// Leise Statusmeldung (level=passive) an EINEN Bark-Key - das Gegenstück zu
+// sendStatus() in der Firmware. Genutzt vom Offline-Wächter (cron/) und der
+// Login-Sperren-Meldung. Titel/Body müssen ASCII sein (ae/ue/oe, keine
+// Umlaute - Bark stellt sie nicht korrekt dar). Knappe Timeouts, damit z.B.
+// der Login-Pfad nie lange an Bark hängt.
+function bark_send_status(array $config, string $key, string $title, string $body): bool
+{
+    if (!function_exists('curl_init') || !valid_bark_key($key)) {
+        return false;
+    }
+    $host = rtrim((string)($config['bark_host'] ?? 'https://api.day.app'), '/');
+    $form = http_build_query([
+        'title' => $title,
+        'body'  => $body,
+        'level' => 'passive',
+    ]);
+    for ($attempt = 1; $attempt <= 2; $attempt++) {
+        $ch = curl_init($host . '/' . rawurlencode($key));
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $form,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => 10,
+        ]);
+        curl_exec($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        curl_close($ch);
+        if ($code === 200) {
+            return true;
+        }
+        if ($code >= 400 && $code < 500) {
+            return false;   // Client-Fehler: Wiederholen zwecklos.
+        }
+        if ($attempt < 2) {
+            usleep(500000);
+        }
+    }
+    return false;
 }
 
 // Sendet einen Critical Alert an EINEN Bark-Key, mit Wiederholung wie in der

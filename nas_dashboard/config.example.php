@@ -29,6 +29,20 @@ return [
     // Nach so vielen Sekunden ohne Status-Push gilt die Box als offline.
     'offline_after_seconds' => 180,
 
+    // ==== Offline-Wächter + Sicherheits-Meldungen (optional) ================
+    // Bark-Key des Owners für LEISE Statusmeldungen (level=passive):
+    // 1. cron/check_offline.php (DSM-Aufgabenplaner, siehe SETUP.md) meldet
+    //    einmalig, wenn die Box zu lange keinen Status gepusht hat - und
+    //    einmalig, wenn sie wieder da ist.
+    // 2. Das Dashboard meldet, wenn eine IP wegen zu vieler Login-Fehlversuche
+    //    gesperrt wurde (jemand ruettelt am Login).
+    // Leer ('') = beides aus. Sinnvoll: derselbe Key wie BARK_KEY_STATUS in
+    // config.h des ESP32.
+    'bark_key_status' => '',
+    // Wächter-Schwelle in Sekunden (großzügiger als offline_after_seconds,
+    // damit nicht jeder kurze WLAN-Schluckauf eine Meldung auslöst).
+    'watchdog_offline_after_seconds' => 600,
+
     // Delivered-Kommandos werden nicht erneut ausgeliefert. Nach dieser Zeit
     // darf das Dashboard einen neuen Befehl anlegen, falls die ACK verloren ging.
     'delivered_command_lock_seconds' => 120,

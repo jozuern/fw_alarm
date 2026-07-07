@@ -63,7 +63,7 @@ static const char* BARK_KEYS_ALARM[] = {
 // Die Box bleibt outbound-only: Status wird zum NAS gepusht, Kommandos werden
 // gepollt. Basis-URL OHNE abschließenden Slash, zeigt auf den api-Ordner.
 // TIPP: Wenn ESP32 und NAS im selben LAN sind, die lokale IP des NAS nutzen
-// (z.B. "https://192.168.2.194/fw_alarm/api") - funktioniert dank
+// (z.B. "https://192.168.1.50/fw_alarm/api") - funktioniert dank
 // setInsecure() trotz Zertifikat-Mismatch und auch ohne Internet/Hairpin-NAT.
 #define REMOTE_MONITOR_ENABLED       true
 #define REMOTE_BASE_URL              "https://dein-name.synology.me/fw_alarm/api"

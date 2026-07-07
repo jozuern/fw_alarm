@@ -61,6 +61,13 @@ p {
   color: #8d1f14;
 }
 
+/* Gelb = Aussage unsicher: NAS nicht erreichbar oder Sitzung abgelaufen.
+   Bewusst von badge-offline (rot = ESP32 meldet sich nicht) getrennt. */
+.badge-stale {
+  background: #fff3cd;
+  color: #7c3d00;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -83,6 +90,18 @@ p {
 
 .field strong {
   overflow-wrap: anywhere;
+}
+
+/* Warnfarben: Probleme sollen ins Auge springen, ohne dass man die Werte
+   lesen muss. Gelb = auffällig/übergangsweise, Rot = handeln. */
+.field-warn {
+  border-color: #d97706;
+  background: #fff8e6;
+}
+
+.field-crit {
+  border-color: #b42318;
+  background: #fdecea;
 }
 
 .actions {
@@ -148,6 +167,20 @@ button:disabled {
   margin-top: 12px;
   font-size: 13px;
   color: #66717a;
+}
+
+/* Abstände, die vorher als style=""-Attribute im HTML standen - die CSP
+   erlaubt bewusst kein 'unsafe-inline' mehr für Styles. */
+[data-command] {
+  margin-top: 10px;
+}
+
+.submit-row {
+  margin-top: 16px;
+}
+
+.actions.spaced {
+  margin-top: 12px;
 }
 
 [data-alarm-result] {
@@ -239,6 +272,39 @@ select {
   padding: 0 10px;
   font: inherit;
   background: #fff;
+}
+
+/* ==== Verlaufs-Panel ===================================================== */
+
+.log-list {
+  font-size: 14px;
+}
+
+.log-row {
+  display: flex;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid #eef1f3;
+}
+
+.log-time {
+  color: #66717a;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.log-text {
+  overflow-wrap: anywhere;
+}
+
+/* Echte Alarme stechen im Verlauf hervor, Warnungen (abgelaufen/Demo) dezent. */
+.log-alarm .log-text {
+  color: #8d1f14;
+  font-weight: 700;
+}
+
+.log-warn .log-text {
+  color: #7c3d00;
 }
 
 /* ==== ?-Tooltips an den Statusfeldern ==================================== */

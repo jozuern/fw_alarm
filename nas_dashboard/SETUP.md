@@ -92,14 +92,14 @@ dein-name.synology.me
 ```
 
 Erstelle in DSM ein Let's-Encrypt-Zertifikat für diesen Hostnamen und weise es Web
-Station zu. Leite am Speedport Smart 3 genau **TCP-Port 443** von außen auf die
+Station zu. Leite an deinem Router genau **TCP-Port 443** von außen auf die
 Synology weiter.
 
 Dashboard-URL (extern bzw. im LAN):
 
 ```text
 https://dein-name.synology.me/fw_alarm/
-https://192.168.2.194/fw_alarm/
+https://192.168.1.50/fw_alarm/
 ```
 
 ESP32-API-Basis-URL für `REMOTE_BASE_URL` – im LAN am robustesten die lokale
@@ -107,10 +107,50 @@ IP (funktioniert dank `setInsecure()` trotz Zertifikat-Mismatch und auch ohne
 Internet):
 
 ```text
-https://192.168.2.194/fw_alarm/api
+https://192.168.1.50/fw_alarm/api
 ```
 
-## 5. Härtung
+## 5. Offline-Wächter (optional, empfohlen)
+
+Der tägliche Heartbeat kommt vom ESP32 selbst – eine tote Box schweigt einfach,
+und ohne offenes Dashboard merkt das niemand. `cron/check_offline.php` schließt
+die Lücke: Es prüft das Alter des letzten Status-Pushs und schickt dir **einmal**
+eine leise Bark-Meldung, wenn die Box zu lange schweigt (Default: 10 Minuten,
+`watchdog_offline_after_seconds`), und **einmal**, wenn sie wieder da ist.
+
+Einrichtung:
+
+1. In `config.php` deinen Status-Bark-Key eintragen (derselbe wie
+   `BARK_KEY_STATUS` in `config.h`):
+
+   ```php
+   'bark_key_status' => 'DEIN_BARK_KEY',
+   ```
+
+2. DSM → **Systemsteuerung → Aufgabenplaner → Erstellen → Geplante Aufgabe →
+   Benutzerdefiniertes Skript**:
+   - Benutzer: `root` (oder ein Benutzer mit Leserecht auf den Web-Ordner)
+   - Zeitplan: täglich, **alle 5 Minuten** wiederholen
+   - Skript:
+
+     ```bash
+     php -f /volume1/web/fw_alarm/cron/check_offline.php
+     ```
+
+     Falls `php` nicht gefunden wird, den vollen Pfad des PHP-8.3-Pakets
+     verwenden (z. B. `/usr/local/bin/php83` – per SSH mit `which php83`
+     prüfbar).
+
+3. Aufgabe einmal manuell ausführen („Ausführen") und das Ergebnis ansehen
+   (Aufgabenplaner → Aktion → „Ergebnis anzeigen"): `OK` bzw. `NO_DATA` ist
+   gut; `DISABLED` heißt, der Key aus Schritt 1 fehlt noch.
+
+Das Skript ist auch per HTTPS aufrufbar (POST mit dem Maschinen-Token wie bei
+`api/status.php`) – anonyme Web-Aufrufe weist es mit 403 ab. Derselbe
+`bark_key_status` aktiviert außerdem eine Meldung, wenn eine IP wegen zu
+vieler Login-Fehlversuche gesperrt wurde.
+
+## 6. Härtung
 
 - Wähle ein langes Maschinen-Token und ein separates starkes Dashboard-Passwort.
 - Aktiviere DSM-Firewall und Auto-Block für wiederholte Fehlversuche (schützt

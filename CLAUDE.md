@@ -156,7 +156,24 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Lese-Benutzer (`dashboard_readonly_user`/`..._password_hash`, Rolle in
   `$_SESSION['role']`): sieht Status + Empfängerliste, alle ändernden/auslösenden
   Aktionen werden **serverseitig** per `require_dashboard_admin()` geblockt
-  (UI-Ausblendung ist nur Komfort). Keine Geheimnisse in
+  (UI-Ausblendung ist nur Komfort). Das Verlaufs-Panel liest die letzten
+  `commands.log`-Zeilen per Tail-Read (`log_view` in `dashboard_api.php`) und
+  liefert **nur serverseitig whitelistete Felder** aus (Keys stehen im Log nur
+  maskiert). Das Frontend pollt nur bei sichtbarem Tab (Page Visibility API),
+  behandelt HTTP 401 als „Sitzung abgelaufen" (Reload zur Login-Seite) und
+  unterscheidet „NAS nicht erreichbar" (gelber Badge) von „ESP32 offline"
+  (roter Badge; zeigt dann „Offline seit" statt der stalen Laufzeit); kritische
+  Statusfelder werden gelb/rot eingefärbt, `innerHTML` wird nur bei echter
+  Änderung ersetzt (Tooltip-/Fokus-Erhalt), pro Poll-Funktion gibt es einen
+  In-Flight-Guard. Die CSP kommt ohne `unsafe-inline` aus (keine
+  `style=`-Attribute in `index.php` einführen!). Empfängerliste/Demo-Zustand
+  werden vor jedem Schreiben als `*.bak`-Guard-Datei gesichert
+  (`backup_then_write()`). Optionaler Offline-Wächter: `cron/check_offline.php`
+  (DSM-Aufgabenplaner alle 5 min, CLI oder POST mit Maschinen-Token) meldet
+  per `bark_send_status()` (level=passive, ASCII-Texte!) einmalig
+  Offline/Recovery an `bark_key_status`; derselbe Key aktiviert die Meldung
+  bei ausgelöster Login-IP-Sperre. Ohne `bark_key_status` in config.php sind
+  beide Meldewege inaktiv. Keine Geheimnisse in
   clientseitigem JavaScript. Laufzeitdaten (`data_dir`) bei Nginx möglichst
   außerhalb des Webroots ablegen; zusätzlich heißen alle Laufzeitdateien `*.php`
   mit Guard-Zeile (`DATA_FILE_GUARD`), damit Nginx sie nie als statische Datei

@@ -215,12 +215,12 @@ Diese Datei ist absichtlich **nicht** im Projekt enthalten (sie enthält ja dein
 Passwörter). Es gibt stattdessen eine **Vorlage** namens `config.example.h`.
 
 **So legst du deine `config.h` an:**
-- **Einfachste Variante:** In diesem Projekt liegt bereits eine `config.h` mit
-  deinem bisherigen Bark-Key vorbereitet. Du musst nur noch **WLAN-Name und
-  -Passwort** eintragen und ggf. weitere Empfänger ergänzen.
-- **Von Null:** Kopiere `config.example.h` und nenne die Kopie `config.h`
-  (im selben Ordner).
+- Kopiere `config.example.h` und nenne die Kopie `config.h` (im selben Ordner).
   - PlatformIO/Terminal: `cp boss925_alarm_bark/config.example.h boss925_alarm_bark/config.h`
+  - In der Arduino IDE die Datei einfach im selben Ordner als `config.h` speichern.
+- Danach die Platzhalter in `config.h` durch deine echten Werte ersetzen (WLAN,
+  Bark-Keys usw.). `config.h` ist per `.gitignore` ausgeschlossen und landet
+  **nicht** im Git – deine Zugangsdaten bleiben lokal.
 
 **Was du mindestens ausfüllen musst:**
 
@@ -246,9 +246,10 @@ static const char* BARK_KEYS_ALARM[] = {
 > so stehen bleiben. Jeder Key kommt in `"..."`, danach ein **Komma**. Zeilen mit
 > `//` am Anfang sind „auskommentiert" = ausgeschaltet.
 >
-> 🔐 **Hinweis:** In der mitgelieferten `config.h` steckt bereits ein echter
-> Bark-Key aus deinem ursprünglichen Sketch. Falls dieser Key jemals öffentlich
-> geteilt wurde, erstelle in der Bark-App einen neuen und ersetze ihn.
+> 🔐 **Sicherheit:** Behandle die Bark-Keys wie Passwörter – wer einen Key kennt,
+> kann diesem iPhone Nachrichten schicken. Trage sie nur in deine lokale `config.h`
+> (bzw. ins NAS-Dashboard) ein und teile sie nicht öffentlich. Landet ein Key doch
+> einmal in falschen Händen, erstelle in der Bark-App einen neuen und ersetze ihn.
 
 **Optional für das NAS-Dashboard:**
 
@@ -386,7 +387,13 @@ Der Heartbeat sagt dir nur etwas, wenn die Box **noch funktioniert**. Fällt sie
 komplett aus, kommt logischerweise **gar nichts** – und du müsstest das aktive
 Fehlen bemerken. Profis lösen das mit einem **„Dead Man's Switch"-Monitor**: ein
 externer Dienst, der **dich** alarmiert, wenn der erwartete Ping **ausbleibt**.
-Siehe [TODO](#13-sicherheit--offene-punkte-todo).
+
+> ✅ **Schon eingebaut, wenn du das NAS-Dashboard nutzt:** Der Offline-Wächter
+> `cron/check_offline.php` (per DSM-Aufgabenplaner alle paar Minuten) meldet dir
+> **einmal** leise per Bark, wenn die Box zu lange keinen Status mehr gepusht hat –
+> und **einmal**, wenn sie wieder da ist. Für echte Unabhängigkeit vom eigenen
+> Netz kannst du zusätzlich einen externen Dienst wie **healthchecks.io** nutzen
+> (siehe [TODO](#13-sicherheit--offene-punkte-todo)).
 
 ### 10a. Wöchentlicher Probealarm der ILS = automatischer Wochentest
 
@@ -432,6 +439,19 @@ Funktionen:
 - Dashboard mit Login, Offline-Anzeige, zwei Buttons (`TEST`, `REAL ALARM` mit
   zusätzlicher Browser-Bestätigung und Ergebnis pro Empfänger) und einem
   Abbrechen-Knopf für noch nicht abgeholte Befehle.
+- **Demo-Modus** (Panel „Betriebsmodus", nur Admin): leitet **alle** Alarme –
+  Relaisalarm über den ESP32 und `REAL ALARM` vom NAS – auf genau **einen**
+  Test-Empfänger aus der gepflegten Liste um, damit du gefahrlos üben kannst.
+  Der Alarm ist dabei zeichengenau identisch mit einem echten (gleicher
+  Text/Ton/Level), nur die Empfängerliste ist kürzer. Ein Warn-Banner zeigt, ob
+  der ESP32 die Demo-Liste schon übernommen hat – **vorher nicht testen**.
+- **Optionaler Lese-Benutzer** (`dashboard_readonly_user` in `config.php`): sieht
+  Status und Empfängerliste (Keys maskiert), kann aber weder `TEST` noch
+  `REAL ALARM` auslösen und die Liste nicht ändern – die Sperre greift
+  serverseitig, nicht nur im Browser.
+- **Offline-Wächter** (`cron/check_offline.php`, DSM-Aufgabenplaner): meldet leise
+  per Bark, wenn die Box zu lange keinen Status mehr pusht (und wenn sie wieder
+  da ist). Details in `nas_dashboard/SETUP.md`.
 
 Die Dashboard-URL sieht typischerweise so aus:
 
@@ -537,14 +557,21 @@ separates Login mit Passwort-Hash und CSRF-Schutz.
   Befehle verfallen per TTL und sind abbrechbar.
 - ✅ Manueller `REAL ALARM` direkt vom NAS an Bark – unabhängig vom ESP32, als
   Rückfallebene, wenn dessen Kette klemmt.
+- ✅ Empfängerverwaltung im Dashboard (versioniert, für beide Alarmwege, vom ESP32
+  automatisch in den NVS-Flash übernommen) plus **Demo-Modus** und optionaler
+  **Lese-Benutzer**.
+- ✅ **NAS-Offline-Wächter** (`cron/check_offline.php`): meldet leise per Bark,
+  wenn die Box zu lange schweigt bzw. wieder da ist (Dead-Man's-Switch auf dem NAS).
 
 **Noch offen / bewusst nicht eingebaut (TODO):**
 - 🔧 **OTA-Update (drahtlos flashen):** Auf Wunsch nicht eingebaut (kleinere
   Angriffsfläche). Wer es nachrüsten will: `ArduinoOTA`-Bibliothek (im Core),
   `ArduinoOTA.begin()` in `setup()` und `ArduinoOTA.handle()` in `loop()`,
   unbedingt mit Passwort. Dann kann man die Box ohne USB-Kabel neu flashen.
-- 🔧 **Externer Dead-Man's-Switch fürs Heartbeat-Monitoring:** Empfohlen, damit
-  ein **Ausfall** der Box auffällt. Zwei einfache Wege:
+- 🔧 **Externer Dead-Man's-Switch fürs Heartbeat-Monitoring:** Der NAS-Offline-Wächter
+  oben deckt das schon ab, hängt aber am selben Heim-Netz/NAS. Für echte
+  Unabhängigkeit empfiehlt sich zusätzlich ein **externer** Dienst, der **dich**
+  alarmiert, wenn der erwartete Ping ausbleibt. Zwei einfache Wege:
   1. Einen kostenlosen Dienst wie **healthchecks.io** nutzen: Dort einen „Check"
      mit erwarteter Periode (z. B. täglich) anlegen, dessen Ping-URL die Box
      zusätzlich zum Bark-Heartbeat aufruft. Bleibt der Ping aus, alarmiert dich
@@ -558,5 +585,11 @@ separates Login mit Passwort-Hash und CSRF-Schutz.
 ---
 
 ### Lizenz / Haftung
-Privates Hobby-Projekt. **Ohne Gewähr.** Nochmals: **Zusatz, kein Ersatz** für die
-offizielle Melder-Alarmierung.
+Veröffentlicht unter der **MIT-Lizenz** (siehe [`LICENSE`](LICENSE)) – du darfst das
+Projekt frei nutzen, anpassen und weitergeben. **Ohne Gewähr**, Nutzung auf eigenes
+Risiko. Nochmals: **Zusatz, kein Ersatz** für die offizielle Melder-Alarmierung.
+
+Das Repository enthält **keine Geheimnisse** – WLAN-Zugang, Bark-Keys, Tokens und
+Passwort-Hashes stehen ausschließlich in den lokalen, per `.gitignore`
+ausgeschlossenen Dateien `config.h` bzw. `config.php`. Lege dir diese aus den
+mitgelieferten `*.example.*`-Vorlagen an.

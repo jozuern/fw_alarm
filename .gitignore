@@ -24,6 +24,10 @@ nas_dashboard/data/*.lock
 nas_dashboard/data/*.log
 nas_dashboard/data/*.php
 
+# Persönliche Empfänger-Onboarding-Anleitung (enthält Name/Kontakt des Betreibers)
+bark-anleitung.html
+Bark-Anleitung-iPhone.pdf
+
 # Editor / OS
 .vscode/
 .DS_Store
