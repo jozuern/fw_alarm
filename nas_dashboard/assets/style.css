@@ -243,21 +243,17 @@ select {
 
 /* ==== ?-Tooltips an den Statusfeldern ==================================== */
 
-.help {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+/* Schlichtes (?) direkt hinter dem Feldtitel. WICHTIG: "span.help", damit die
+   Regel gegen ".field span { display:block }" gewinnt - sonst rutscht das
+   Symbol in eine eigene Zeile. */
+.field span span.help {
+  display: inline;
   position: relative;
-  width: 16px;
-  height: 16px;
-  margin-left: 6px;
-  border-radius: 50%;
-  background: #dfe5e9;
-  color: #4b565e;
-  font-size: 11px;
+  margin: 0;
+  color: #97a1a9;
+  font-size: 12px;
   font-weight: 700;
   cursor: help;
-  vertical-align: middle;
 }
 
 /* Sprechblase per CSS: Text kommt aus data-tip, kein JavaScript nötig.

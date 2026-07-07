@@ -151,7 +151,7 @@
           : `${raw} (NAS: ${nasKeysVersion} – Übernahme steht aus)`;
       }
       return `<div class="field">
-        <span>${escapeHtml(label)}<span class="help" tabindex="0" data-tip="${escapeHtml(tip)}">?</span></span>
+        <span>${escapeHtml(label)} <span class="help" tabindex="0" data-tip="${escapeHtml(tip)}">(?)</span></span>
         <strong>${escapeHtml(value)}</strong>
       </div>`;
     }).join('');
