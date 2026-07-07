@@ -204,3 +204,90 @@ h2 {
   flex: 1;
   min-width: 160px;
 }
+
+/* ==== Demo-Modus ========================================================= */
+
+.demo-banner {
+  background: #fff3cd;
+  border: 2px solid #d97706;
+  border-radius: 8px;
+  color: #7c3d00;
+  font-size: 15px;
+  line-height: 1.5;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+}
+
+.demo-banner code {
+  color: inherit;
+}
+
+.mode-demo {
+  color: #d97706;
+}
+
+.mode-live {
+  color: #07542d;
+}
+
+select {
+  box-sizing: border-box;
+  min-height: 42px;
+  min-width: 200px;
+  border: 1px solid #b8c0c7;
+  border-radius: 6px;
+  padding: 0 10px;
+  font: inherit;
+  background: #fff;
+}
+
+/* ==== ?-Tooltips an den Statusfeldern ==================================== */
+
+.help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: #dfe5e9;
+  color: #4b565e;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: help;
+  vertical-align: middle;
+}
+
+/* Sprechblase per CSS: Text kommt aus data-tip, kein JavaScript nötig.
+   tabindex="0" macht sie auch per Tastatur/Touch (Fokus) erreichbar. */
+.help::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(240px, 70vw);
+  background: #1b2328;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.help:hover::after,
+.help:focus::after {
+  visibility: visible;
+  opacity: 1;
+}

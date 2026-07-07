@@ -14,6 +14,18 @@ return [
     'dashboard_user' => 'admin',
     'dashboard_password_hash' => 'PASTE_PASSWORD_HASH_HERE',
 
+    // Optionaler zweiter Benutzer mit reinem LESE-Zugriff: Er sieht Status
+    // und Empfängerliste, kann aber weder TEST noch REAL ALARM auslösen und
+    // die Liste nicht ändern. Beide Werte leer lassen ('') = Login deaktiviert.
+    // Hash erzeugen wie oben mit password_hash().
+    'dashboard_readonly_user' => '',
+    'dashboard_readonly_password_hash' => '',
+
+    // Login-Bremse: Nach so vielen Fehlversuchen wird die IP-Adresse für das
+    // Zeitfenster (Sekunden) gesperrt - zusätzlich zur sleep(1)-Bremse.
+    'login_max_failures' => 8,
+    'login_lockout_window_seconds' => 900,
+
     // Nach so vielen Sekunden ohne Status-Push gilt die Box als offline.
     'offline_after_seconds' => 180,
 

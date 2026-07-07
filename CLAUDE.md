@@ -104,6 +104,18 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   an den Owner gemeldet. `BARK_KEYS_ALARM` (config.h) und `bark_keys_alarm`
   (config.php) sind nur noch Start-/Fallback-Listen, solange die
   Dashboard-Liste leer ist (Version 0).
+- **Demo-Modus (Dashboard, nur Admin)**: leitet beide Alarmwege auf genau einen
+  Test-Empfänger aus der gepflegten Liste um — ohne Firmware-Änderung, über
+  denselben Empfängerlisten-Mechanismus: `demo_mode.json` im `data_dir` hält den
+  Zustand, `effective_alarm_keys()` in `common.php` liefert im Demo-Modus nur
+  den Demo-Key (genutzt von `api/keys.php` UND `bark_send_alarm_all()`), jeder
+  Moduswechsel erhöht die `keys_version` → ESP32 holt die Liste beim nächsten
+  Poll. Schutzregeln: Demo-Empfänger muss aus der Liste stammen (beim
+  Zurückschalten existiert so garantiert eine nicht-leere Liste, die der ESP32
+  akzeptiert), der aktive Demo-Empfänger ist nicht löschbar, das Dashboard zeigt
+  ein Warn-Banner mit Sync-Status (Vergleich ESP32-`keys_version` vs.
+  NAS-Version). NAS-Direktalarm bekommt im Demo-Modus den Body-Zusatz
+  `[DEMO-MODUS]`.
 - **Command-Protokoll** ist Plain Text (`ok=1`, `nonce=...`, `id=...`,
   `type=...`). Der ESP32 schickt pro Poll eine Nonce, die das NAS spiegeln muss.
   Das NAS vergibt monotone IDs, markiert einen gepollten Befehl sofort persistent
@@ -136,7 +148,14 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Empfänger-iPhone vorhanden sein, sonst Standardton.
 - Synology-Dashboard: separate Auth für Maschine (`REMOTE_MACHINE_TOKEN`, im PHP
   nur SHA-256-Hash, **nur per POST**) und Mensch (Dashboard-Login mit
-  Passwort-Hash + CSRF, `sleep(1)` als Brute-Force-Bremse). Keine Geheimnisse in
+  Passwort-Hash + CSRF, `sleep(1)` plus IP-Sperrfenster nach zu vielen
+  Fehlversuchen als Brute-Force-Bremse, Session-Idle-Timeout 12 h,
+  Sicherheits-Header/CSP zentral oben in `common.php`, `commands.log`-Rotation
+  ab 5 MB, Assets mit `?v=filemtime()`-Cache-Busting). Zusätzlich optionaler
+  Lese-Benutzer (`dashboard_readonly_user`/`..._password_hash`, Rolle in
+  `$_SESSION['role']`): sieht Status + Empfängerliste, alle ändernden/auslösenden
+  Aktionen werden **serverseitig** per `require_dashboard_admin()` geblockt
+  (UI-Ausblendung ist nur Komfort). Keine Geheimnisse in
   clientseitigem JavaScript. Laufzeitdaten (`data_dir`) bei Nginx möglichst
   außerhalb des Webroots ablegen; zusätzlich heißen alle Laufzeitdateien `*.php`
   mit Guard-Zeile (`DATA_FILE_GUARD`), damit Nginx sie nie als statische Datei

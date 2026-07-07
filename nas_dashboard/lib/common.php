@@ -4,6 +4,19 @@ declare(strict_types=1);
 ini_set('display_errors', '0');
 date_default_timezone_set('Europe/Berlin');
 
+// Sicherheits-Header für ALLE Antworten (Dashboard und API). Verhindert u.a.
+// Clickjacking (das Dashboard in einem fremden iframe) und MIME-Sniffing.
+// Für den ESP32 sind die Header wirkungslos, aber unschädlich.
+if (!headers_sent()) {
+    header('X-Frame-Options: DENY');
+    header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    header('X-Content-Type-Options: nosniff');
+    header('Referrer-Policy: strict-origin-when-cross-origin');
+    if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+        header('Strict-Transport-Security: max-age=31536000');
+    }
+}
+
 // Guard-Zeile am Anfang jeder Laufzeitdatei: Die Dateien heißen bewusst *.php,
 // damit Nginx sie NIE als statische Datei ausliefert, sondern an PHP übergibt -
 // und PHP bricht dank dieser Zeile sofort ab. So bleiben Status/Befehle/Log
@@ -30,6 +43,12 @@ function data_dir(array $config): string
     $dir = (string)$config['data_dir'];
     if (!is_dir($dir)) {
         mkdir($dir, 0750, true);
+    }
+    // Falls Nginx-Verzeichnislisting (autoindex) aktiv sein sollte, verhindert
+    // diese Datei, dass jemand die Namen der Laufzeitdateien aufzählen kann.
+    $guard = $dir . '/index.php';
+    if (!is_file($guard)) {
+        @file_put_contents($guard, "<?php http_response_code(404); exit;\n");
     }
     return $dir;
 }
@@ -108,6 +127,68 @@ function require_machine_auth(array $config): void
     }
 }
 
+// ======================= LOGIN-BREMSE (pro IP) ==============================
+// sleep(1) allein lässt sich mit vielen parallelen Verbindungen aushebeln.
+// Deshalb zusätzlich: Nach zu vielen Fehlversuchen wird die IP für ein
+// Zeitfenster gesperrt. Ein erfolgreicher Login setzt den Zähler zurück.
+
+function login_client_ip(): string
+{
+    return (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+}
+
+function login_throttle_limits(array $config): array
+{
+    return [
+        max(1, (int)($config['login_max_failures'] ?? 8)),
+        max(60, (int)($config['login_lockout_window_seconds'] ?? 900)),
+    ];
+}
+
+// true = diese IP hat ihr Fehlversuch-Budget im aktuellen Fenster aufgebraucht.
+function login_throttle_blocked(array $config): bool
+{
+    [$max, $window] = login_throttle_limits($config);
+    $entry = read_json_file(data_path($config, 'login_throttle.json'), [])[login_client_ip()] ?? null;
+    if (!is_array($entry)) {
+        return false;
+    }
+    if (time() - (int)($entry['first_at'] ?? 0) > $window) {
+        return false;
+    }
+    return (int)($entry['count'] ?? 0) >= $max;
+}
+
+function login_throttle_record_failure(array $config): void
+{
+    [, $window] = login_throttle_limits($config);
+    with_lock($config, 'login', function () use ($config, $window): void {
+        $path = data_path($config, 'login_throttle.json');
+        $all = read_json_file($path, []);
+        $now = time();
+        foreach ($all as $ip => $entry) {   // abgelaufene Fenster aufräumen
+            if ($now - (int)($entry['first_at'] ?? 0) > $window) {
+                unset($all[$ip]);
+            }
+        }
+        $ip = login_client_ip();
+        $entry = is_array($all[$ip] ?? null) ? $all[$ip] : ['count' => 0, 'first_at' => $now];
+        $entry['count'] = (int)($entry['count'] ?? 0) + 1;
+        $all[$ip] = $entry;
+        write_json_file($path, $all);
+    });
+}
+
+function login_throttle_clear(array $config): void
+{
+    with_lock($config, 'login', function () use ($config): void {
+        $path = data_path($config, 'login_throttle.json');
+        $all = read_json_file($path, []);
+        unset($all[login_client_ip()]);
+        write_json_file($path, $all);
+    });
+}
+
 function start_dashboard_session(): void
 {
     session_name('boss925_dashboard');
@@ -121,9 +202,25 @@ function start_dashboard_session(): void
     session_start();
 }
 
+// Sitzung läuft nach dieser Inaktivität serverseitig ab. Wichtig, weil
+// Browser Session-Cookies über einen Neustart hinweg wiederherstellen können -
+// "Browser zu = abgemeldet" stimmt also nicht immer. Ein offener Dashboard-Tab
+// bleibt angemeldet (das 5-s-Polling zählt als Aktivität).
+const SESSION_MAX_IDLE_SECONDS = 43200;   // 12 Stunden
+
 function is_dashboard_authed(): bool
 {
-    return !empty($_SESSION['authed']);
+    if (empty($_SESSION['authed'])) {
+        return false;
+    }
+    $last = (int)($_SESSION['last_seen'] ?? 0);
+    if ($last > 0 && time() - $last > SESSION_MAX_IDLE_SECONDS) {
+        $_SESSION = [];
+        session_destroy();
+        return false;
+    }
+    $_SESSION['last_seen'] = time();
+    return true;
 }
 
 function require_dashboard_auth(): void
@@ -131,6 +228,25 @@ function require_dashboard_auth(): void
     if (!is_dashboard_authed()) {
         http_response_code(401);
         json_response(['ok' => false]);
+    }
+}
+
+// Rolle der angemeldeten Person: 'admin' (voller Zugriff) oder 'readonly'
+// (nur ansehen). Sessions von vor dieser Funktion stammen immer vom
+// Admin-Login, deshalb ist 'admin' der Fallback.
+function dashboard_role(): string
+{
+    return (string)($_SESSION['role'] ?? 'admin');
+}
+
+// Auslösende/ändernde Aktionen sind dem Admin vorbehalten. Der Lese-Benutzer
+// wird hier serverseitig gestoppt - die ausgeblendeten Knöpfe im UI sind nur
+// Komfort, kein Schutz.
+function require_dashboard_admin(): void
+{
+    if (dashboard_role() !== 'admin') {
+        http_response_code(403);
+        json_response(['ok' => false, 'message' => 'Nur Lesezugriff: Dieser Benutzer darf nichts ausloesen oder aendern.']);
     }
 }
 
@@ -169,6 +285,11 @@ function clipped_post_fields(array $skip = []): array
 {
     $out = [];
     foreach ($_POST as $key => $value) {
+        // Der ESP32 sendet ~20 Felder; das Limit verhindert, dass jemand mit
+        // riesigen POSTs unnötig große Statusdateien auf die Platte schreibt.
+        if (count($out) >= 40) {
+            break;
+        }
         if (in_array($key, $skip, true)) {
             continue;
         }
@@ -219,6 +340,13 @@ function append_command_log(array $config, array $entry): void
 {
     $entry['log_at'] = time();
     $path = data_path($config, 'commands.log');
+    // Rotation: sonst füllt das Log über Jahre die Platte, und volle Platte
+    // heißt: Status-/Befehlsdateien lassen sich nicht mehr schreiben.
+    if (is_file($path) && (int)@filesize($path) > 5 * 1024 * 1024) {
+        $old = data_path($config, 'commands.log.1');
+        @unlink($old);
+        @rename($path, $old);
+    }
     $prefix = is_file($path) ? '' : DATA_FILE_GUARD;
     @file_put_contents(
         $path,
@@ -260,6 +388,62 @@ function managed_alarm_keys(array $config): array
         }
     }
     return $keys;
+}
+
+// ============================== DEMO-MODUS ==================================
+// Im Demo-Modus gehen ALLE Alarme (ESP32-Relaisalarm UND NAS-Direktalarm) nur
+// an EINEN Test-Empfänger aus der gepflegten Liste. Umgesetzt ohne
+// Firmware-Änderung über die versionierte Empfängerliste: api/keys.php liefert
+// im Demo-Modus nur den Demo-Key, und jeder Moduswechsel erhöht die
+// Listen-Version - der ESP32 holt sich die (Demo- bzw. volle) Liste dann beim
+// nächsten Poll automatisch. WICHTIG: Der Wechsel greift auf dem ESP32 erst
+// nach dessen nächstem Poll; das Dashboard zeigt an, ob er schon so weit ist.
+
+function demo_mode_default(): array
+{
+    return ['enabled' => false];
+}
+
+function load_demo_mode(array $config): array
+{
+    return read_json_file(data_path($config, 'demo_mode.json'), demo_mode_default());
+}
+
+function demo_mode_enabled(array $config): bool
+{
+    $demo = load_demo_mode($config);
+    return !empty($demo['enabled']) && valid_bark_key(trim((string)($demo['key'] ?? '')));
+}
+
+// Kompakte Demo-Info für das Dashboard (Key nur maskiert - Keys sind Geheimnisse).
+function demo_mode_info(array $config): array
+{
+    $demo = load_demo_mode($config);
+    $enabled = !empty($demo['enabled']);
+    return [
+        'enabled' => $enabled,
+        'label' => $enabled ? (string)($demo['label'] ?? '') : '',
+        'key_id' => $enabled ? (int)($demo['key_id'] ?? 0) : 0,
+        'key_masked' => $enabled ? mask_bark_key((string)($demo['key'] ?? '')) : '',
+        'changed_at' => (int)($demo['changed_at'] ?? 0),
+        'by' => (string)($demo['by'] ?? ''),
+    ];
+}
+
+// Die Keys, an die JETZT alarmiert würde: Demo-Modus -> nur der Demo-Key,
+// sonst die volle gepflegte Liste. Wird von api/keys.php (ESP32-Sync) und vom
+// NAS-Direktalarm benutzt - beide Alarmwege sehen immer dieselbe Liste.
+function effective_alarm_keys(array $config): array
+{
+    $demo = load_demo_mode($config);
+    if (!empty($demo['enabled'])) {
+        $key = trim((string)($demo['key'] ?? ''));
+        if (valid_bark_key($key)) {
+            return [$key];
+        }
+        // Unplausibler Demo-Key: lieber die volle Liste als gar keine Alarmierung.
+    }
+    return managed_alarm_keys($config);
 }
 
 // ============================ BARK-DIREKTVERSAND ============================
@@ -325,15 +509,19 @@ function bark_send_alarm_all(array $config): array
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'message' => 'PHP-cURL fehlt. In Web Station im PHP-Profil die Erweiterung "curl" aktivieren.', 'results' => []];
     }
-    // Führend ist die im Dashboard gepflegte Liste; die statische Liste aus
-    // config.php dient nur noch als Fallback, solange noch keine gepflegt ist.
-    $keys = managed_alarm_keys($config);
+    // Führend ist die im Dashboard gepflegte Liste (im Demo-Modus nur der
+    // Demo-Key); die statische Liste aus config.php dient nur noch als
+    // Fallback, solange noch keine gepflegt ist.
+    $demoActive = demo_mode_enabled($config);
+    $keys = effective_alarm_keys($config);
+    $usedFallback = false;
     if (count($keys) === 0) {
         $fallback = $config['bark_keys_alarm'] ?? [];
         if (!is_array($fallback)) {
             $fallback = [];
         }
         $keys = array_values(array_filter(array_map('trim', array_map('strval', $fallback))));
+        $usedFallback = count($keys) > 0;
     }
     if (count($keys) === 0) {
         return ['ok' => false, 'message' => 'Keine Alarm-Empfaenger: Liste im Dashboard pflegen (Panel "Alarm-Empfaenger").', 'results' => []];
@@ -343,7 +531,10 @@ function bark_send_alarm_all(array $config): array
     @set_time_limit(30 + count($keys) * 35);
 
     // Zeitstempel wie in der Firmware; Bark-Texte bewusst ASCII (ae/ue/oe).
-    $body = date('[d.m.Y H:i] ') . (string)($config['bark_alarm_body'] ?? 'Manuelle Alarmierung ueber das NAS-Dashboard!');
+    // Im Demo-Modus wird die Nachricht klar als Test markiert.
+    $body = date('[d.m.Y H:i] ')
+        . ($demoActive ? '[DEMO-MODUS] ' : '')
+        . (string)($config['bark_alarm_body'] ?? 'Manuelle Alarmierung ueber das NAS-Dashboard!');
 
     $results = [];
     $okCount = 0;
@@ -356,7 +547,11 @@ function bark_send_alarm_all(array $config): array
     }
     return [
         'ok' => $okCount === count($keys),
-        'message' => sprintf('%d/%d Empfaenger erreicht.', $okCount, count($keys)),
+        // Deutlich machen, wenn die statische Fallback-Liste zum Einsatz kam -
+        // sonst glaubt man, die (leere) Dashboard-Liste sei massgeblich gewesen.
+        'message' => ($demoActive ? 'DEMO-MODUS: nur Test-Empfaenger alarmiert. ' : '')
+            . sprintf('%d/%d Empfaenger erreicht.', $okCount, count($keys))
+            . ($usedFallback ? ' ACHTUNG: Fallback-Liste aus config.php verwendet, die Dashboard-Liste ist leer!' : ''),
         'results' => $results,
     ];
 }

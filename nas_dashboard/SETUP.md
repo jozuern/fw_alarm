@@ -70,6 +70,13 @@ php -r "echo password_hash('DEIN_DASHBOARD_PASSWORT', PASSWORD_DEFAULT), PHP_EOL
 
 Den Hash trägst du in `dashboard_password_hash` ein.
 
+Optionaler **Lese-Benutzer** (z. B. für Kameraden, die nur den Status sehen
+sollen): In `config.php` `dashboard_readonly_user` und
+`dashboard_readonly_password_hash` setzen (Hash genauso mit `password_hash()`
+erzeugen). Dieser Benutzer sieht Status und Empfängerliste (Keys maskiert),
+kann aber weder TEST noch REAL ALARM auslösen und die Liste nicht ändern –
+die Sperre greift serverseitig, nicht nur im Browser. Beide Werte leer = Login aus.
+
 Bark-Keys der Alarm-Empfänger: **im Dashboard pflegen** (Panel
 „Alarm-Empfänger"). Die Liste ist versioniert, gilt für beide Alarmwege und
 wird vom ESP32 automatisch übernommen und im NVS gespeichert.
@@ -107,7 +114,17 @@ https://192.168.2.194/fw_alarm/api
 
 - Wähle ein langes Maschinen-Token und ein separates starkes Dashboard-Passwort.
 - Aktiviere DSM-Firewall und Auto-Block für wiederholte Fehlversuche (schützt
-  DSM; das Dashboard-Login bremst Brute-Force zusätzlich mit `sleep(1)`).
+  DSM; das Dashboard-Login bremst Brute-Force zusätzlich mit `sleep(1)` **und**
+  sperrt eine IP nach zu vielen Fehlversuchen für ein Zeitfenster –
+  `login_max_failures` / `login_lockout_window_seconds` in `config.php`).
+- Eingebaut sind außerdem: Sicherheits-Header (u. a. Content-Security-Policy,
+  `X-Frame-Options`, HSTS bei HTTPS, zentral in `lib/common.php`), ein
+  Session-Ablauf nach 12 h Inaktivität, Rotation von `commands.log` ab 5 MB
+  sowie `index.php`-Platzhalter gegen Verzeichnislisting in `api/`, `lib/`,
+  `data/` und im `data_dir`.
+- Lösche nach der Einrichtung `config.example.php` und `SETUP.md` aus dem
+  Webroot auf dem NAS – sie verraten Angreifern nur die Struktur (das Original
+  bleibt ja im Git-Repo).
 - Halte DSM, Web Station und PHP aktuell.
 - Gib keine PHP-Fehler öffentlich aus. Die Dateien selbst senden nur knappe
   Fehlermeldungen.
@@ -156,6 +173,19 @@ aktuelle `keys_version`; weicht sie von seiner ab, holt er die Liste über
 speichert sie im NVS-Flash. Leere oder unplausible Listen verwirft er, während
 eines offenen Alarms synchronisiert er nicht, und jede Übernahme bestätigt er
 per Statusmeldung an den Owner.
+
+Der **Demo-Modus** (Panel „Betriebsmodus", nur Admin) leitet ALLE Alarme –
+Relaisalarm über den ESP32 und REAL ALARM vom NAS – auf genau einen
+Test-Empfänger aus der Liste um. Er nutzt denselben Mechanismus: `demo_mode.json.php`
+im `data_dir` merkt sich den Zustand, `api/keys.php` liefert im Demo-Modus nur
+den Demo-Key, und jeder Moduswechsel erhöht die `keys_version`, sodass der ESP32
+die passende Liste beim nächsten Poll übernimmt (Firmware unverändert). Das
+Dashboard zeigt ein Warn-Banner, solange Demo aktiv ist, inklusive der Info, ob
+der ESP32 die Demo-Liste schon übernommen hat – **vorher nicht testen**, sonst
+alarmiert ein Relaistest noch alle. Der aktive Demo-Empfänger ist nicht löschbar,
+und der Demo-Empfänger muss aus der gepflegten Liste stammen (dadurch gibt es
+beim Zurückschalten garantiert wieder eine nicht-leere Liste). Nach dem Testen
+zurück auf LIVE schalten – das Banner erinnert daran.
 
 TLS läuft über HTTPS mit Let's Encrypt auf der Synology. Auf dem ESP32 wird wie
 beim bestehenden Bark-Pfad `setInsecure()` verwendet: Das ist auf Mikrocontrollern
