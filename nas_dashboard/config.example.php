@@ -1,0 +1,52 @@
+<?php
+/*
+ * Kopiere diese Datei nach config.php und trage echte Geheimnisse ein.
+ * config.php darf nicht öffentlich geteilt oder ins Git aufgenommen werden.
+ */
+return [
+    // Lange zufällige Zeichenfolge in boss925_alarm_bark/config.h eintragen.
+    // Hier steht NUR der SHA-256-Hash davon:
+    // php -r "echo hash('sha256', 'DEIN_LANGER_TOKEN'), PHP_EOL;"
+    'machine_token_sha256' => 'PASTE_SHA256_HEX_OF_REMOTE_MACHINE_TOKEN_HERE',
+
+    // Dashboard-Login. Passwort-Hash erzeugen mit:
+    // php -r "echo password_hash('DEIN_DASHBOARD_PASSWORT', PASSWORD_DEFAULT), PHP_EOL;"
+    'dashboard_user' => 'admin',
+    'dashboard_password_hash' => 'PASTE_PASSWORD_HASH_HERE',
+
+    // Nach so vielen Sekunden ohne Status-Push gilt die Box als offline.
+    'offline_after_seconds' => 180,
+
+    // Delivered-Kommandos werden nicht erneut ausgeliefert. Nach dieser Zeit
+    // darf das Dashboard einen neuen Befehl anlegen, falls die ACK verloren ging.
+    'delivered_command_lock_seconds' => 120,
+
+    // Ein pending-Befehl, den der ESP32 nicht innerhalb dieser Zeit abholt,
+    // verfällt automatisch ("expired") - sonst würde er Stunden später noch
+    // ausgeführt und das Dashboard bliebe bis dahin blockiert.
+    'pending_command_ttl_seconds' => 300,
+
+    // ==== REAL ALARM direkt vom NAS an Bark ================================
+    // Der manuelle Alarm-Button sendet OHNE Umweg über den ESP32 - er muss ja
+    // gerade dann funktionieren, wenn die ESP32-Kette klemmt.
+    // Die Empfaengerliste wird normalerweise IM DASHBOARD gepflegt (Panel
+    // "Alarm-Empfaenger"); bark_keys_alarm hier ist nur ein Fallback, solange
+    // die Dashboard-Liste noch leer ist.
+    // ACHTUNG: Titel/Body nur ASCII (ae/ue/oe), Bark zeigt keine Umlaute.
+    'bark_host' => 'https://api.day.app',
+    'bark_keys_alarm' => [
+        // 'KEY_PERSON_1',
+        // 'KEY_PERSON_2',
+    ],
+    'bark_alarm_title' => 'FEUERWEHR-ALARM (manuell)',
+    'bark_alarm_body' => 'Manuelle Alarmierung ueber das NAS-Dashboard!',
+    'bark_alarm_sound' => 'alarm_fw',
+    'bark_alarm_volume' => 10,
+    'bark_alarm_call' => true,
+    'bark_max_tries' => 3,
+
+    'timezone' => 'Europe/Berlin',
+    // Bei Nginx (Synology Web Station) am besten außerhalb des Webroots.
+    // Die Laufzeitdateien sind zusätzlich als .php mit Guard-Zeile geschützt.
+    'data_dir' => __DIR__ . '/data',
+];

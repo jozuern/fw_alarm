@@ -27,8 +27,9 @@ stören" aktiv ist.**
 8. [Testen](#8-testen)
 9. [Was die Einstellungen bedeuten](#9-was-die-einstellungen-bedeuten)
 10. [Heartbeat: der „ich lebe noch"-Ping](#10-heartbeat-der-ich-lebe-noch-ping)
-11. [Troubleshooting (wenn etwas nicht klappt)](#11-troubleshooting)
-12. [Sicherheit & offene Punkte (TODO)](#12-sicherheit--offene-punkte-todo)
+11. [NAS-Dashboard: Fernüberwachung und manueller Test](#11-nas-dashboard-fernüberwachung-und-manueller-test)
+12. [Troubleshooting (wenn etwas nicht klappt)](#12-troubleshooting)
+13. [Sicherheit & offene Punkte (TODO)](#13-sicherheit--offene-punkte-todo)
 
 ---
 
@@ -55,6 +56,11 @@ Stell dir eine Kette aus vier Gliedern vor:
 
 Mehr „Magie" steckt nicht dahinter. Es wird **kein Funk dekodiert** – der ESP32
 „hört" nur, ob der Schalter im Lader auf oder zu ist.
+
+Optional gibt es zusätzlich ein kleines **NAS-Dashboard**. Die Box bleibt dabei
+weiterhin **outbound-only**: Sie pusht Status zum NAS und pollt dort auf manuelle
+Befehle. Das Dashboard ist nur Überwachung und manueller Test/Trigger; der
+eigentliche Bark-Alarmweg funktioniert unabhängig davon weiter.
 
 ---
 
@@ -231,6 +237,11 @@ static const char* BARK_KEYS_ALARM[] = {
 #define BARK_KEY_STATUS "DEIN_EIGENER_KEY"     // nur DEIN iPhone (leise Status-Pings)
 ```
 
+> 📋 `BARK_KEYS_ALARM` ist seit der Dashboard-Empfängerverwaltung nur noch die
+> **Startliste** für den allerersten Boot. Sobald im NAS-Dashboard Empfänger
+> gepflegt sind, übernimmt der ESP32 diese Liste automatisch und dauerhaft
+> (siehe Abschnitt 11).
+
 > 💡 Die geschweiften Klammern `{ }` und die Anführungszeichen `" "` müssen genau
 > so stehen bleiben. Jeder Key kommt in `"..."`, danach ein **Komma**. Zeilen mit
 > `//` am Anfang sind „auskommentiert" = ausgeschaltet.
@@ -238,6 +249,19 @@ static const char* BARK_KEYS_ALARM[] = {
 > 🔐 **Hinweis:** In der mitgelieferten `config.h` steckt bereits ein echter
 > Bark-Key aus deinem ursprünglichen Sketch. Falls dieser Key jemals öffentlich
 > geteilt wurde, erstelle in der Bark-App einen neuen und ersetze ihn.
+
+**Optional für das NAS-Dashboard:**
+
+```c
+#define REMOTE_MONITOR_ENABLED true
+#define REMOTE_BASE_URL        "https://dein-name.synology.me/fw_alarm/api"
+#define REMOTE_MACHINE_TOKEN   "DEIN_LANGER_ZUFAELLIGER_TOKEN"
+#define REMOTE_DEVICE_ID       "boss925-01"
+#define FW_BUILD_MARKER        "boss925-monitor-2026-07-07"
+```
+
+`REMOTE_MACHINE_TOKEN` ist ein anderes Geheimnis als deine Bark-Keys. Auf der
+Synology steht davon nur der SHA-256-Hash in `nas_dashboard/config.php`.
 
 ---
 
@@ -307,7 +331,7 @@ Watchdog aktiv (30 s).
 Zeit synchronisiert: 14:23:05
 === SELBSTTEST ===
 Eingang Pin 27, ACTIVE_LOW=ja, aktueller Stand: offen (Ruhe)
-Alarm-Empfänger (gültige Keys): 2
+Alarm-Empfänger: 2 (Listen-Version 0, 0 = config.h-Startliste)
 WLAN: verbunden
 IP-Adresse: 192.168.x.x
 === SELBSTTEST ENDE ===
@@ -324,7 +348,7 @@ Alle in `config.h`:
 |-------------|-----------|
 | `WIFI_SSID` / `WIFI_PASSWORD` | Dein WLAN-Zugang. |
 | `BARK_HOST` | Bark-Server. Standard `https://api.day.app`. Eigener Server möglich. |
-| `BARK_KEYS_ALARM[]` | Liste aller Empfänger-Keys (Alarm an alle). |
+| `BARK_KEYS_ALARM[]` | Startliste der Empfänger-Keys für den allerersten Boot; danach ist die im NAS-Dashboard gepflegte Liste führend (Abschnitt 11). |
 | `BARK_KEY_STATUS` | Nur dein Key für leise Status-/Heartbeat-Pings. |
 | `ALARM_TITLE` / `ALARM_BODY` | Überschrift und Text des Alarms. |
 | `ALARM_SOUND` | Bark-Soundname (z. B. `alarm`, `alarm_fw`, `bell`). |
@@ -341,6 +365,8 @@ Alle in `config.h`:
 | `ALARM_RETRY_MS` / `ALARM_RETRY_GIVEUP_MS` | Nachsenden: War WLAN/Internet beim Alarm weg, wird jede Minute erneut versucht, bis alle Empfänger versorgt sind – nach 15 min wird aufgegeben (und du bekommst eine Warnung). |
 | `HEARTBEAT_*` | Täglicher „ich lebe noch"-Ping (siehe unten), inkl. Wiederholung nach Fehlversuch (`HEARTBEAT_RETRY_MS`). |
 | `NTP_*` | Holt die Uhrzeit aus dem Internet (für Zeitstempel & Heartbeat-Uhrzeit). |
+| `REMOTE_*` | Optionales NAS-Dashboard: Status-Push, Command-Polling, kurze Timeouts und Backoff. |
+| `FW_BUILD_MARKER` | Frei wählbare Kennung, die im Dashboard angezeigt wird (z. B. Datum/Version des Flashs). |
 | `WDT_*` | Hardware-Watchdog: startet den ESP32 neu, falls er hängt. |
 
 ---
@@ -360,7 +386,7 @@ Der Heartbeat sagt dir nur etwas, wenn die Box **noch funktioniert**. Fällt sie
 komplett aus, kommt logischerweise **gar nichts** – und du müsstest das aktive
 Fehlen bemerken. Profis lösen das mit einem **„Dead Man's Switch"-Monitor**: ein
 externer Dienst, der **dich** alarmiert, wenn der erwartete Ping **ausbleibt**.
-Siehe [TODO](#12-sicherheit--offene-punkte-todo).
+Siehe [TODO](#13-sicherheit--offene-punkte-todo).
 
 ### 10a. Wöchentlicher Probealarm der ILS = automatischer Wochentest
 
@@ -378,7 +404,96 @@ der Test.**
 
 ---
 
-## 11. Troubleshooting
+## 11. NAS-Dashboard: Fernüberwachung und manueller Test
+
+Im Ordner `nas_dashboard/` liegt ein kleines PHP-Dashboard für Synology Web
+Station. Es braucht keine Datenbank und kein Docker; Nginx + PHP 8.3 reichen.
+
+Funktionen:
+
+- Status-Push vom ESP32 an `api/status.php`: WLAN, RSSI, IP, Uptime, Kontaktstand,
+  ISR-Latch, offener Alarm samt Empfänger-Fortschritt, Heartbeat-Ergebnis,
+  Cooldown/Wiederbewaffnung, Klemm-Warnung und Firmware-Kennung.
+- Command-Polling über `api/poll.php`: `TEST` läuft über den ESP32 (wartet auf
+  dessen Poll) und sendet eine leise Bark-Nachricht nur an `BARK_KEY_STATUS` –
+  damit wird die halbe Kette (WLAN, NAS-Anbindung, Bark-Versand vom ESP32)
+  mitgetestet.
+- `REAL ALARM` wird dagegen **direkt vom NAS** per Bark Critical Alert an alle
+  Empfänger gesendet – bewusst ohne Umweg über den ESP32, denn manuell
+  alarmieren muss man vor allem dann, wenn die ESP32-Kette gerade klemmt.
+- **Empfängerverwaltung im Dashboard**: Bark-Keys lassen sich im Panel
+  „Alarm-Empfänger" hinzufügen und löschen. Die Liste ist versioniert und gilt
+  für beide Alarmwege; der ESP32 sieht die Version bei jedem Poll, holt sich
+  Änderungen automatisch über `api/keys.php` und speichert sie dauerhaft im
+  NVS-Flash (übersteht Reboot und NAS-Ausfall). Jede Übernahme bestätigt er mit
+  einer leisen Statusmeldung. `BARK_KEYS_ALARM` in `config.h` ist nur noch die
+  Startliste für den allerersten Boot; sobald die Dashboard-Liste gepflegt ist,
+  ist sie führend. Der letzte Empfänger lässt sich nicht löschen.
+- Dashboard mit Login, Offline-Anzeige, zwei Buttons (`TEST`, `REAL ALARM` mit
+  zusätzlicher Browser-Bestätigung und Ergebnis pro Empfänger) und einem
+  Abbrechen-Knopf für noch nicht abgeholte Befehle.
+
+Die Dashboard-URL sieht typischerweise so aus:
+
+```text
+https://dein-name.synology.me/fw_alarm/
+```
+
+Die ESP32-API-Basis-URL für `config.h`:
+
+```text
+https://dein-name.synology.me/fw_alarm/api
+```
+
+Am Router muss nur **TCP-Port 443** zur Synology weitergeleitet werden. Details
+stehen in `nas_dashboard/SETUP.md`.
+
+### Design
+
+Das Command-Protokoll ist bewusst kein JSON, sondern ein kleines Textformat:
+
+```text
+ok=1
+nonce=esp32nonce
+id=17
+type=TEST
+```
+
+Jeder Befehl bekommt auf dem NAS eine monotone ID. Der ESP32 schickt pro Poll eine
+Nonce, die das NAS spiegeln muss; alte Antworten mit falscher Nonce werden
+verworfen. Beim Poll wird ein `pending` Befehl unter Dateisperre sofort als
+`delivered` markiert; der ESP32 führt nur IDs aus, die größer als die zuletzt im
+laufenden Boot gesehene ID sind, und schickt danach eine ACK. Alte oder bereits
+ausgelieferte Kommandos werden nicht erneut gesendet. Diese Entscheidung schützt
+vor Replay-Doppelalarmen; wenn eine ACK verloren geht, zeigt das Dashboard den
+Zustand an, aber das NAS feuert denselben Befehl nicht heimlich noch einmal.
+Holt der ESP32 einen `pending`-Befehl nicht innerhalb von 5 Minuten ab
+(einstellbar über `pending_command_ttl_seconds`), verfällt er automatisch als
+`expired` – er darf nicht Stunden später noch „nachschlagen". Über das
+Dashboard lässt er sich auch manuell abbrechen.
+
+Status wird alle 60 Sekunden und zusätzlich bei wichtigen Ereignissen gepusht
+(Alarm, WLAN wieder da, Heartbeat-Ergebnis). Polling läuft alle 10 Sekunden; bei
+Fehlern gibt es 30 Sekunden Backoff und 4 Sekunden HTTP-Timeout (der
+TLS-Handshake ESP32↔Synology braucht typischerweise 1–3 s, knappere Timeouts
+würden dauernd fehlschlagen). So bleibt der manuelle TEST flott, ohne bei
+NAS-Ausfall die Relais-Erkennung oder den Bark-Alarmweg zu blockieren. Das
+Dashboard markiert die Box nach 180 Sekunden ohne Status-Push als offline.
+
+Die Laufzeitdateien (Status, Befehle, Log) speichert das NAS als `*.php` mit
+einer Guard-Zeile am Anfang: Nginx liefert sie dadurch nie als statische Datei
+aus, sondern übergibt sie an PHP, das sofort mit 404 abbricht. Das ist nötig,
+weil Synology Web Station Nginx nutzt und `.htaccess`-Regeln ignoriert.
+
+TLS läuft über HTTPS/Let's Encrypt auf der Synology. Der ESP32 nutzt wie beim
+Bark-Pfad `setInsecure()`, weil das auf Mikrocontrollern robuster gegen
+Root-CA-/Uhrzeit-Probleme ist. Authentifiziert wird trotzdem: ESP32-Endpunkte
+prüfen ein langes Maschinen-Token (nur per POST), das Dashboard nutzt ein
+separates Login mit Passwort-Hash und CSRF-Schutz.
+
+---
+
+## 12. Troubleshooting
 
 | Problem | Mögliche Ursache & Lösung |
 |---------|---------------------------|
@@ -387,13 +502,17 @@ der Test.**
 | **`config.h: No such file`** | Du hast noch keine `config.h`. Kopiere `config.example.h` → `config.h`. |
 | **WLAN verbindet nicht** | SSID/Passwort prüfen (Groß/Klein!). ESP32 kann **nur 2,4-GHz-WLAN**, **kein** reines 5-GHz. Ggf. im Router ein 2,4-GHz-Netz aktivieren. |
 | **Bark-POST liefert nicht HTTP 200** | Im Monitor erscheint z. B. `HTTP 400/404`. → Device-Key falsch/Tippfehler. `HTTP -1`/`-11` → kein Internet/Timeout. |
+| **Dashboard bleibt OFFLINE** | Prüfe `REMOTE_BASE_URL`, `REMOTE_MACHINE_TOKEN`, Synology-HTTPS-Zertifikat, Portweiterleitung TCP 443 und Schreibrechte für `data_dir` in `nas_dashboard/config.php`. |
+| **Dashboard-Befehl bleibt „delivered"** | Der ESP32 hat den Befehl vom NAS abgeholt, aber die ACK kam nicht zurück. Aus Sicherheitsgründen wird dieselbe ID nicht erneut ausgeliefert; bei Bedarf neuen Befehl senden. |
+| **Dashboard-Befehl wird „expired"** | Der ESP32 hat innerhalb der TTL (Standard 5 min) nicht gepollt – Box offline? Absichtliches Verhalten: Ein liegengebliebener Befehl darf nicht Stunden später noch ausgeführt werden. |
+| **REAL ALARM meldet „PHP-cURL fehlt"** | In DSM → Web Station → PHP-Profil bearbeiten → Erweiterung `curl` aktivieren. |
 | **Nachricht kommt, aber leise / kein Alarm bei Stumm** | „**Kritische Hinweise**" für Bark im iPhone **nicht** aktiviert (siehe Abschnitt 4). Das ist der häufigste Fehler! |
 | **Alarm löst „grundlos" aus** | Eingang schwingt/prellt. `DEBOUNCE_MS` erhöhen (z. B. 500). Verkabelung/Masseverbindung prüfen. |
 | **Ständige Neustarts** | Watchdog schlägt an, weil etwas blockiert (oft schlechtes WLAN). `WDT_TIMEOUT_S` testweise erhöhen und Monitor beobachten. |
 
 ---
 
-## 12. Sicherheit & offene Punkte (TODO)
+## 13. Sicherheit & offene Punkte (TODO)
 
 **Bereits umgesetzt:**
 - ✅ Secrets (`config.h`) per `.gitignore` aus Git herausgehalten.
@@ -413,6 +532,11 @@ der Test.**
 - ✅ NTP-Zeitstempel in Nachrichten + feste Heartbeat-Uhrzeit; Heartbeat wird
   bei Fehlversuch nach 5 min wiederholt statt erst am nächsten Tag.
 - ✅ Optionaler zweiter Eingangs-Pin (`RELAY_PIN2_ENABLED`).
+- ✅ Optionales Synology-Dashboard mit Status-Push, Command-Polling, separatem
+  Maschinen-Token, Dashboard-Login und genau-einmal-Auslieferung pro Command-ID;
+  Befehle verfallen per TTL und sind abbrechbar.
+- ✅ Manueller `REAL ALARM` direkt vom NAS an Bark – unabhängig vom ESP32, als
+  Rückfallebene, wenn dessen Kette klemmt.
 
 **Noch offen / bewusst nicht eingebaut (TODO):**
 - 🔧 **OTA-Update (drahtlos flashen):** Auf Wunsch nicht eingebaut (kleinere

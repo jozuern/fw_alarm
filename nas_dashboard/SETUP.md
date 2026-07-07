@@ -1,0 +1,164 @@
+# Synology-Setup für das BOSS-925 Dashboard
+
+## 1. Pakete installieren
+
+Installiere im Synology Paket-Zentrum:
+
+- **Web Station**
+- **PHP 8.3**
+
+Docker wird nicht benötigt.
+Nginx als Back-end ist in Ordnung; Apache ist nicht erforderlich.
+
+Prüfe im PHP-Profil (Web Station → Skriptsprache-Einstellungen → PHP-Profil
+bearbeiten → Erweiterungen), dass **curl** aktiviert ist – der manuelle
+REAL ALARM sendet damit direkt vom NAS an Bark.
+
+## 2. Dateien ablegen
+
+Kopiere den Inhalt von `nas_dashboard/` in den Web-Ordner der Synology, zum Beispiel:
+
+```text
+/volume1/web/fw_alarm/
+```
+
+Kopiere danach:
+
+```text
+config.example.php -> config.php
+```
+
+`config.php` bleibt auf der Synology und enthält deine echten Geheimnisse
+(Token-Hash, Passwort-Hash und die Bark-Keys für den NAS-Direktalarm).
+
+### Datenordner (`data_dir`)
+
+Der Datenordner (z. B. `/volume1/web/fw_alarm_data`) muss für den
+**PHP-Prozess beschreibbar** sein. Auf DSM: File Station → Rechtsklick auf den
+Ordner → Eigenschaften → Berechtigung → dem Benutzer, unter dem PHP läuft
+(bzw. der Gruppe `http`), Lesen/Schreiben geben und auf Unterordner anwenden.
+Ob es funktioniert, siehst du daran, dass nach dem ersten Status-Push des ESP32
+eine `latest_status.json.php` erscheint; vorher antworten die APIs mit
+HTTP 500.
+
+Alle Laufzeitdateien heißen absichtlich `*.php` und beginnen mit einer
+Guard-Zeile (`<?php http_response_code(404); exit; ?>`): Nginx liefert sie
+dadurch **nie** als statische Datei aus – wichtig, weil Web Station (Nginx)
+`.htaccess`-Dateien ignoriert. Der Ordner darf also notfalls im Webroot liegen;
+außerhalb (z. B. `/volume1/fw_alarm_data`) ist trotzdem sauberer. Beachte dann
+ggf. `open_basedir` im PHP-Profil.
+
+## 3. Geheimnisse erzeugen
+
+Maschinen-Token für den ESP32:
+
+```bash
+php -r "echo bin2hex(random_bytes(32)), PHP_EOL;"
+php -r "echo hash('sha256', 'HIER_DEN_TOKEN_EINFUEGEN'), PHP_EOL;"
+```
+
+Den Klartext-Token trägst du in `boss925_alarm_bark/config.h` als
+`REMOTE_MACHINE_TOKEN` ein. In `nas_dashboard/config.php` kommt nur der
+SHA-256-Hash. **Klartext und Hash müssen zueinander passen** – wenn du den
+Klartext verlierst, erzeuge beides neu.
+
+Dashboard-Passwort:
+
+```bash
+php -r "echo password_hash('DEIN_DASHBOARD_PASSWORT', PASSWORD_DEFAULT), PHP_EOL;"
+```
+
+Den Hash trägst du in `dashboard_password_hash` ein.
+
+Bark-Keys der Alarm-Empfänger: **im Dashboard pflegen** (Panel
+„Alarm-Empfänger"). Die Liste ist versioniert, gilt für beide Alarmwege und
+wird vom ESP32 automatisch übernommen und im NVS gespeichert.
+`bark_keys_alarm` in `config.php` und `BARK_KEYS_ALARM` in `config.h` sind nur
+Start-/Fallback-Listen, solange die Dashboard-Liste leer ist.
+
+## 4. HTTPS und Portweiterleitung
+
+Nutze Synology DDNS oder eine eigene Domain, zum Beispiel:
+
+```text
+dein-name.synology.me
+```
+
+Erstelle in DSM ein Let's-Encrypt-Zertifikat für diesen Hostnamen und weise es Web
+Station zu. Leite am Speedport Smart 3 genau **TCP-Port 443** von außen auf die
+Synology weiter.
+
+Dashboard-URL (extern bzw. im LAN):
+
+```text
+https://dein-name.synology.me/fw_alarm/
+https://192.168.2.194/fw_alarm/
+```
+
+ESP32-API-Basis-URL für `REMOTE_BASE_URL` – im LAN am robustesten die lokale
+IP (funktioniert dank `setInsecure()` trotz Zertifikat-Mismatch und auch ohne
+Internet):
+
+```text
+https://192.168.2.194/fw_alarm/api
+```
+
+## 5. Härtung
+
+- Wähle ein langes Maschinen-Token und ein separates starkes Dashboard-Passwort.
+- Aktiviere DSM-Firewall und Auto-Block für wiederholte Fehlversuche (schützt
+  DSM; das Dashboard-Login bremst Brute-Force zusätzlich mit `sleep(1)`).
+- Halte DSM, Web Station und PHP aktuell.
+- Gib keine PHP-Fehler öffentlich aus. Die Dateien selbst senden nur knappe
+  Fehlermeldungen.
+- `config.php` ist nur so lange geschützt, wie PHP ausgeführt wird – wenn PHP
+  im Web-Station-Profil deaktiviert wird, wäre der Quelltext (inkl. Bark-Keys)
+  herunterladbar. Nach Änderungen an Web Station kurz prüfen, dass
+  `https://…/fw_alarm/config.php` eine leere Seite liefert.
+
+## Design
+
+Der ESP32 sendet Status per Formular-POST an `api/status.php` und pollt
+`api/poll.php` auf Befehle (alle 10 s, 4 s Timeout, 30 s Backoff bei Fehlern).
+Die Poll-Antwort ist ein kleines Textprotokoll:
+
+```text
+ok=1
+nonce=esp32nonce
+id=17
+type=TEST
+```
+
+Ohne Befehl kommt `id=0` und `type=NONE`. Die `nonce` wird vom ESP32 im Poll
+mitgeschickt und vom NAS gespiegelt; Antworten mit falscher Nonce werden
+verworfen, damit alte Poll-Antworten nicht versehentlich erneut wirken. Ein neuer
+Befehl liegt als `pending` in `command_state.json.php`. Beim Poll wird er unter
+Dateisperre sofort als `delivered` markiert und genau einmal ausgeliefert; der
+ESP32 quittiert danach `api/ack.php`. Alte, quittierte oder bereits ausgelieferte
+Befehle werden nicht erneut gesendet, auch nicht nach NAS-Neustart. Diese
+Entscheidung schützt vor Replay-Doppelalarmen. Wenn die ACK verloren geht, wird
+nicht heimlich erneut ausgelöst; das Dashboard zeigt den offenen Zustand, und ein
+neuer manueller Befehl bekommt eine neue monotone ID. Ein `pending`-Befehl, den
+der ESP32 nicht innerhalb `pending_command_ttl_seconds` (Default 300 s) abholt,
+verfällt automatisch als `expired` und lässt sich im Dashboard auch aktiv
+abbrechen.
+
+Über das Command-Protokoll läuft nur noch **TEST** (leise Bark-Meldung vom ESP32
+an den Status-Empfänger – testet WLAN, NAS-Anbindung und Bark-Versand der Box).
+Der manuelle **REAL ALARM** wird direkt vom NAS per cURL an Bark gesendet
+(`level=critical`, pro Key isoliert mit Retry, HTTP 4xx ohne Retry): Manuelle
+Alarmierung muss gerade dann funktionieren, wenn die ESP32-Kette klemmt.
+
+Die **Empfängerliste** liegt versioniert in `alarm_keys.json.php` im `data_dir`
+und wird im Dashboard verwaltet. `poll.php` meldet dem ESP32 bei jedem Poll die
+aktuelle `keys_version`; weicht sie von seiner ab, holt er die Liste über
+`api/keys.php` (gleiches Text-Protokoll, Token-Auth, gespiegelte Nonce) und
+speichert sie im NVS-Flash. Leere oder unplausible Listen verwirft er, während
+eines offenen Alarms synchronisiert er nicht, und jede Übernahme bestätigt er
+per Statusmeldung an den Owner.
+
+TLS läuft über HTTPS mit Let's Encrypt auf der Synology. Auf dem ESP32 wird wie
+beim bestehenden Bark-Pfad `setInsecure()` verwendet: Das ist auf Mikrocontrollern
+robuster gegen Root-CA-/Uhrzeit-Probleme. Die Vertraulichkeit hängt dadurch stärker
+am schwer erratbaren Maschinen-Token (nur per POST akzeptiert); das Dashboard
+selbst nutzt eine separate Session-Anmeldung, Passwort-Hash und CSRF-Schutz.

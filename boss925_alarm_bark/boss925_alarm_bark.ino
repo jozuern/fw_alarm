@@ -37,6 +37,8 @@
 #include <WiFiClientSecure.h>
 #include <time.h>
 #include <esp_task_wdt.h>
+#include <esp_timer.h>   // 64-Bit-Uptime (millis() liefe nach 49,7 Tagen über)
+#include <Preferences.h> // NVS-Speicher für die vom Dashboard verwaltete Empfängerliste
 
 #include "config.h"   // <-- DEINE WERTE. Falls dieser Include fehlschlägt:
                       //     config.example.h nach config.h kopieren!
@@ -44,6 +46,9 @@
 // Anzahl der Alarm-Keys automatisch aus dem Array in config.h berechnen.
 static const int BARK_KEYS_ALARM_COUNT =
     sizeof(BARK_KEYS_ALARM) / sizeof(BARK_KEYS_ALARM[0]);
+
+// Maximal verwaltbare Alarm-Empfänger (Dashboard-Liste + NVS-Speicher).
+static const int MAX_ALARM_KEYS = 10;
 
 // ============================ INTERNE VARIABLEN =============================
 
@@ -60,7 +65,17 @@ String        pendingBody;            // Alarm-Text inkl. Zeitstempel der ERKENN
 unsigned long pendingSince   = 0;     // wann wurde der Alarm erkannt?
 unsigned long lastSendRound  = 0;     // wann lief die letzte Sende-Runde?
 bool          firstRoundDone = false; // erste Runde läuft sofort, ohne Wartezeit
-bool          keyDone[BARK_KEYS_ALARM_COUNT > 0 ? BARK_KEYS_ALARM_COUNT : 1];
+bool          keyDone[MAX_ALARM_KEYS];
+
+// --- Laufzeit-Empfängerliste (vom NAS-Dashboard verwaltet) -------------------
+// Wird im NVS-Flash persistiert und überlebt so Reboot und NAS-Ausfall.
+// BARK_KEYS_ALARM aus config.h ist nur noch die Startliste für den allerersten
+// Boot (Version 0). Sobald das Dashboard eine Liste pflegt (Version >= 1),
+// ist die Dashboard-Liste führend und ersetzt die config.h-Liste komplett.
+String        alarmKeys[MAX_ALARM_KEYS];
+int           alarmKeyCount    = 0;
+unsigned long alarmKeysVersion = 0;
+Preferences   keyStore;
 
 // --- Vom Pin-Interrupt gesetzter Alarm-Merker --------------------------------
 // Der Interrupt misst die Impulsdauer selbst. War der Kontakt mindestens
@@ -76,13 +91,33 @@ volatile unsigned long isrSince2  = 0;
 unsigned long lastHeartbeatMs  = 0;   // für Heartbeat OHNE NTP (millis-Abstand)
 int           lastHeartbeatDay = -1;  // für Heartbeat MIT NTP (1x pro Kalendertag)
 unsigned long lastHeartbeatTry = 0;   // letzter VERSUCH (für Wiederholung nach Fehler)
+String        lastHeartbeatInfo = "nie";
+bool          lastHeartbeatOk   = false;
 
 // --- WLAN --------------------------------------------------------------------
 unsigned long lastWifiTry = 0;        // letzter (nicht-blockierender) Reconnect
+bool          lastWifiConnected = false;
+
+// --- NAS-Fernüberwachung -----------------------------------------------------
+unsigned long lastRemoteStatusPush    = 0;
+unsigned long lastRemoteStatusAttempt = 0;
+unsigned long lastRemotePoll          = 0;
+unsigned long lastRemoteError         = 0;
+unsigned long lastRemoteAckTry        = 0;
+bool          remoteStatusDirty       = true;
+unsigned long lastRemoteCommandId     = 0;
+bool          remoteAckPending        = false;
+unsigned long remoteAckId             = 0;
+String        remoteAckResult;
+String        remoteAckMessage;
+String        lastAlarmInfo           = "nie";
 
 // Vorab-Deklarationen (damit die Reihenfolge im File egal ist).
 void feedWatchdog();
 void processPendingAlarm();
+void requestRemoteStatusPush();
+void handleRemoteMonitor();
+bool alarmBlockedNow();
 
 // ============================ WLAN ==========================================
 
@@ -104,7 +139,15 @@ bool connectWiFi(unsigned long timeoutMs = 15000) {
 // Nicht-blockierende Pflege im loop(): alle 10 s einen Reconnect anstoßen,
 // falls die Verbindung weg ist. Blockiert NICHT die Alarm-Erkennung.
 void maintainWiFi() {
-  if (WiFi.status() == WL_CONNECTED) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!lastWifiConnected) {
+      lastWifiConnected = true;
+      Serial.println("WLAN wieder verbunden.");
+      requestRemoteStatusPush();
+    }
+    return;
+  }
+  lastWifiConnected = false;
   if (millis() - lastWifiTry < 10000) return;
   lastWifiTry = millis();
   Serial.println("WLAN weg -> versuche neu zu verbinden...");
@@ -263,6 +306,52 @@ bool sendStatus(const String& title, const String& body) {
                   "passive", STATUS_SOUND, STATUS_VOLUME, false);
 }
 
+// ============================ EMPFÄNGERLISTE ================================
+// Die Alarm-Empfänger werden im NAS-Dashboard gepflegt und hier per Poll
+// synchronisiert (siehe syncAlarmKeys() weiter unten). Persistiert im NVS,
+// damit die Liste Reboot und NAS-Ausfall übersteht.
+
+// Plausibilitätsprüfung: Bark-Keys sind kurze alphanumerische Tokens.
+bool validAlarmKey(const String& k) {
+  if (k.length() < 5 || k.length() > 64) return false;
+  for (size_t i = 0; i < k.length(); i++) {
+    char c = k[i];
+    if (!isalnum((unsigned char)c) && c != '_' && c != '-') return false;
+  }
+  return true;
+}
+
+void saveAlarmKeys() {
+  keyStore.putInt("n", alarmKeyCount);
+  keyStore.putULong("v", alarmKeysVersion);
+  for (int i = 0; i < alarmKeyCount; i++) {
+    keyStore.putString(("k" + String(i)).c_str(), alarmKeys[i]);
+  }
+}
+
+void loadAlarmKeys() {
+  keyStore.begin("fwalarm", false);
+  int n = keyStore.getInt("n", -1);
+  if (n >= 1 && n <= MAX_ALARM_KEYS) {
+    alarmKeyCount    = n;
+    alarmKeysVersion = keyStore.getULong("v", 0);
+    for (int i = 0; i < alarmKeyCount; i++) {
+      alarmKeys[i] = keyStore.getString(("k" + String(i)).c_str(), "");
+    }
+    Serial.printf("Empfaengerliste aus NVS geladen: %d Keys (Version %lu).\n",
+                  alarmKeyCount, alarmKeysVersion);
+    return;
+  }
+  // Allererster Boot (noch nie synchronisiert): Startliste aus config.h.
+  alarmKeyCount = 0;
+  for (int i = 0; i < BARK_KEYS_ALARM_COUNT && alarmKeyCount < MAX_ALARM_KEYS; i++) {
+    if (BARK_KEYS_ALARM[i] != nullptr && strlen(BARK_KEYS_ALARM[i]) > 0) {
+      alarmKeys[alarmKeyCount++] = String(BARK_KEYS_ALARM[i]);
+    }
+  }
+  Serial.printf("Empfaengerliste aus config.h uebernommen: %d Keys.\n", alarmKeyCount);
+}
+
 // ============================ EINGANG (RELAIS) ==============================
 
 // true, wenn (mindestens) ein Eingang aktiv ist (= Alarm-Kontakt geschlossen).
@@ -321,6 +410,7 @@ void processPendingAlarm() {
       Serial.println("Alarm-Nachsenden AUFGEGEBEN (Zeitlimit erreicht).");
       sendStatus("Alarm-Zustellung unvollstaendig",
                  "Ein Alarm konnte nicht an alle Empfaenger zugestellt werden!");
+      requestRemoteStatusPush();
       return;
     }
   }
@@ -340,19 +430,21 @@ void processPendingAlarm() {
   if (isRetry) body += " (verspaetet zugestellt)";
 
   int ok = 0, fail = 0;
-  for (int i = 0; i < BARK_KEYS_ALARM_COUNT; i++) {
-    if (keyDone[i]) continue;   // hat den Alarm schon bekommen (oder Key leer)
-    bool good = sendBark(BARK_KEYS_ALARM[i], ALARM_TITLE, body,
+  for (int i = 0; i < alarmKeyCount; i++) {
+    if (keyDone[i]) continue;   // hat den Alarm schon bekommen
+    bool good = sendBark(alarmKeys[i].c_str(), ALARM_TITLE, body,
                          "critical", ALARM_SOUND, ALARM_VOLUME, ALARM_CALL);
     if (good) { keyDone[i] = true; ok++; }
     else      { fail++; }
     delay(150);   // kurze Pause zwischen den Empfängern
   }
   Serial.printf("Alarm-Runde: %d neu zugestellt, %d noch offen.\n", ok, fail);
+  requestRemoteStatusPush();
 
   if (fail == 0) {
     alarmPending = false;
     Serial.println("Alarm an alle Empfaenger zugestellt.");
+    requestRemoteStatusPush();
   }
 }
 
@@ -362,11 +454,11 @@ void startAlarm() {
 
   alarmPending   = true;
   pendingBody    = timePrefix() + ALARM_BODY;   // Zeitpunkt der Erkennung
+  lastAlarmInfo  = pendingBody;
   pendingSince   = millis();
   firstRoundDone = false;
-  for (int i = 0; i < BARK_KEYS_ALARM_COUNT; i++) {
-    // Leere Einträge gelten sofort als erledigt (werden nie angeschrieben).
-    keyDone[i] = (BARK_KEYS_ALARM[i] == nullptr || strlen(BARK_KEYS_ALARM[i]) == 0);
+  for (int i = 0; i < alarmKeyCount; i++) {
+    keyDone[i] = false;
   }
 
   lastAlarm         = millis();
@@ -376,6 +468,305 @@ void startAlarm() {
   activeSince       = 0;
 
   processPendingAlarm();       // erste Runde sofort senden
+  requestRemoteStatusPush();
+}
+
+// ============================ NAS-FERNÜBERWACHUNG ==========================
+
+// Die NAS-Anbindung ist bewusst "best effort": kurze Timeouts, kein eigener
+// WLAN-Reconnect und Backoff bei Fehlern. Ein nicht erreichbares NAS darf die
+// Bark-Alarmierung und die Relais-Erkennung nicht zur Geisel nehmen.
+bool remoteConfigured() {
+#if REMOTE_MONITOR_ENABLED
+  return strlen(REMOTE_BASE_URL) > 0 && strlen(REMOTE_MACHINE_TOKEN) > 0;
+#else
+  return false;
+#endif
+}
+
+bool remoteReady() {
+  return remoteConfigured() && WiFi.status() == WL_CONNECTED;
+}
+
+bool alarmBlockedNow() {
+  unsigned long now = millis();
+  bool inCooldown = (lastAlarm != 0 && now - lastAlarm < COOLDOWN_MS);
+  return waitingForRelease || inCooldown;
+}
+
+String boolField(bool value) {
+  return value ? "1" : "0";
+}
+
+String remoteEndpoint(const char* fileName) {
+  String base = String(REMOTE_BASE_URL);
+  if (base.endsWith("/")) base.remove(base.length() - 1);
+  return base + "/" + fileName;
+}
+
+void requestRemoteStatusPush() {
+  remoteStatusDirty = true;
+}
+
+String lineValue(const String& payload, const char* key) {
+  String prefix = String(key) + "=";
+  int pos = 0;
+  while (pos < (int)payload.length()) {
+    int end = payload.indexOf('\n', pos);
+    if (end < 0) end = payload.length();
+    String line = payload.substring(pos, end);
+    line.trim();
+    if (line.startsWith(prefix)) return line.substring(prefix.length());
+    pos = end + 1;
+  }
+  return "";
+}
+
+bool remotePostForm(const char* endpoint, const String& form, String* response = nullptr) {
+  if (!remoteReady()) return false;
+
+  WiFiClientSecure client;
+  client.setInsecure();  // wie Bark: robust gegen CA-/Uhrzeit-Probleme auf ESP32
+  HTTPClient http;
+  http.setConnectTimeout(REMOTE_HTTP_TIMEOUT_MS);
+  http.setTimeout(REMOTE_HTTP_TIMEOUT_MS);
+  if (!http.begin(client, remoteEndpoint(endpoint))) {
+    return false;
+  }
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+  feedWatchdog();
+  int code = http.POST(form);
+  if (response != nullptr && code == 200) {
+    *response = http.getString();
+  }
+  http.end();
+  feedWatchdog();
+
+  if (code != 200) {
+    Serial.printf("NAS %s -> HTTP %d\n", endpoint, code);
+  }
+  return code == 200;
+}
+
+String remoteBaseForm() {
+  return "token=" + urlEncode(REMOTE_MACHINE_TOKEN)
+       + "&device_id=" + urlEncode(REMOTE_DEVICE_ID);
+}
+
+String keyProgressText() {
+  int done = 0;
+  for (int i = 0; i < alarmKeyCount; i++) {
+    if (keyDone[i]) done++;
+  }
+  return String(done) + "/" + String(alarmKeyCount);
+}
+
+// Holt die komplette Empfängerliste vom NAS (api/keys.php) und übernimmt sie
+// nur, wenn sie plausibel ist. Wird aufgerufen, sobald die im Poll gemeldete
+// keys_version von der lokalen abweicht. Bewusst NIE während eines offenen
+// Alarms - mitten in einer Zustellung wird die Liste nicht ausgetauscht.
+void syncAlarmKeys() {
+  if (alarmPending) return;
+
+  String nonce = String(millis(), HEX) + "-k" + String(alarmKeysVersion, HEX);
+  String form = remoteBaseForm() + "&nonce=" + urlEncode(nonce);
+  String response;
+  if (!remotePostForm("keys.php", form, &response)) {
+    lastRemoteError = millis();
+    return;
+  }
+  if (lineValue(response, "ok") != "1") return;
+  if (lineValue(response, "nonce") != nonce) {
+    Serial.println("Key-Sync: Antwort mit falscher Nonce verworfen.");
+    return;
+  }
+
+  unsigned long version = (unsigned long)lineValue(response, "version").toInt();
+  int count = lineValue(response, "count").toInt();
+  if (count < 1 || count > MAX_ALARM_KEYS) {
+    Serial.println("Key-Sync verworfen: unplausible Empfaenger-Anzahl.");
+    return;
+  }
+
+  String fresh[MAX_ALARM_KEYS];
+  for (int i = 0; i < count; i++) {
+    fresh[i] = lineValue(response, ("key" + String(i)).c_str());
+    if (!validAlarmKey(fresh[i])) {
+      Serial.println("Key-Sync verworfen: ungueltiger Key in der Antwort.");
+      return;
+    }
+  }
+
+  for (int i = 0; i < count; i++) alarmKeys[i] = fresh[i];
+  alarmKeyCount    = count;
+  alarmKeysVersion = version;
+  saveAlarmKeys();
+  Serial.printf("Empfaengerliste synchronisiert: %d Keys (Version %lu).\n",
+                count, version);
+  // Leise Bestätigung an den Owner: Änderungen an der Alarmierungs-Liste
+  // sollen nicht unbemerkt passieren können.
+  sendStatus("Empfaengerliste aktualisiert",
+             "Alarm-Empfaenger vom Dashboard uebernommen: "
+             + String(count) + " Keys (Version " + String(version) + ").");
+  requestRemoteStatusPush();
+}
+
+void pushRemoteStatusIfDue() {
+  if (!remoteConfigured()) return;
+
+  unsigned long now = millis();
+  bool intervalDue = (lastRemoteStatusPush == 0
+                      || now - lastRemoteStatusPush >= REMOTE_STATUS_INTERVAL_MS);
+  bool eventDue = (remoteStatusDirty
+                   && now - lastRemoteStatusAttempt >= REMOTE_STATUS_MIN_EVENT_GAP_MS);
+  if (!intervalDue && !eventDue) return;
+  if (!remoteReady()) return;
+  if (lastRemoteError != 0 && now - lastRemoteError < REMOTE_ERROR_BACKOFF_MS) return;
+
+  lastRemoteStatusAttempt = now;
+
+  String form = remoteBaseForm()
+    + "&fw_build=" + urlEncode(FW_BUILD_MARKER)
+    + "&uptime_s=" + String((unsigned long)(esp_timer_get_time() / 1000000ULL))
+    + "&wifi=" + urlEncode(WiFi.status() == WL_CONNECTED ? "connected" : "down")
+    + "&rssi=" + String(WiFi.RSSI())
+    + "&ip=" + urlEncode(WiFi.localIP().toString())
+    + "&relay=" + urlEncode(relayActive() ? "closed" : "open")
+    + "&isr_latched=" + boolField(isrLatched)
+    + "&alarm_pending=" + boolField(alarmPending)
+    + "&key_progress=" + urlEncode(keyProgressText())
+    + "&keys_count=" + String(alarmKeyCount)
+    + "&keys_version=" + String(alarmKeysVersion)
+    + "&last_alarm=" + urlEncode(lastAlarmInfo)
+    + "&last_heartbeat=" + urlEncode(lastHeartbeatInfo)
+    + "&heartbeat_ok=" + boolField(lastHeartbeatOk)
+    + "&cooldown=" + boolField(lastAlarm != 0 && now - lastAlarm < COOLDOWN_MS)
+    + "&waiting_for_release=" + boolField(waitingForRelease)
+    + "&stuck_warned=" + boolField(stuckWarned)
+    + "&ack_pending=" + boolField(remoteAckPending);
+
+  if (remotePostForm("status.php", form)) {
+    lastRemoteStatusPush = now;
+    remoteStatusDirty = false;
+    lastRemoteError = 0;
+  } else {
+    lastRemoteError = now;
+  }
+}
+
+void queueRemoteAck(unsigned long id, const String& result, const String& message) {
+  remoteAckPending = true;
+  remoteAckId = id;
+  remoteAckResult = result;
+  remoteAckMessage = message;
+  lastRemoteAckTry = 0;
+  requestRemoteStatusPush();
+}
+
+void processRemoteAck() {
+  if (!remoteAckPending || !remoteReady()) return;
+  unsigned long now = millis();
+  if (lastRemoteAckTry != 0 && now - lastRemoteAckTry < REMOTE_POLL_INTERVAL_MS) return;
+  if (lastRemoteError != 0 && now - lastRemoteError < REMOTE_ERROR_BACKOFF_MS) return;
+
+  lastRemoteAckTry = now;
+  String form = remoteBaseForm()
+    + "&id=" + String(remoteAckId)
+    + "&result=" + urlEncode(remoteAckResult)
+    + "&message=" + urlEncode(remoteAckMessage);
+  if (remotePostForm("ack.php", form)) {
+    remoteAckPending = false;
+    lastRemoteError = 0;
+    requestRemoteStatusPush();
+  } else {
+    lastRemoteError = now;
+  }
+}
+
+void executeRemoteCommand(unsigned long id, const String& type) {
+  if (id == 0) return;
+  if (id <= lastRemoteCommandId) {
+    queueRemoteAck(id, "duplicate_ignored", "command id already handled in this boot");
+    return;
+  }
+
+  // ID vor der Aktion merken: Falls danach eine ACK verloren geht, verhindert
+  // der ESP32 im laufenden Boot trotzdem Replay-Doppelalarme.
+  lastRemoteCommandId = id;
+
+  // Hinweis: Der manuelle REAL ALARM laeuft inzwischen DIREKT vom NAS zu Bark
+  // (Dashboard sendet keinen ALARM-Befehl mehr an den ESP32). Dieser Zweig
+  // bleibt als Protokoll-Absicherung erhalten und nutzt weiterhin denselben
+  // Pfad wie ein Relaisalarm.
+  if (type == "ALARM") {
+    if (alarmBlockedNow()) {
+      queueRemoteAck(id, "skipped_busy", "alarm state machine blocked by cooldown or rearm");
+      return;
+    }
+    startAlarm();  // identischer Pfad wie Relais: Nachsende-Puffer + keyDone[]
+    queueRemoteAck(id, "executed", "real alarm started");
+    return;
+  }
+
+  if (type == "TEST") {
+    bool ok = sendStatus("Alarm-Waechter Test",
+                         "Manueller Test ueber NAS-Dashboard.");
+    queueRemoteAck(id, ok ? "executed" : "status_failed",
+                   ok ? "test status sent via Bark"
+                      : "bark status send FAILED - check BARK_KEY_STATUS/WLAN");
+    return;
+  }
+
+  queueRemoteAck(id, "unknown_command", "unsupported command type");
+}
+
+void pollRemoteCommandIfDue() {
+  if (!remoteConfigured() || !remoteReady()) return;
+  if (remoteAckPending) return;  // erst ACK sauber nachziehen, dann neu pollen
+
+  unsigned long now = millis();
+  if (now - lastRemotePoll < REMOTE_POLL_INTERVAL_MS) return;
+  if (lastRemoteError != 0 && now - lastRemoteError < REMOTE_ERROR_BACKOFF_MS) return;
+  lastRemotePoll = now;
+
+  String response;
+  String nonce = String(now, HEX) + "-" + String(lastRemoteCommandId, HEX);
+  String form = remoteBaseForm()
+    + "&last_command_id=" + String(lastRemoteCommandId)
+    + "&nonce=" + urlEncode(nonce);
+  if (!remotePostForm("poll.php", form, &response)) {
+    lastRemoteError = now;
+    return;
+  }
+  lastRemoteError = 0;
+
+  if (lineValue(response, "nonce") != nonce) {
+    Serial.println("NAS-Antwort mit falscher Poll-Nonce verworfen.");
+    lastRemoteError = now;
+    return;
+  }
+
+  unsigned long id = (unsigned long)lineValue(response, "id").toInt();
+  String type = lineValue(response, "type");
+  if (id != 0 && type != "NONE" && type.length() > 0) {
+    Serial.printf("NAS-Befehl empfangen: #%lu %s\n", id, type.c_str());
+    executeRemoteCommand(id, type);
+  }
+
+  // Empfängerliste nachziehen, wenn das Dashboard eine andere Version meldet.
+  // keys_version=0 heißt: auf dem NAS wird (noch) keine Liste gepflegt.
+  unsigned long remoteKeysVersion =
+      (unsigned long)lineValue(response, "keys_version").toInt();
+  if (remoteKeysVersion != 0 && remoteKeysVersion != alarmKeysVersion) {
+    syncAlarmKeys();
+  }
+}
+
+void handleRemoteMonitor() {
+  processRemoteAck();
+  pollRemoteCommandIfDue();
+  pushRemoteStatusIfDue();
 }
 
 // ============================ SELBSTTEST ====================================
@@ -387,13 +778,10 @@ void selfTest() {
                 RELAY_PIN, ACTIVE_LOW ? "ja" : "nein",
                 relayActive() ? "AKTIV (Kontakt zu)" : "offen (Ruhe)");
 
-  int valid = 0;
-  for (int i = 0; i < BARK_KEYS_ALARM_COUNT; i++) {
-    if (BARK_KEYS_ALARM[i] && strlen(BARK_KEYS_ALARM[i]) > 0) valid++;
-  }
-  Serial.printf("Alarm-Empfänger (gültige Keys): %d\n", valid);
-  if (valid == 0) {
-    Serial.println("WARNUNG: KEIN gültiger Alarm-Key! Bitte config.h prüfen.");
+  Serial.printf("Alarm-Empfänger: %d (Listen-Version %lu, 0 = config.h-Startliste)\n",
+                alarmKeyCount, alarmKeysVersion);
+  if (alarmKeyCount == 0) {
+    Serial.println("WARNUNG: KEIN Alarm-Empfänger! config.h bzw. Dashboard-Liste prüfen.");
   }
 
   Serial.printf("WLAN: %s\n",
@@ -423,9 +811,14 @@ void handleHeartbeat() {
         lastHeartbeatTry = millis();
         if (sendStatus("Alarm-Waechter aktiv", "Tages-Check: System laeuft.")) {
           lastHeartbeatDay = t.tm_yday;   // erst nach ERFOLG als erledigt markieren
+          lastHeartbeatInfo = timePrefix() + "OK";
+          lastHeartbeatOk = true;
         } else {
           Serial.println("Heartbeat fehlgeschlagen - naechster Versuch spaeter.");
+          lastHeartbeatInfo = timePrefix() + "FEHLER";
+          lastHeartbeatOk = false;
         }
+        requestRemoteStatusPush();
       }
       return;
     }
@@ -436,9 +829,14 @@ void handleHeartbeat() {
     lastHeartbeatTry = millis();
     if (sendStatus("Alarm-Waechter aktiv", "Tages-Check: System laeuft.")) {  // Bark-Text: ASCII!
       lastHeartbeatMs = millis();         // erst nach ERFOLG als erledigt markieren
+      lastHeartbeatInfo = timePrefix() + "OK";
+      lastHeartbeatOk = true;
     } else {
       Serial.println("Heartbeat fehlgeschlagen - naechster Versuch spaeter.");
+      lastHeartbeatInfo = timePrefix() + "FEHLER";
+      lastHeartbeatOk = false;
     }
+    requestRemoteStatusPush();
   }
 #endif
 }
@@ -463,15 +861,30 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(RELAY_PIN2), relayIsr2, CHANGE);
 #endif
 
+  loadAlarmKeys();   // Empfängerliste: NVS (Dashboard-Stand) oder config.h-Start
   setupWatchdog();
   connectWiFi();
+  lastWifiConnected = (WiFi.status() == WL_CONNECTED);
   setupTime();
   selfTest();
 
   lastHeartbeatMs = millis();
-  // Start-Meldung leise nur an dich (ersetzt nicht den täglichen Heartbeat).
-  sendStatus("Alarm-Waechter online",
-             "System gestartet und ueberwacht den Relaiskontakt.");
+  // Start-Meldung leise nur an dich.
+  bool startMsgOk = sendStatus("Alarm-Waechter online",
+                               "System gestartet und ueberwacht den Relaiskontakt.");
+#if HEARTBEAT_ENABLED && NTP_ENABLED
+  // Boot nach der Heartbeat-Stunde: Die (erfolgreiche) Start-Meldung zählt als
+  // heutiges Lebenszeichen - sonst kämen zwei Meldungen direkt hintereinander.
+  struct tm bootTime;
+  if (startMsgOk && getLocalTime(&bootTime, 50) && bootTime.tm_hour >= HEARTBEAT_HOUR) {
+    lastHeartbeatDay  = bootTime.tm_yday;
+    lastHeartbeatInfo = timePrefix() + "OK (Start-Meldung)";
+    lastHeartbeatOk   = true;
+  }
+#else
+  (void)startMsgOk;   // nur fuer den Heartbeat-Zweig gebraucht
+#endif
+  requestRemoteStatusPush();
 }
 
 void loop() {
@@ -479,6 +892,7 @@ void loop() {
   maintainWiFi();
   processPendingAlarm();   // offene Alarm-Zustellungen zuerst nachholen
   handleHeartbeat();
+  handleRemoteMonitor();
 
   unsigned long now = millis();
   bool active = relayActive();
@@ -494,6 +908,7 @@ void loop() {
         waitingForRelease = false;
         openSince = 0;
         Serial.println("Kontakt wieder offen - Alarm-Erkennung wieder scharf.");
+        requestRemoteStatusPush();
       }
     } else {
       openSince = 0;
@@ -505,6 +920,7 @@ void loop() {
         sendStatus("Kontakt klemmt?",
                    "Relaiskontakt ist seit dem Alarm dauerhaft geschlossen. "
                    "Melder/Lader pruefen - bis dahin sind keine neuen Alarme erkennbar!");
+        requestRemoteStatusPush();
       }
     }
   }
@@ -513,9 +929,7 @@ void loop() {
   bool latched = isrLatched;
   if (latched) isrLatched = false;
 
-  bool inCooldown = (lastAlarm != 0 && now - lastAlarm < COOLDOWN_MS);
-
-  if (waitingForRelease || inCooldown) {
+  if (alarmBlockedNow()) {
     // Empfänger wurden gerade erst alarmiert: neue Auslösungen (auch ein
     // eingerasteter Impuls) werden in dieser Phase bewusst verworfen.
     activeSince = 0;

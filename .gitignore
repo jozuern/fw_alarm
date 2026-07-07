@@ -15,6 +15,15 @@ build/
 *.elf
 *.hex
 
+# Synology-Dashboard: lokale Geheimnisse und Laufzeitdaten
+# (Laufzeitdateien heißen *.php mit Guard-Zeile, damit Nginx sie nie ausliefert)
+nas_dashboard/config.php
+nas_dashboard/data/*.json
+nas_dashboard/data/*.tmp
+nas_dashboard/data/*.lock
+nas_dashboard/data/*.log
+nas_dashboard/data/*.php
+
 # Editor / OS
 .vscode/
 .DS_Store
