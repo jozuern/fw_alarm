@@ -114,8 +114,9 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Zurückschalten existiert so garantiert eine nicht-leere Liste, die der ESP32
   akzeptiert), der aktive Demo-Empfänger ist nicht löschbar, das Dashboard zeigt
   ein Warn-Banner mit Sync-Status (Vergleich ESP32-`keys_version` vs.
-  NAS-Version). NAS-Direktalarm bekommt im Demo-Modus den Body-Zusatz
-  `[DEMO-MODUS]`.
+  NAS-Version). Der Alarm selbst ist im Demo-Modus bewusst zeichengenau
+  identisch mit einem echten (gleicher Text/Ton/Level, kein Demo-Zusatz) —
+  nur die Empfängerliste ist kürzer.
 - **Command-Protokoll** ist Plain Text (`ok=1`, `nonce=...`, `id=...`,
   `type=...`). Der ESP32 schickt pro Poll eine Nonce, die das NAS spiegeln muss.
   Das NAS vergibt monotone IDs, markiert einen gepollten Befehl sofort persistent

@@ -531,9 +531,9 @@ function bark_send_alarm_all(array $config): array
     @set_time_limit(30 + count($keys) * 35);
 
     // Zeitstempel wie in der Firmware; Bark-Texte bewusst ASCII (ae/ue/oe).
-    // Im Demo-Modus wird die Nachricht klar als Test markiert.
+    // Bewusst KEIN Demo-Zusatz im Text: Ein Demo-Alarm soll exakt so aussehen
+    // und klingen wie ein echter - er geht nur an weniger Empfänger.
     $body = date('[d.m.Y H:i] ')
-        . ($demoActive ? '[DEMO-MODUS] ' : '')
         . (string)($config['bark_alarm_body'] ?? 'Manuelle Alarmierung ueber das NAS-Dashboard!');
 
     $results = [];
