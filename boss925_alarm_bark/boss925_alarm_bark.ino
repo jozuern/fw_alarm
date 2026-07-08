@@ -107,6 +107,7 @@ unsigned long lastRemoteAckTry        = 0;
 bool          remoteStatusDirty       = true;
 unsigned long lastRemoteCommandId     = 0;
 bool          remoteAckPending        = false;
+bool          nasAuthWarned           = false;  // 403-Warnung schon verschickt?
 unsigned long remoteAckId             = 0;
 String        remoteAckResult;
 String        remoteAckMessage;
@@ -522,6 +523,22 @@ String lineValue(const String& payload, const char* key) {
   return "";
 }
 
+// Einmalige Bark-Warnung, wenn das NAS das Maschinen-Token ablehnt (HTTP 403).
+// Ohne diese Meldung fällt ein falscher Token-Hash in der config.php erst auf,
+// wenn man zufällig aufs Dashboard schaut (Status bleibt dort still OFFLINE).
+// Nach der nächsten erfolgreichen NAS-Antwort wird die Warnung wieder scharf,
+// damit ein späteres erneutes Auftreten wieder gemeldet wird.
+void warnNasTokenRejected() {
+  if (nasAuthWarned) return;
+  if (alarmPending) return;  // Alarmzustellung hat Vorrang vor Diagnose-Meldungen
+  if (sendStatus("NAS lehnt Token ab",
+                 "NAS antwortet mit HTTP 403: Maschinen-Token passt nicht zum "
+                 "Hash in config.php auf dem NAS. Dashboard-Status wird nicht "
+                 "aktualisiert; Bark-Alarmierung laeuft unabhaengig weiter.")) {
+    nasAuthWarned = true;
+  }
+}
+
 bool remotePostForm(const char* endpoint, const String& form, String* response = nullptr) {
   if (!remoteReady()) return false;
 
@@ -545,6 +562,11 @@ bool remotePostForm(const char* endpoint, const String& form, String* response =
 
   if (code != 200) {
     Serial.printf("NAS %s -> HTTP %d\n", endpoint, code);
+  }
+  if (code == 200) {
+    nasAuthWarned = false;  // NAS akzeptiert wieder -> Warnung neu scharf
+  } else if (code == 403) {
+    warnNasTokenRejected();
   }
   return code == 200;
 }
