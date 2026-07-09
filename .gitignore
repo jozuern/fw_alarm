@@ -32,3 +32,6 @@ Bark-Anleitung-iPhone.pdf
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Lokale Logdateien (z.B. debug.log vom seriellen Mitlesen)
+*.log
