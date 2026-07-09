@@ -153,13 +153,10 @@ $readonly = $authed && dashboard_role() !== 'admin';
 
     <section class="panel">
       <h2>Alarm-Empfänger</h2>
-      <p class="hint">Diese Liste gilt für <strong>beide</strong> Alarmwege (ESP32-Relaisalarm und
-        NAS-Direktalarm). Der ESP32 übernimmt Änderungen automatisch beim nächsten Poll und
-        speichert sie dauerhaft – solange die Liste leer ist, nutzt er seine <code>config.h</code>-Startliste.<br>
-        <strong>Arbeitsmodus (🔇 STUMM):</strong> Stummgeschaltete Empfänger bekommen Alarme weiterhin,
-        aber <strong>ohne Ton</strong>. Umschaltbar hier per Knopf oder per persönlichem Kurzbefehl-Link
-        (<code>api/mute.php?key=EIGENER_BARK_KEY&amp;state=on|off</code>, z.&nbsp;B. als iPhone-Automation
-        beim Betreten/Verlassen der Arbeit). Nach 12&nbsp;Std wird automatisch wieder laut geschaltet.</p>
+      <p class="hint">Gilt für <strong>beide</strong> Alarmwege; der ESP32 übernimmt Änderungen beim nächsten Poll.<br>
+        <strong>🔇 STUMM (Arbeitsmodus):</strong> Alarme kommen weiterhin an, aber <strong>ohne Ton</strong> –
+        per Knopf oder Kurzbefehl-Link (<code>api/mute.php?key=BARK_KEY&amp;state=on|off</code>).
+        Nach 12&nbsp;Std automatisch wieder laut.</p>
       <div data-keys-list class="keys-list">Wird geladen…</div>
       <?php if (!$readonly): ?>
         <form data-keys-add class="keys-add">
@@ -180,12 +177,9 @@ $readonly = $authed && dashboard_role() !== 'admin';
           <button type="button" data-demo-toggle disabled>Wird geladen…</button>
         </div>
       <?php endif; ?>
-      <p class="hint">Im <strong>Demo-Modus</strong> gehen ALLE Alarme (Relaisalarm über den ESP32
-        <em>und</em> REAL ALARM vom NAS) nur an den gewählten Test-Empfänger – ideal zum Testen,
-        z.&nbsp;B. indem man am ESP32 GPIO&nbsp;27 kurz mit GND verbindet.
-        Der ESP32 übernimmt den Wechsel erst bei seinem <strong>nächsten Poll</strong> –
-        das Banner oben zeigt an, sobald es so weit ist. Nach dem Testen unbedingt
-        zurück auf <strong>LIVE</strong> schalten!</p>
+      <p class="hint">Im <strong>Demo-Modus</strong> gehen alle Alarme nur an den gewählten Test-Empfänger.
+        Der ESP32 übernimmt den Wechsel erst beim <strong>nächsten Poll</strong> (Banner oben).
+        Nach dem Testen zurück auf <strong>LIVE</strong> schalten!</p>
       <p class="hint" data-demo-msg></p>
     </section>
 
@@ -195,8 +189,8 @@ $readonly = $authed && dashboard_role() !== 'admin';
           <button type="button" data-command-test>TEST</button>
           <button type="button" class="danger" data-command-alarm>REAL ALARM</button>
         </div>
-        <p class="hint">TEST läuft über den ESP32 (wartet auf dessen Poll, leise Meldung nur an den Status-Empfänger).<br>
-          REAL ALARM wird direkt vom NAS an alle Bark-Empfänger gesendet – funktioniert auch, wenn der ESP32 offline ist.</p>
+        <p class="hint">TEST läuft über den ESP32 (leise Meldung nur an den Status-Empfänger).<br>
+          REAL ALARM geht direkt vom NAS an alle – auch wenn der ESP32 offline ist.</p>
         <p data-alarm-result hidden></p>
       </section>
     <?php endif; ?>
