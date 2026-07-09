@@ -155,7 +155,11 @@ $readonly = $authed && dashboard_role() !== 'admin';
       <h2>Alarm-Empfänger</h2>
       <p class="hint">Diese Liste gilt für <strong>beide</strong> Alarmwege (ESP32-Relaisalarm und
         NAS-Direktalarm). Der ESP32 übernimmt Änderungen automatisch beim nächsten Poll und
-        speichert sie dauerhaft – solange die Liste leer ist, nutzt er seine <code>config.h</code>-Startliste.</p>
+        speichert sie dauerhaft – solange die Liste leer ist, nutzt er seine <code>config.h</code>-Startliste.<br>
+        <strong>Arbeitsmodus (🔇 STUMM):</strong> Stummgeschaltete Empfänger bekommen Alarme weiterhin,
+        aber <strong>ohne Ton</strong>. Umschaltbar hier per Knopf oder per persönlichem Kurzbefehl-Link
+        (<code>api/mute.php?key=EIGENER_BARK_KEY&amp;state=on|off</code>, z.&nbsp;B. als iPhone-Automation
+        beim Betreten/Verlassen der Arbeit). Nach 12&nbsp;Std wird automatisch wieder laut geschaltet.</p>
       <div data-keys-list class="keys-list">Wird geladen…</div>
       <?php if (!$readonly): ?>
         <form data-keys-add class="keys-add">

@@ -100,8 +100,11 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   `api/keys.php` (Plain Text: `version=`, `count=`, `key0=`…, Nonce gespiegelt)
   und persistiert sie per `Preferences` im NVS (`syncAlarmKeys()`), damit sie
   Reboot/NAS-Ausfall übersteht. Sync **nie** während `alarmPending`; leere oder
-  unplausible Listen werden verworfen; jede Übernahme wird per `sendStatus()`
-  an den Owner gemeldet. `BARK_KEYS_ALARM` (config.h) und `bark_keys_alarm`
+  unplausible Listen werden verworfen; eine Übernahme wird nur dann per
+  `sendStatus()` an den Owner gemeldet, wenn sich das **Key-Set** geändert hat
+  (Anzahl oder Keys, inkl. Demo-Wechsel) — reine Stumm-Wechsel (Arbeitsmodus)
+  laufen bewusst still, sonst käme bei jedem Kurzbefehl-Aufruf der Kollegen
+  ein Push. `BARK_KEYS_ALARM` (config.h) und `bark_keys_alarm`
   (config.php) sind nur noch Start-/Fallback-Listen, solange die
   Dashboard-Liste leer ist (Version 0).
 - **Demo-Modus (Dashboard, nur Admin)**: leitet beide Alarmwege auf genau einen
@@ -117,6 +120,25 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   NAS-Version). Der Alarm selbst ist im Demo-Modus bewusst zeichengenau
   identisch mit einem echten (gleicher Text/Ton/Level, kein Demo-Zusatz) —
   nur die Empfängerliste ist kürzer.
+- **Arbeitsmodus (Stummschaltung pro Empfänger)**: `muted`/`muted_at` pro
+  Eintrag in `alarm_keys.json`; stumme Keys bekommen weiterhin denselben
+  Critical Alert, aber mit `volume=0` und ohne `call=1` — lautlos, durchbricht
+  trotzdem Stummschalter/Fokus (beide
+  Alarmwege: `bark_send_alarm_one()` mit `$muted` und die Firmware über
+  `alarmKeyMuted[]`). Umschalten per öffentlichem GET/POST-Endpoint
+  `api/mute.php?key=<BARK_KEY>&state=on|off` (Auth = Kenntnis des eigenen
+  Bark-Keys, Enumerations-Bremse für unbekannte Keys, idempotent) oder per
+  Dashboard-Aktion `keys_mute` (Admin+CSRF). Jeder Wechsel erhöht die
+  `keys_version`; `api/keys.php` liefert `muted{i}=0|1`-Zeilen mit, die
+  Firmware persistiert sie im NVS (`m{i}`, fehlend = laut — alte
+  Firmware/altes NAS bleiben so im sicheren „laut"-Modus).
+  Sicherheitsnetz `expire_stale_mutes()` (`mute_max_seconds`, Default 12 h,
+  0 = aus): läuft in mute.php, keys.php, keys_list, `bark_send_alarm_all()`
+  und im Cron-Wächter; nimmt selbst den `keys`-Lock (NIE aus einem gehaltenen
+  `keys`-Lock aufrufen), Bark-Pushes immer erst NACH dem Lock. Der Wächter
+  erinnert zusätzlich max. 1×/Tag am Status-Key, solange jemand stumm ist
+  (`mute_reminded_at` in `watchdog_state.json`). Bei jedem Umschalten geht
+  eine leise Bestätigung an den betroffenen Key (ASCII-Texte!).
 - **Command-Protokoll** ist Plain Text (`ok=1`, `nonce=...`, `id=...`,
   `type=...`). Der ESP32 schickt pro Poll eine Nonce, die das NAS spiegeln muss.
   Das NAS vergibt monotone IDs, markiert einen gepollten Befehl sofort persistent
@@ -159,7 +181,14 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   (UI-Ausblendung ist nur Komfort). Das Verlaufs-Panel liest die letzten
   `commands.log`-Zeilen per Tail-Read (`log_view` in `dashboard_api.php`) und
   liefert **nur serverseitig whitelistete Felder** aus (Keys stehen im Log nur
-  maskiert). Das Frontend pollt nur bei sichtbarem Tab (Page Visibility API),
+  maskiert). Dauerhaft im Verlauf landen auch: Relaisalarme (`relay_alarm` —
+  `api/status.php` loggt, wenn sich `last_alarm` im Push gegenüber dem
+  vorigen ändert; Wechsel zu „nie" = ESP32-Reboot, kein Alarm) und
+  Wächter-Ereignisse (`box_offline`/`box_recovered`, gleiche Einmal-Semantik
+  wie die Bark-Meldung). Der ESP32-Status-Push enthält als Diagnose-Felder
+  zusätzlich `reset_reason` (Token, im Frontend übersetzt und bei
+  Watchdog/Panic/Brownout gelb markiert), `free_heap` (Warnfarbe < 50 kB) und
+  `keys_muted`. Das Frontend pollt nur bei sichtbarem Tab (Page Visibility API),
   behandelt HTTP 401 als „Sitzung abgelaufen" (Reload zur Login-Seite) und
   unterscheidet „NAS nicht erreichbar" (gelber Badge) von „ESP32 offline"
   (roter Badge; zeigt dann „Offline seit" statt der stalen Laufzeit); kritische
@@ -169,7 +198,7 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   `style=`-Attribute in `index.php` einführen!). Empfängerliste/Demo-Zustand
   werden vor jedem Schreiben als `*.bak`-Guard-Datei gesichert
   (`backup_then_write()`). Optionaler Offline-Wächter: `cron/check_offline.php`
-  (DSM-Aufgabenplaner alle 5 min, CLI oder POST mit Maschinen-Token) meldet
+  (DSM-Aufgabenplaner alle 15 min, CLI oder POST mit Maschinen-Token) meldet
   per `bark_send_status()` (level=passive, ASCII-Texte!) einmalig
   Offline/Recovery an `bark_key_status`, erinnert an einen zu lange aktiven
   Demo-Modus (`demo_reminder_after_seconds`, danach max. 1×/Tag) und schreibt

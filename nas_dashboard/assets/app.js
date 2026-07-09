@@ -130,6 +130,28 @@
     return `${dbm} dBm (${quality})`;
   }
 
+  // Neustart-Gründe des ESP32 (esp_reset_reason). Watchdog/Absturz/Brownout
+  // sind Warnzeichen - Einschalten und Software-Neustart sind normal.
+  const RESET_REASONS = {
+    poweron: 'Einschalten (normal)',
+    software: 'Software-Neustart (normal)',
+    external: 'Reset-Taster/extern',
+    panic: 'ABSTURZ (Panic)',
+    task_wdt: 'WATCHDOG-Reset (Task)',
+    int_wdt: 'WATCHDOG-Reset (Interrupt)',
+    wdt: 'WATCHDOG-Reset',
+    brownout: 'BROWNOUT (Spannungseinbruch!)',
+    deepsleep: 'Aufwachen aus Deep-Sleep',
+    unknown: 'unbekannt'
+  };
+  const RESET_WARN = ['panic', 'task_wdt', 'int_wdt', 'wdt', 'brownout'];
+
+  function fmtHeap(value) {
+    const bytes = parseInt(value, 10);
+    if (isNaN(bytes)) return value;
+    return `${Math.round(bytes / 1024)} kB frei`;
+  }
+
   const FIELDS = [
     { key: 'device_id', label: 'Box',
       tip: 'Name des ESP32 (device_id aus config.h). Nur zur Wiedererkennung, falls es mal mehrere Boxen gibt.' },
@@ -161,6 +183,8 @@
       tip: 'Beim letzten/laufenden Alarm: wie viele Empfänger schon erfolgreich benachrichtigt wurden (erreicht/gesamt).' },
     { key: 'keys_count', label: 'Empfänger auf ESP32',
       tip: 'Anzahl der Alarm-Empfänger, die der ESP32 aktuell gespeichert hat. Im Demo-Modus ist das genau 1 (nur der Test-Empfänger).' },
+    { key: 'keys_muted', label: 'Davon stumm (ESP32)',
+      tip: 'Wie viele der Empfänger auf dem ESP32 gerade im Arbeitsmodus (stumm) sind. Diese bekommen Alarme als Critical Alert mit Lautstärke 0 – sichtbar, aber ohne Ton.' },
     { key: 'keys_version', label: 'Empfängerliste (Version)',
       tip: 'Version der Empfängerliste, die der ESP32 übernommen hat. Stimmt sie mit der NAS-Version überein, ist die Liste (auch ein Demo-Wechsel) angekommen.' },
     { key: 'last_alarm', label: 'Letzter Alarm',
@@ -181,7 +205,15 @@
       fmt: fmtBool, warn: (v) => flagged(v) ? 'warn' : '' },
     { key: 'ack_pending', label: 'Befehls-Quittung offen',
       tip: 'Der ESP32 hat einen NAS-Befehl ausgeführt, konnte die Bestätigung (ACK) aber noch nicht zum NAS zurückmelden. Normalerweise "Nein".',
-      fmt: fmtBool, warn: (v) => flagged(v) ? 'warn' : '' }
+      fmt: fmtBool, warn: (v) => flagged(v) ? 'warn' : '' },
+    { key: 'reset_reason', label: 'Letzter Neustart-Grund',
+      tip: 'Warum der ESP32 zuletzt neu gestartet ist. "Einschalten"/"Software-Neustart" sind normal. Watchdog/Absturz deuten auf ein Firmware-Problem, Brownout auf ein Netzteil-/Kabelproblem hin.',
+      fmt: (v) => RESET_REASONS[v] || v,
+      warn: (v) => RESET_WARN.includes(v) ? 'warn' : '' },
+    { key: 'free_heap', label: 'Freier Speicher',
+      tip: 'Freier Arbeitsspeicher (Heap) des ESP32. Normal sind grob 150–250 kB. Sinkt der Wert über Tage stetig, deutet das auf ein Speicherleck hin; unter ~50 kB wird es kritisch.',
+      fmt: fmtHeap,
+      warn: (v) => { const b = parseInt(v, 10); return !isNaN(b) && b < 50000 ? 'warn' : ''; } }
   ];
 
   function renderFields(status, offline, seenAge) {
@@ -262,7 +294,10 @@
       text = 'Offline-Wächter: noch nie gelaufen – DSM-Aufgabe im Aufgabenplaner eingerichtet?';
     } else {
       const age = Math.max(0, serverTime - info.last_run);
-      if (age > 900) {
+      // Die DSM-Aufgabe läuft alle 15 min - erst warnen, wenn mehr als zwei
+      // Läufe ausgefallen sind (35 min), sonst schlägt die Warnung ständig
+      // fälschlich an, nur weil der nächste Lauf noch aussteht.
+      if (age > 2100) {
         text = `⚠️ Offline-Wächter: seit ${fmtUptime(age)} nicht gelaufen – DSM-Aufgabe prüfen!`;
       } else {
         text = `Offline-Wächter: zuletzt gelaufen ${age < 60 ? 'gerade eben' : 'vor ' + fmtUptime(age)}.`;
@@ -482,9 +517,11 @@
         setHtml(keysListEl, '<em>Noch keine Empfänger – der ESP32 nutzt seine config.h-Startliste.</em>');
       } else {
         setHtml(keysListEl, data.keys.map((entry) =>
-          `<div class="keys-row">
+          `<div class="keys-row${entry.muted ? ' muted' : ''}">
              <strong>${escapeHtml(entry.label)}</strong>
              <code>${escapeHtml(entry.key_masked)}</code>
+             ${entry.muted ? `<span class="badge-muted" title="Arbeitsmodus: Alarme kommen ohne Ton an. Stumm seit ${escapeHtml(formatTime(entry.muted_at))}.">🔇 STUMM</span>` : ''}
+             ${readOnly ? '' : `<button type="button" data-key-mute="${entry.id}" data-key-muted="${entry.muted ? '1' : '0'}" data-key-label="${escapeHtml(entry.label)}">${entry.muted ? 'Laut schalten' : 'Stumm schalten'}</button>`}
              ${readOnly ? '' : `<button type="button" data-key-delete="${entry.id}" data-key-label="${escapeHtml(entry.label)}">Löschen</button>`}
            </div>`).join('') +
           `<p class="hint">Listen-Version auf dem NAS: ${escapeHtml(data.version)} – der ESP32 zeigt seine übernommene Version oben im Statusfeld.</p>`);
@@ -534,8 +571,23 @@
         return { text: `Empfänger "${entry.label}" (${entry.key}) hinzugefügt${who}`, cls: '' };
       case 'key_removed':
         return { text: `Empfänger "${entry.label}" (${entry.key}) gelöscht${who}`, cls: '' };
+      case 'key_muted': {
+        const src = entry.source === 'shortcut' ? ' – per Kurzbefehl-Link' : who;
+        return { text: `Empfänger "${entry.label}" stummgeschaltet (Arbeitsmodus, Alarme ohne Ton)${src}`, cls: 'log-warn' };
+      }
+      case 'key_unmuted': {
+        const src = entry.source === 'shortcut' ? ' – per Kurzbefehl-Link'
+          : (entry.source === 'auto' ? ' – automatisch (Zeitlimit erreicht)' : who);
+        return { text: `Empfänger "${entry.label}" wieder laut geschaltet${src}`, cls: '' };
+      }
       case 'nas_alarm':
         return { text: `REAL ALARM direkt vom NAS: ${entry.message || ''}${who}`, cls: 'log-alarm' };
+      case 'relay_alarm':
+        return { text: `RELAISALARM über den ESP32 ausgelöst: ${entry.info || ''}`, cls: 'log-alarm' };
+      case 'box_offline':
+        return { text: `ESP32 OFFLINE gemeldet (kein Status seit ${entry.minutes} min)`, cls: 'log-warn' };
+      case 'box_recovered':
+        return { text: `ESP32 wieder online (Ausfall ca. ${entry.minutes} min)`, cls: '' };
       default:
         return { text: String(entry.event || '?'), cls: '' };
     }
@@ -570,6 +622,25 @@
   }
 
   keysListEl?.addEventListener('click', async (event) => {
+    // Arbeitsmodus-Umschalter (Stumm/Laut) - Bestätigung nur beim
+    // Stummschalten (lauter machen ist immer die "sichere" Richtung).
+    const muteBtn = event.target.closest('[data-key-mute]');
+    if (muteBtn) {
+      const toMuted = muteBtn.dataset.keyMuted !== '1';
+      if (toMuted && !confirm(`"${muteBtn.dataset.keyLabel}" stumm schalten (Arbeitsmodus)? Alarme kommen dort dann OHNE Ton an (aber weiterhin sichtbar).`)) return;
+      setBusy(true);
+      try {
+        const data = await post({ action: 'keys_mute', id: muteBtn.dataset.keyMute, muted: toMuted ? '1' : '0' });
+        keysMsgEl.textContent = data.message || 'Fehler.';
+      } catch (err) {
+        keysMsgEl.textContent = 'Anfrage fehlgeschlagen.';
+      } finally {
+        setBusy(false);
+        refreshKeys();
+        refreshLog();
+      }
+      return;
+    }
     const btn = event.target.closest('[data-key-delete]');
     if (!btn) return;
     if (!confirm(`Empfänger "${btn.dataset.keyLabel}" wirklich löschen? Er bekommt dann KEINE Alarme mehr!`)) return;

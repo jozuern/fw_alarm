@@ -130,7 +130,7 @@ Einrichtung:
 2. DSM → **Systemsteuerung → Aufgabenplaner → Erstellen → Geplante Aufgabe →
    Benutzerdefiniertes Skript**:
    - Benutzer: `root` (oder ein Benutzer mit Leserecht auf den Web-Ordner)
-   - Zeitplan: täglich, **alle 5 Minuten** wiederholen
+   - Zeitplan: täglich, **alle 15 Minuten** wiederholen
    - Skript:
 
      ```bash
@@ -158,8 +158,9 @@ Der Wächter übernimmt noch zwei weitere Aufgaben:
   nur den Test-Empfänger.
 - **Selbstüberwachung**: Jeder Lauf wird protokolliert; das Dashboard zeigt
   „Offline-Wächter: zuletzt gelaufen vor X min" und warnt, wenn die Aufgabe
-  nie oder seit mehr als 15 Minuten nicht gelaufen ist (z. B. weil sie im
-  Aufgabenplaner deaktiviert wurde).
+  nie oder seit mehr als 35 Minuten nicht gelaufen ist – also mehr als zwei
+  verpasste 15-Minuten-Läufe (z. B. weil sie im Aufgabenplaner deaktiviert
+  wurde).
 
 ### Backup der Laufzeitdaten
 

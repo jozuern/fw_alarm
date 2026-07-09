@@ -232,6 +232,27 @@ h2 {
   font-size: 13px;
 }
 
+/* Arbeitsmodus: stummgeschaltete Empfänger sind grau markiert - sie bekommen
+   Alarme weiterhin, aber ohne Ton (Critical Alert mit volume=0). */
+.badge-muted {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+  background: #e6eaee;
+  color: #4a5560;
+  cursor: help;
+}
+
+.keys-row.muted strong,
+.keys-row.muted code {
+  color: #8a949c;
+}
+
 .keys-add {
   display: flex;
   flex-wrap: wrap;

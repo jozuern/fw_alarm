@@ -432,19 +432,6 @@ function valid_bark_key(string $key): bool
     return preg_match('/^[A-Za-z0-9_-]{5,64}$/', $key) === 1;
 }
 
-// Nur die Key-Strings der gepflegten Liste (für Versand/ESP32-Sync).
-function managed_alarm_keys(array $config): array
-{
-    $keys = [];
-    foreach ((load_alarm_keys($config)['keys'] ?? []) as $entry) {
-        $key = trim((string)($entry['key'] ?? ''));
-        if ($key !== '') {
-            $keys[] = $key;
-        }
-    }
-    return $keys;
-}
-
 // ============================== DEMO-MODUS ==================================
 // Im Demo-Modus gehen ALLE Alarme (ESP32-Relaisalarm UND NAS-Direktalarm) nur
 // an EINEN Test-Empfänger aus der gepflegten Liste. Umgesetzt ohne
@@ -485,20 +472,117 @@ function demo_mode_info(array $config): array
     ];
 }
 
-// Die Keys, an die JETZT alarmiert würde: Demo-Modus -> nur der Demo-Key,
-// sonst die volle gepflegte Liste. Wird von api/keys.php (ESP32-Sync) und vom
+// Die Empfänger, an die JETZT alarmiert würde, inklusive Stumm-Flag pro Key:
+// Demo-Modus -> nur der Demo-Key (mit seinem aktuellen Stumm-Zustand), sonst
+// die volle gepflegte Liste. Wird von api/keys.php (ESP32-Sync) und vom
 // NAS-Direktalarm benutzt - beide Alarmwege sehen immer dieselbe Liste.
-function effective_alarm_keys(array $config): array
+// muted = Arbeitsmodus: Der Alarm geht trotzdem als Critical Alert raus, aber
+// mit volume=0 - also lautlos (der Empfänger SIEHT ihn weiterhin).
+function effective_alarm_entries(array $config): array
 {
+    $mutedByKey = [];
+    foreach ((load_alarm_keys($config)['keys'] ?? []) as $entry) {
+        $key = trim((string)($entry['key'] ?? ''));
+        if ($key !== '') {
+            $mutedByKey[$key] = !empty($entry['muted']);
+        }
+    }
     $demo = load_demo_mode($config);
     if (!empty($demo['enabled'])) {
         $key = trim((string)($demo['key'] ?? ''));
         if (valid_bark_key($key)) {
-            return [$key];
+            return [['key' => $key, 'muted' => $mutedByKey[$key] ?? false]];
         }
         // Unplausibler Demo-Key: lieber die volle Liste als gar keine Alarmierung.
     }
-    return managed_alarm_keys($config);
+    $entries = [];
+    foreach ($mutedByKey as $key => $muted) {
+        $entries[] = ['key' => (string)$key, 'muted' => $muted];
+    }
+    return $entries;
+}
+
+// Nur die Key-Strings (für Aufrufer, die das Stumm-Flag nicht brauchen).
+function effective_alarm_keys(array $config): array
+{
+    return array_column(effective_alarm_entries($config), 'key');
+}
+
+// ========================= ARBEITSMODUS (STUMM) =============================
+// Kollegen können ihren Empfänger per Kurzbefehl-Link (api/mute.php) stumm
+// schalten, z.B. automatisch beim Betreten der Arbeit: Der Alarm kommt dann
+// als Critical Alert mit volume=0 an - lautlos, aber weiterhin sichtbar und
+// Fokus-durchbrechend; der Empfänger wird NICHT aus der Liste genommen.
+// Sicherheitsnetz: Nach mute_max_seconds wird automatisch auf laut
+// zurückgeschaltet - falls die "Arbeit verlassen"-Automation eines iPhones
+// mal nicht auslöst, verschläft niemand dauerhaft die Alarme.
+
+function mute_max_seconds(array $config): int
+{
+    return max(0, (int)($config['mute_max_seconds'] ?? 43200));
+}
+
+// Schaltet zu lange stummgeschaltete Empfänger automatisch wieder laut.
+// Wird von api/mute.php, api/keys.php, keys_list (Dashboard) und dem
+// Cron-Wächter aufgerufen, damit das Netz auch ohne DSM-Aufgabe greift.
+// ACHTUNG: nimmt selbst den 'keys'-Lock - NIE aus einem bereits gehaltenen
+// 'keys'-Lock heraus aufrufen (flock würde sich selbst blockieren).
+function expire_stale_mutes(array $config): void
+{
+    $maxAge = mute_max_seconds($config);
+    if ($maxAge <= 0) {
+        return;
+    }
+    // Billiger Vorab-Check ohne Lock: Meist ist gar nichts abgelaufen.
+    $isStale = function (array $entry) use ($maxAge): bool {
+        if (empty($entry['muted'])) {
+            return false;
+        }
+        $since = (int)($entry['muted_at'] ?? 0);
+        return $since <= 0 || time() - $since > $maxAge;
+    };
+    if (count(array_filter(load_alarm_keys($config)['keys'] ?? [], $isStale)) === 0) {
+        return;
+    }
+
+    $result = with_lock($config, 'keys', function () use ($config, $isStale): array {
+        $state = read_json_file(data_path($config, 'alarm_keys.json'), alarm_keys_default());
+        $expired = [];
+        foreach (($state['keys'] ?? []) as $i => $entry) {
+            if (!$isStale($entry)) {
+                continue;
+            }
+            $state['keys'][$i]['muted'] = false;
+            $state['keys'][$i]['muted_at'] = 0;
+            $expired[] = $entry;
+        }
+        if (count($expired) === 0) {
+            return ['expired' => [], 'version' => 0];
+        }
+        $state['version'] = (int)($state['version'] ?? 0) + 1;
+        if (!backup_then_write($config, 'alarm_keys.json', $state)) {
+            return ['expired' => [], 'version' => 0];
+        }
+        return ['expired' => $expired, 'version' => (int)$state['version']];
+    });
+
+    // Log + Info-Push erst NACH dem Lock: Bark-HTTP (bis zu ~20 s) darf die
+    // Empfängerliste nicht für den ESP32-Sync blockieren.
+    foreach ($result['expired'] as $entry) {
+        append_command_log($config, [
+            'event' => 'key_unmuted',
+            'by' => 'automatisch',
+            'source' => 'auto',
+            'label' => (string)($entry['label'] ?? ''),
+            'key' => mask_bark_key((string)($entry['key'] ?? '')),
+            'version' => $result['version'],
+        ]);
+        // Leise Info an den Betroffenen selbst (ASCII, siehe bark_send_status).
+        bark_send_status($config, (string)($entry['key'] ?? ''), 'Alarmton wieder LAUT',
+            date('[d.m.Y H:i] ') . 'Stummschaltung automatisch beendet (war laenger als '
+            . max(1, (int)round(mute_max_seconds($config) / 3600)) . ' Std aktiv). '
+            . 'Alarme kommen wieder als Critical Alert mit Ton.');
+    }
 }
 
 // ============================ BARK-DIREKTVERSAND ============================
@@ -556,7 +640,9 @@ function bark_send_status(array $config, string $key, string $title, string $bod
 
 // Sendet einen Critical Alert an EINEN Bark-Key, mit Wiederholung wie in der
 // Firmware: HTTP 4xx wird nicht wiederholt (Key falsch), alles andere schon.
-function bark_send_alarm_one(array $config, string $key, string $body): array
+// muted = Arbeitsmodus: gleicher Critical Alert, aber mit volume=0 (lautlos,
+// durchbricht trotzdem Stummschalter/Fokus) und ohne call=1 (Ton-Wiederholung).
+function bark_send_alarm_one(array $config, string $key, string $body, bool $muted = false): array
 {
     $host = rtrim((string)($config['bark_host'] ?? 'https://api.day.app'), '/');
     $tries = max(1, (int)($config['bark_max_tries'] ?? 3));
@@ -565,9 +651,9 @@ function bark_send_alarm_one(array $config, string $key, string $body): array
         'body'   => $body,
         'sound'  => (string)($config['bark_alarm_sound'] ?? 'alarm_fw'),
         'level'  => 'critical',
-        'volume' => (int)($config['bark_alarm_volume'] ?? 10),
+        'volume' => $muted ? 0 : (int)($config['bark_alarm_volume'] ?? 10),
     ]);
-    if (!empty($config['bark_alarm_call'])) {
+    if (!$muted && !empty($config['bark_alarm_call'])) {
         $form .= '&call=1';
     }
 
@@ -587,7 +673,7 @@ function bark_send_alarm_one(array $config, string $key, string $body): array
         curl_close($ch);
 
         if ($httpCode === 200) {
-            return ['key' => mask_bark_key($key), 'ok' => true, 'http' => 200];
+            return ['key' => mask_bark_key($key), 'ok' => true, 'http' => 200, 'muted' => $muted];
         }
         if ($httpCode >= 400 && $httpCode < 500) {
             break;  // Client-Fehler: Wiederholen zwecklos, Key prüfen.
@@ -596,7 +682,7 @@ function bark_send_alarm_one(array $config, string $key, string $body): array
             usleep(500000);
         }
     }
-    return ['key' => mask_bark_key($key), 'ok' => false, 'http' => $httpCode];
+    return ['key' => mask_bark_key($key), 'ok' => false, 'http' => $httpCode, 'muted' => $muted];
 }
 
 // Alarmiert alle konfigurierten Keys, pro Key isoliert - ein toter Key
@@ -606,26 +692,32 @@ function bark_send_alarm_all(array $config): array
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'message' => 'PHP-cURL fehlt. In Web Station im PHP-Profil die Erweiterung "curl" aktivieren.', 'results' => []];
     }
+    // Abgelaufene Stummschaltungen zuerst beenden: Ein Alarm soll nie wegen
+    // einer vergessenen (überfälligen) Stummschaltung leise ankommen.
+    expire_stale_mutes($config);
+
     // Führend ist die im Dashboard gepflegte Liste (im Demo-Modus nur der
     // Demo-Key); die statische Liste aus config.php dient nur noch als
     // Fallback, solange noch keine gepflegt ist.
     $demoActive = demo_mode_enabled($config);
-    $keys = effective_alarm_keys($config);
+    $entries = effective_alarm_entries($config);
     $usedFallback = false;
-    if (count($keys) === 0) {
+    if (count($entries) === 0) {
         $fallback = $config['bark_keys_alarm'] ?? [];
         if (!is_array($fallback)) {
             $fallback = [];
         }
-        $keys = array_values(array_filter(array_map('trim', array_map('strval', $fallback))));
-        $usedFallback = count($keys) > 0;
+        foreach (array_filter(array_map('trim', array_map('strval', $fallback))) as $key) {
+            $entries[] = ['key' => $key, 'muted' => false];
+        }
+        $usedFallback = count($entries) > 0;
     }
-    if (count($keys) === 0) {
+    if (count($entries) === 0) {
         return ['ok' => false, 'message' => 'Keine Alarm-Empfaenger: Liste im Dashboard pflegen (Panel "Alarm-Empfaenger").', 'results' => []];
     }
 
     // Genug Laufzeit für viele Keys mit Wiederholungen (Standardlimit: 30 s).
-    @set_time_limit(30 + count($keys) * 35);
+    @set_time_limit(30 + count($entries) * 35);
 
     // Zeitstempel wie in der Firmware; Bark-Texte bewusst ASCII (ae/ue/oe).
     // Bewusst KEIN Demo-Zusatz im Text: Ein Demo-Alarm soll exakt so aussehen
@@ -635,19 +727,25 @@ function bark_send_alarm_all(array $config): array
 
     $results = [];
     $okCount = 0;
-    foreach ($keys as $key) {
-        $result = bark_send_alarm_one($config, $key, $body);
+    $mutedCount = 0;
+    foreach ($entries as $entry) {
+        $muted = !empty($entry['muted']);
+        if ($muted) {
+            $mutedCount++;
+        }
+        $result = bark_send_alarm_one($config, (string)$entry['key'], $body, $muted);
         if ($result['ok']) {
             $okCount++;
         }
         $results[] = $result;
     }
     return [
-        'ok' => $okCount === count($keys),
+        'ok' => $okCount === count($entries),
         // Deutlich machen, wenn die statische Fallback-Liste zum Einsatz kam -
         // sonst glaubt man, die (leere) Dashboard-Liste sei massgeblich gewesen.
         'message' => ($demoActive ? 'DEMO-MODUS: nur Test-Empfaenger alarmiert. ' : '')
-            . sprintf('%d/%d Empfaenger erreicht.', $okCount, count($keys))
+            . sprintf('%d/%d Empfaenger erreicht.', $okCount, count($entries))
+            . ($mutedCount > 0 ? sprintf(' %d davon stumm (Arbeitsmodus, ohne Ton).', $mutedCount) : '')
             . ($usedFallback ? ' ACHTUNG: Fallback-Liste aus config.php verwendet, die Dashboard-Liste ist leer!' : ''),
         'results' => $results,
     ];

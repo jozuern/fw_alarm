@@ -3,12 +3,15 @@ require __DIR__ . '/../lib/common.php';
 
 // Offline-Wächter: Der tägliche Heartbeat kommt vom ESP32 selbst - eine tote
 // Box schweigt einfach. Das NAS weiß aber jederzeit, wie alt der letzte
-// Status-Push ist. Dieses Skript (DSM-Aufgabenplaner, alle 5 Minuten) meldet
+// Status-Push ist. Dieses Skript (DSM-Aufgabenplaner, alle 15 Minuten) meldet
 // per leiser Bark-Nachricht EINMAL, wenn die Box zu lange schweigt, und
 // EINMAL, wenn sie wieder da ist. Zusätzlich erinnert es, wenn der
 // Demo-Modus zu lange aktiv bleibt (echte Alarme erreichen dann nur den
-// Test-Empfänger!), und protokolliert jeden Lauf (last_run_at), damit das
-// Dashboard warnen kann, falls die DSM-Aufgabe nicht mehr läuft.
+// Test-Empfänger!), beendet überfällige Stummschaltungen (Arbeitsmodus,
+// Sicherheitsnetz gegen hängengebliebene "Arbeit verlassen"-Automationen),
+// erinnert max. 1x pro Tag, solange Empfänger stumm sind, und protokolliert
+// jeden Lauf (last_run_at), damit das Dashboard warnen kann, falls die
+// DSM-Aufgabe nicht mehr läuft.
 // Ohne 'bark_key_status' in config.php tut es nichts (bewusst: so kann es
 // gefahrlos deployt werden).
 //
@@ -66,6 +69,9 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
             if ($ok) {
                 $state['offline_notified'] = true;
                 $state['offline_since'] = time() - $age;
+                // Ausfall auch im Verlauf festhalten (nicht nur als flüchtiger
+                // Bark-Push) - gleiche Einmal-Semantik wie die Benachrichtigung.
+                append_command_log($config, ['event' => 'box_offline', 'minutes' => $mins]);
             }
             // Bei Sendefehler Flag nicht setzen: nächster Lauf versucht es erneut.
             $out[] = $ok ? 'NOTIFIED_OFFLINE' : 'SEND_FAILED';
@@ -76,6 +82,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
             if ($ok) {
                 $state['offline_notified'] = false;
                 $state['offline_since'] = 0;
+                append_command_log($config, ['event' => 'box_recovered', 'minutes' => $downMins]);
             }
             $out[] = $ok ? 'NOTIFIED_RECOVERED' : 'SEND_FAILED';
         } else {
@@ -107,6 +114,35 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
         }
     } elseif (!empty($state['demo_reminded_at'])) {
         $state['demo_reminded_at'] = 0;   // wieder LIVE: Erinnerung zurücksetzen
+    }
+
+    // ==== 3) Arbeitsmodus: überfällige Stummschaltungen + Erinnerung ========
+    // expire_stale_mutes schaltet zu lange stumme Empfänger automatisch laut
+    // (nimmt den 'keys'-Lock - anderer Lock als 'watchdog', kein Konflikt).
+    // Solange danach noch jemand stumm ist, den Owner max. 1x pro Tag leise
+    // erinnern - stumme Empfänger bekommen echte Alarme nur OHNE Ton.
+    expire_stale_mutes($config);
+    $mutedLabels = [];
+    foreach ((load_alarm_keys($config)['keys'] ?? []) as $entry) {
+        if (!empty($entry['muted'])) {
+            $mutedLabels[] = (string)($entry['label'] ?? '?');
+        }
+    }
+    if (count($mutedLabels) > 0) {
+        $lastReminded = (int)($state['mute_reminded_at'] ?? 0);
+        if (time() - $lastReminded > 86400) {
+            $ok = bark_send_status($config, $statusKey, 'Empfaenger stummgeschaltet',
+                date('[d.m.Y H:i] ') . count($mutedLabels) . ' Empfaenger im Arbeitsmodus (Alarme ohne Ton): '
+                . implode(', ', $mutedLabels) . '.');
+            if ($ok) {
+                $state['mute_reminded_at'] = time();
+            }
+            $out[] = $ok ? 'MUTE_REMINDED' : 'MUTE_REMIND_FAILED';
+        } else {
+            $out[] = 'MUTED_ACTIVE (' . count($mutedLabels) . ')';
+        }
+    } elseif (!empty($state['mute_reminded_at'])) {
+        $state['mute_reminded_at'] = 0;   // alle wieder laut: Erinnerung zurücksetzen
     }
 
     write_json_file($path, $state);

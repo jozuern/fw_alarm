@@ -38,6 +38,7 @@
 #include <time.h>
 #include <esp_task_wdt.h>
 #include <esp_timer.h>   // 64-Bit-Uptime (millis() liefe nach 49,7 Tagen über)
+#include <esp_system.h>  // esp_reset_reason() für die Neustart-Diagnose im Dashboard
 #include <Preferences.h> // NVS-Speicher für die vom Dashboard verwaltete Empfängerliste
 
 #include "config.h"   // <-- DEINE WERTE. Falls dieser Include fehlschlägt:
@@ -73,6 +74,10 @@ bool          keyDone[MAX_ALARM_KEYS];
 // Boot (Version 0). Sobald das Dashboard eine Liste pflegt (Version >= 1),
 // ist die Dashboard-Liste führend und ersetzt die config.h-Liste komplett.
 String        alarmKeys[MAX_ALARM_KEYS];
+// Arbeitsmodus pro Empfänger (kommt vom Dashboard/api/keys.php mit): stumm
+// geschaltete Keys bekommen den Critical Alert mit volume=0 - lautlos, aber
+// weiterhin sichtbar; sie bleiben ganz normal in der Zustell-Liste.
+bool          alarmKeyMuted[MAX_ALARM_KEYS];
 int           alarmKeyCount    = 0;
 unsigned long alarmKeysVersion = 0;
 Preferences   keyStore;
@@ -322,11 +327,21 @@ bool validAlarmKey(const String& k) {
   return true;
 }
 
+// Anzahl der aktuell stummgeschalteten Empfänger (für Log-Ausgaben).
+int mutedKeyCount() {
+  int muted = 0;
+  for (int i = 0; i < alarmKeyCount; i++) {
+    if (alarmKeyMuted[i]) muted++;
+  }
+  return muted;
+}
+
 void saveAlarmKeys() {
   keyStore.putInt("n", alarmKeyCount);
   keyStore.putULong("v", alarmKeysVersion);
   for (int i = 0; i < alarmKeyCount; i++) {
     keyStore.putString(("k" + String(i)).c_str(), alarmKeys[i]);
+    keyStore.putUChar(("m" + String(i)).c_str(), alarmKeyMuted[i] ? 1 : 0);
   }
 }
 
@@ -338,15 +353,18 @@ void loadAlarmKeys() {
     alarmKeysVersion = keyStore.getULong("v", 0);
     for (int i = 0; i < alarmKeyCount; i++) {
       alarmKeys[i] = keyStore.getString(("k" + String(i)).c_str(), "");
+      // Fehlt das Stumm-Flag (NVS-Stand einer alten Firmware): laut = sicher.
+      alarmKeyMuted[i] = keyStore.getUChar(("m" + String(i)).c_str(), 0) != 0;
     }
-    Serial.printf("Empfaengerliste aus NVS geladen: %d Keys (Version %lu).\n",
-                  alarmKeyCount, alarmKeysVersion);
+    Serial.printf("Empfaengerliste aus NVS geladen: %d Keys (Version %lu, %d stumm).\n",
+                  alarmKeyCount, alarmKeysVersion, mutedKeyCount());
     return;
   }
   // Allererster Boot (noch nie synchronisiert): Startliste aus config.h.
   alarmKeyCount = 0;
   for (int i = 0; i < BARK_KEYS_ALARM_COUNT && alarmKeyCount < MAX_ALARM_KEYS; i++) {
     if (BARK_KEYS_ALARM[i] != nullptr && strlen(BARK_KEYS_ALARM[i]) > 0) {
+      alarmKeyMuted[alarmKeyCount] = false;   // Startliste: immer laut
       alarmKeys[alarmKeyCount++] = String(BARK_KEYS_ALARM[i]);
     }
   }
@@ -433,8 +451,14 @@ void processPendingAlarm() {
   int ok = 0, fail = 0;
   for (int i = 0; i < alarmKeyCount; i++) {
     if (keyDone[i]) continue;   // hat den Alarm schon bekommen
-    bool good = sendBark(alarmKeys[i].c_str(), ALARM_TITLE, body,
-                         "critical", ALARM_SOUND, ALARM_VOLUME, ALARM_CALL);
+    // Arbeitsmodus: gleicher Critical Alert, aber mit volume=0 (lautlos,
+    // durchbricht trotzdem Stummschalter/Fokus) und ohne call=1
+    // (das wuerde den Ton wiederholen).
+    bool good = alarmKeyMuted[i]
+      ? sendBark(alarmKeys[i].c_str(), ALARM_TITLE, body,
+                 "critical", ALARM_SOUND, 0, false)
+      : sendBark(alarmKeys[i].c_str(), ALARM_TITLE, body,
+                 "critical", ALARM_SOUND, ALARM_VOLUME, ALARM_CALL);
     if (good) { keyDone[i] = true; ok++; }
     else      { fail++; }
     delay(150);   // kurze Pause zwischen den Empfängern
@@ -497,6 +521,24 @@ bool alarmBlockedNow() {
 
 String boolField(bool value) {
   return value ? "1" : "0";
+}
+
+// Grund des letzten Neustarts als kurzes Token für das Dashboard (dort wird
+// es übersetzt und eingefärbt). Watchdog/Panic/Brownout sind Warnzeichen -
+// bisher sah man im Dashboard nur "Uptime plötzlich klein" und musste raten.
+const char* resetReasonToken() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:   return "poweron";
+    case ESP_RST_SW:        return "software";
+    case ESP_RST_EXT:       return "external";
+    case ESP_RST_PANIC:     return "panic";
+    case ESP_RST_TASK_WDT:  return "task_wdt";
+    case ESP_RST_INT_WDT:   return "int_wdt";
+    case ESP_RST_WDT:       return "wdt";
+    case ESP_RST_BROWNOUT:  return "brownout";
+    case ESP_RST_DEEPSLEEP: return "deepsleep";
+    default:                return "unknown";
+  }
 }
 
 String remoteEndpoint(const char* fileName) {
@@ -612,25 +654,44 @@ void syncAlarmKeys() {
   }
 
   String fresh[MAX_ALARM_KEYS];
+  bool freshMuted[MAX_ALARM_KEYS];
   for (int i = 0; i < count; i++) {
     fresh[i] = lineValue(response, ("key" + String(i)).c_str());
     if (!validAlarmKey(fresh[i])) {
       Serial.println("Key-Sync verworfen: ungueltiger Key in der Antwort.");
       return;
     }
+    // Arbeitsmodus-Flag pro Key. Fehlt die Zeile (altes NAS ohne
+    // Stumm-Funktion), liefert lineValue "" -> laut = sichere Richtung.
+    freshMuted[i] = (lineValue(response, ("muted" + String(i)).c_str()) == "1");
   }
 
-  for (int i = 0; i < count; i++) alarmKeys[i] = fresh[i];
+  // Nur bei einer Änderung an den EMPFÄNGERN selbst (Anzahl oder Keys) den
+  // Owner benachrichtigen. Reine Stumm-Wechsel (Arbeitsmodus) lösen KEINEN
+  // Push aus - die kommen bei jedem Kurzbefehl-Aufruf der Kollegen und würden
+  // den Owner zuspammen; sichtbar bleiben sie im Dashboard (Badge + Verlauf).
+  bool keySetChanged = (count != alarmKeyCount);
+  for (int i = 0; !keySetChanged && i < count; i++) {
+    if (fresh[i] != alarmKeys[i]) keySetChanged = true;
+  }
+
+  for (int i = 0; i < count; i++) {
+    alarmKeys[i]     = fresh[i];
+    alarmKeyMuted[i] = freshMuted[i];
+  }
   alarmKeyCount    = count;
   alarmKeysVersion = version;
   saveAlarmKeys();
-  Serial.printf("Empfaengerliste synchronisiert: %d Keys (Version %lu).\n",
-                count, version);
-  // Leise Bestätigung an den Owner: Änderungen an der Alarmierungs-Liste
-  // sollen nicht unbemerkt passieren können.
-  sendStatus("Empfaengerliste aktualisiert",
-             "Alarm-Empfaenger vom Dashboard uebernommen: "
-             + String(count) + " Keys (Version " + String(version) + ").");
+  Serial.printf("Empfaengerliste synchronisiert: %d Keys (Version %lu, %d stumm).\n",
+                count, version, mutedKeyCount());
+  if (keySetChanged) {
+    // Leise Bestätigung an den Owner: Änderungen an der Alarmierungs-Liste
+    // selbst sollen nicht unbemerkt passieren können.
+    sendStatus("Empfaengerliste aktualisiert",
+               "Alarm-Empfaenger vom Dashboard uebernommen: "
+               + String(count) + " Keys (Version " + String(version)
+               + ", " + String(mutedKeyCount()) + " stumm).");
+  }
   requestRemoteStatusPush();
 }
 
@@ -659,7 +720,10 @@ void pushRemoteStatusIfDue() {
     + "&alarm_pending=" + boolField(alarmPending)
     + "&key_progress=" + urlEncode(keyProgressText())
     + "&keys_count=" + String(alarmKeyCount)
+    + "&keys_muted=" + String(mutedKeyCount())
     + "&keys_version=" + String(alarmKeysVersion)
+    + "&reset_reason=" + String(resetReasonToken())
+    + "&free_heap=" + String((unsigned long)ESP.getFreeHeap())
     + "&last_alarm=" + urlEncode(lastAlarmInfo)
     + "&last_heartbeat=" + urlEncode(lastHeartbeatInfo)
     + "&heartbeat_ok=" + boolField(lastHeartbeatOk)

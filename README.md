@@ -449,9 +449,46 @@ Funktionen:
   Status und Empfängerliste (Keys maskiert), kann aber weder `TEST` noch
   `REAL ALARM` auslösen und die Liste nicht ändern – die Sperre greift
   serverseitig, nicht nur im Browser.
+- **Arbeitsmodus (Stummschaltung pro Empfänger)**: Wer gerade auf der Arbeit ist,
+  bekommt den Alarm **ohne Ton** (derselbe Critical Alert, nur mit Lautstärke 0)
+  – er bleibt aber in der Liste und **sieht** jeden Alarm
+  weiterhin. Umschaltbar im Dashboard (Knopf „Stumm/Laut schalten") oder per
+  persönlichem Kurzbefehl-Link, siehe Abschnitt unten. Sicherheitsnetz: Nach
+  12 Stunden (`mute_max_seconds` in `config.php`) schaltet das NAS automatisch
+  zurück auf laut, und der Offline-Wächter erinnert dich max. 1×/Tag, solange
+  jemand stumm ist.
 - **Offline-Wächter** (`cron/check_offline.php`, DSM-Aufgabenplaner): meldet leise
   per Bark, wenn die Box zu lange keinen Status mehr pusht (und wenn sie wieder
   da ist). Details in `nas_dashboard/SETUP.md`.
+
+### Arbeitsmodus per iPhone-Kurzbefehl (automatisch beim Betreten der Arbeit)
+
+Jeder Empfänger kann seinen Eintrag selbst stumm/laut schalten, indem er einen
+persönlichen Link aufruft – als Kennung dient sein eigener Bark-Key:
+
+```text
+https://dein-name.synology.me/fw_alarm/api/mute.php?key=EIGENER_BARK_KEY&state=on    (stumm)
+https://dein-name.synology.me/fw_alarm/api/mute.php?key=EIGENER_BARK_KEY&state=off   (wieder laut)
+```
+
+Das lässt sich auf dem iPhone vollautomatisch machen (App **Kurzbefehle**):
+
+1. Kurzbefehle-App → Reiter **Automation** → **Neue Automation** → **Ankommen**.
+2. Ort der Arbeit wählen, **„Sofort ausführen"** aktivieren (sonst fragt iOS jedes Mal nach).
+3. Als Aktion **„Inhalte der URL abrufen"** hinzufügen und den `state=on`-Link eintragen.
+4. Das Ganze wiederholen mit **„Verlassen"** und dem `state=off`-Link.
+
+Bei jedem Umschalten kommt eine leise Bark-Bestätigung auf dem eigenen iPhone an
+(„Alarmton STUMM (Arbeitsmodus)" bzw. „Alarmton wieder LAUT") – so merkt man
+sofort, ob die Automation funktioniert hat. Löst die Verlassen-Automation mal
+nicht aus, schaltet das NAS nach spätestens 12 Stunden von selbst zurück.
+
+Hinweis zur Technik: „Stumm" heißt derselbe Critical Alert wie sonst, nur mit
+`volume=0` (und ohne `call=1`-Tonwiederholung) – die Meldung durchbricht also
+weiterhin Stummschalter und Fokus-Modi und erscheint prominent auf dem
+Sperrbildschirm, ist aber garantiert lautlos, egal wie das iPhone eingestellt
+ist. Der ESP32 übernimmt jeden Wechsel wie eine Listenänderung beim nächsten
+Poll (wenige Sekunden); das Dashboard zeigt stumme Empfänger mit 🔇-Badge.
 
 Die Dashboard-URL sieht typischerweise so aus:
 

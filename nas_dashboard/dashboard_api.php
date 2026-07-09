@@ -123,6 +123,9 @@ if ($action === 'cancel') {
 // bei Abweichung holt er die Liste über api/keys.php und speichert sie im NVS.
 
 if ($action === 'keys_list') {
+    // Überfällige Stummschaltungen beim Anzeigen gleich mit beenden - so
+    // greift das Sicherheitsnetz auch ohne eingerichteten Cron-Wächter.
+    expire_stale_mutes($config);
     $state = load_alarm_keys($config);
     $entries = [];
     foreach (($state['keys'] ?? []) as $entry) {
@@ -130,6 +133,8 @@ if ($action === 'keys_list') {
             'id' => (int)($entry['id'] ?? 0),
             'label' => (string)($entry['label'] ?? ''),
             'key_masked' => mask_bark_key((string)($entry['key'] ?? '')),
+            'muted' => !empty($entry['muted']),
+            'muted_at' => (int)($entry['muted_at'] ?? 0),
         ];
     }
     json_response([
@@ -180,10 +185,24 @@ if ($action === 'log_view') {
                 $item['label'] = (string)($entry['label'] ?? '');
                 $item['key'] = (string)($entry['key'] ?? '');
                 break;
+            case 'key_muted':
+            case 'key_unmuted':
+                $item['by'] = (string)($entry['by'] ?? '');
+                $item['label'] = (string)($entry['label'] ?? '');
+                $item['key'] = (string)($entry['key'] ?? '');
+                $item['source'] = (string)($entry['source'] ?? '');
+                break;
             case 'nas_alarm':
                 $item['by'] = (string)($entry['by'] ?? '');
                 $item['ok'] = !empty($entry['ok']);
                 $item['message'] = (string)($entry['message'] ?? '');
+                break;
+            case 'relay_alarm':
+                $item['info'] = (string)($entry['info'] ?? '');
+                break;
+            case 'box_offline':
+            case 'box_recovered':
+                $item['minutes'] = (int)($entry['minutes'] ?? 0);
                 break;
             default:
                 continue 2;   // unbekannte Events gar nicht erst ausliefern
@@ -351,6 +370,77 @@ if ($action === 'keys_delete') {
         ]);
         return ['ok' => true, 'message' => 'Empfaenger geloescht. Der ESP32 uebernimmt die Liste beim naechsten Poll.'];
     });
+
+    json_response($result);
+}
+
+// Arbeitsmodus vom Dashboard aus umschalten (zusätzlich zum Kurzbefehl-Link
+// api/mute.php): stumm = Critical Alert mit volume=0 (lautlos). Jeder
+// Wechsel erhöht die Listen-Version, damit der ESP32 ihn beim nächsten Poll
+// übernimmt.
+if ($action === 'keys_mute') {
+    require_csrf();
+    require_dashboard_admin();
+    $id = (int)($_POST['id'] ?? 0);
+    $wantMuted = (string)($_POST['muted'] ?? '') === '1';
+
+    // Abgelaufene Stummschaltungen zuerst beenden (nimmt selbst den keys-Lock).
+    expire_stale_mutes($config);
+
+    $result = with_lock($config, 'keys', function () use ($config, $id, $wantMuted): array {
+        $path = data_path($config, 'alarm_keys.json');
+        $state = read_json_file($path, alarm_keys_default());
+        $idx = -1;
+        foreach (($state['keys'] ?? []) as $i => $entry) {
+            if ((int)($entry['id'] ?? 0) === $id) {
+                $idx = $i;
+                break;
+            }
+        }
+        if ($idx < 0) {
+            return ['ok' => false, 'message' => 'Empfaenger nicht gefunden.'];
+        }
+        $entry = $state['keys'][$idx];
+        if (!empty($entry['muted']) === $wantMuted) {
+            return ['ok' => true, 'changed' => false,
+                'message' => $wantMuted ? 'Empfaenger ist bereits stumm.' : 'Empfaenger ist bereits laut.'];
+        }
+        $state['keys'][$idx]['muted'] = $wantMuted;
+        $state['keys'][$idx]['muted_at'] = $wantMuted ? time() : 0;
+        $state['version'] = (int)($state['version'] ?? 0) + 1;
+        if (!backup_then_write($config, 'alarm_keys.json', $state)) {
+            return ['ok' => false, 'message' => 'Liste konnte nicht gespeichert werden.'];
+        }
+        return ['ok' => true, 'changed' => true, 'entry' => $state['keys'][$idx], 'version' => (int)$state['version'],
+            'message' => $wantMuted
+                ? 'Empfaenger stummgeschaltet (Arbeitsmodus): Alarme kommen dort ohne Ton an. Der ESP32 uebernimmt das beim naechsten Poll.'
+                : 'Empfaenger wieder laut geschaltet. Der ESP32 uebernimmt das beim naechsten Poll.'];
+    });
+
+    // Log + Bestätigungs-Push an den Betroffenen erst NACH dem Lock.
+    if (!empty($result['changed'])) {
+        $entry = $result['entry'];
+        append_command_log($config, [
+            'event' => $wantMuted ? 'key_muted' : 'key_unmuted',
+            'by' => (string)($_SESSION['user'] ?? 'dashboard'),
+            'source' => 'dashboard',
+            'label' => (string)($entry['label'] ?? ''),
+            'key' => mask_bark_key((string)($entry['key'] ?? '')),
+            'version' => (int)($result['version'] ?? 0),
+        ]);
+        if ($wantMuted) {
+            $maxAge = mute_max_seconds($config);
+            $autoInfo = $maxAge > 0
+                ? 'Automatisch wieder LAUT nach ' . max(1, (int)round($maxAge / 3600)) . ' Std.'
+                : 'ACHTUNG: Kein automatisches Zurueckschalten konfiguriert.';
+            bark_send_status($config, (string)($entry['key'] ?? ''), 'Alarmton STUMM (Arbeitsmodus)',
+                date('[d.m.Y H:i] ') . 'Ueber das Dashboard stummgeschaltet - Alarme kommen ohne Ton an (weiterhin sichtbar). ' . $autoInfo);
+        } else {
+            bark_send_status($config, (string)($entry['key'] ?? ''), 'Alarmton wieder LAUT',
+                date('[d.m.Y H:i] ') . 'Ueber das Dashboard wieder laut geschaltet - Alarme kommen als Critical Alert mit Ton.');
+        }
+        unset($result['entry']);   // Klartext-Key nicht an den Browser geben
+    }
 
     json_response($result);
 }
