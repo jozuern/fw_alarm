@@ -33,20 +33,26 @@ config.example.php -> config.php
 
 ### Datenordner (`data_dir`)
 
-Der Datenordner (z. B. `/volume1/web/fw_alarm_data`) muss für den
-**PHP-Prozess beschreibbar** sein. Auf DSM: File Station → Rechtsklick auf den
-Ordner → Eigenschaften → Berechtigung → dem Benutzer, unter dem PHP läuft
-(bzw. der Gruppe `http`), Lesen/Schreiben geben und auf Unterordner anwenden.
-Ob es funktioniert, siehst du daran, dass nach dem ersten Status-Push des ESP32
-eine `latest_status.json.php` erscheint; vorher antworten die APIs mit
-HTTP 500.
+Der Datenordner muss für den **PHP-Prozess beschreibbar** sein. Auf DSM:
+File Station → Rechtsklick auf den Ordner → Eigenschaften → Berechtigung → dem
+Benutzer, unter dem PHP läuft (bzw. der Gruppe `http`), Lesen/Schreiben geben
+und auf Unterordner anwenden. Ob es funktioniert, siehst du daran, dass nach dem
+ersten Status-Push des ESP32 eine `latest_status.json.php` erscheint; vorher
+antworten die APIs mit HTTP 500.
 
-Alle Laufzeitdateien heißen absichtlich `*.php` und beginnen mit einer
+**Lege den Ordner UNBEDINGT außerhalb des Web-Roots ab** (also NICHT unter
+`/volume1/web/…`). Hier liegen die Bark-Keys im **Klartext**. Ein Pfad im
+ausgelieferten Baum ist nur durch die Guard-Zeile (unten) geschützt – eine
+einzige, zerbrechliche Schicht. Bewährt auf dieser Installation:
+`/volume1/web_packages/fw_alarm_data` (per URL nicht erreichbar, PHP darf
+schreiben). Alternativ eine eigene DSM-Freigabe außerhalb von `/volume1/web`.
+Beachte ggf. `open_basedir` im PHP-Profil.
+
+Alle Laufzeitdateien heißen zusätzlich absichtlich `*.php` und beginnen mit einer
 Guard-Zeile (`<?php http_response_code(404); exit; ?>`): Nginx liefert sie
 dadurch **nie** als statische Datei aus – wichtig, weil Web Station (Nginx)
-`.htaccess`-Dateien ignoriert. Der Ordner darf also notfalls im Webroot liegen;
-außerhalb (z. B. `/volume1/fw_alarm_data`) ist trotzdem sauberer. Beachte dann
-ggf. `open_basedir` im PHP-Profil.
+`.htaccess`-Dateien ignoriert. Das ist die **zweite** Schicht (Verteidigung in
+der Tiefe), ersetzt aber NICHT den Ordner außerhalb des Web-Roots.
 
 ## 3. Geheimnisse erzeugen
 
@@ -165,7 +171,8 @@ Der Wächter übernimmt noch zwei weitere Aufgaben:
 ### Backup der Laufzeitdaten
 
 Empfängerliste, Demo-Zustand und Verlauf leben im `data_dir`
-(z. B. `/volume1/web/fw_alarm_data`). Nimm den Ordner in dein NAS-Backup auf
+(außerhalb des Web-Roots, z. B. `/volume1/web_packages/fw_alarm_data`).
+Nimm den Ordner in dein NAS-Backup auf
 (z. B. Hyper Backup), wenn du eins hast. Zusätzlich hält das Dashboard vor
 jeder Änderung der Empfängerliste die Vorversion als `*.bak.php`-Datei fest –
 Wiederherstellen = Datei umbenennen.

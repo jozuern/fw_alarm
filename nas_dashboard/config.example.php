@@ -87,7 +87,13 @@ return [
     'bark_max_tries' => 3,
 
     'timezone' => 'Europe/Berlin',
-    // Bei Nginx (Synology Web Station) am besten außerhalb des Webroots.
-    // Die Laufzeitdateien sind zusätzlich als .php mit Guard-Zeile geschützt.
-    'data_dir' => __DIR__ . '/data',
+    // WICHTIG: data_dir UNBEDINGT ausserhalb des Web-Roots waehlen! Hier liegen
+    // die Bark-Keys im KLARTEXT. Ein Pfad unter dem ausgelieferten Verzeichnis
+    // (z.B. __DIR__ . '/data' oder /volume1/web/...) ist nur durch die
+    // .php-Guard-Zeile geschuetzt - das ist eine EINZIGE, zerbrechliche Schicht
+    // (haengt an der Nginx-Weiterleitung an PHP). Besser physisch draussen:
+    // Auf Synology z.B. /volume1/web_packages/... oder eine eigene Freigabe
+    // ausserhalb von /volume1/web (sicherstellen, dass der PHP-Benutzer dort
+    // schreiben darf). Die Guard-Zeile bleibt als zweite Schicht erhalten.
+    'data_dir' => '/volume1/web_packages/fw_alarm_data',
 ];
