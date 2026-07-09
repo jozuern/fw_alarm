@@ -64,6 +64,7 @@ bool          stuckWarned        = false; // Klemm-Warnung schon verschickt?
 bool          alarmPending   = false; // es gibt noch nicht zugestellte Empfänger
 String        pendingBody;            // Alarm-Text inkl. Zeitstempel der ERKENNUNG
 unsigned long pendingSince   = 0;     // wann wurde der Alarm erkannt?
+int           pendingVolume  = ALARM_VOLUME;  // Lautstärke, bei der ERKENNUNG festgelegt
 unsigned long lastSendRound  = 0;     // wann lief die letzte Sende-Runde?
 bool          firstRoundDone = false; // erste Runde läuft sofort, ohne Wartezeit
 bool          keyDone[MAX_ALARM_KEYS];
@@ -412,6 +413,17 @@ void IRAM_ATTR relayIsr2() { relayEdge(RELAY_PIN2, &isrSince2); }
 
 // ============================ ALARM-VERSAND =================================
 
+// Liegt JETZT das Zeitfenster des wöchentlichen ILS-Probealarms? Ohne gültige
+// NTP-Zeit lautet die Antwort bewusst "nein": ein echter Alarm darf nie wegen
+// einer fehlenden Uhrzeit leiser ankommen.
+bool inProbeAlarmWindow() {
+  struct tm t;
+  if (!getLocalTime(&t, 50)) return false;
+  if (PROBE_WEEKDAY >= 0 && t.tm_wday != PROBE_WEEKDAY) return false;
+  int minutes = t.tm_hour * 60 + t.tm_min;
+  return minutes >= PROBE_WINDOW_START_MIN && minutes <= PROBE_WINDOW_END_MIN;
+}
+
 // Sendet den offenen Alarm an alle Empfänger, die ihn noch NICHT bekommen
 // haben. Jeder Key wird einzeln behandelt - ein fehlerhafter Key blockiert die
 // anderen NICHT. Wird aus loop() wiederholt aufgerufen, bis alle versorgt sind:
@@ -458,7 +470,7 @@ void processPendingAlarm() {
       ? sendBark(alarmKeys[i].c_str(), ALARM_TITLE, body,
                  "critical", ALARM_SOUND, 0, false)
       : sendBark(alarmKeys[i].c_str(), ALARM_TITLE, body,
-                 "critical", ALARM_SOUND, ALARM_VOLUME, ALARM_CALL);
+                 "critical", ALARM_SOUND, pendingVolume, ALARM_CALL);
     if (good) { keyDone[i] = true; ok++; }
     else      { fail++; }
     delay(150);   // kurze Pause zwischen den Empfängern
@@ -481,6 +493,13 @@ void startAlarm() {
   pendingBody    = timePrefix() + ALARM_BODY;   // Zeitpunkt der Erkennung
   lastAlarmInfo  = pendingBody;
   pendingSince   = millis();
+  // Lautstärke einmal bei der ERKENNUNG festlegen, nicht pro Sende-Runde: Ein
+  // Alarm um 19:04, der erst um 19:20 nachgesendet wird, bleibt ein Probealarm.
+  pendingVolume  = inProbeAlarmWindow() ? PROBE_ALARM_VOLUME : ALARM_VOLUME;
+  if (pendingVolume != ALARM_VOLUME) {
+    Serial.printf("Probealarm-Fenster: Lautstaerke %d statt %d.\n",
+                  pendingVolume, ALARM_VOLUME);
+  }
   firstRoundDone = false;
   for (int i = 0; i < alarmKeyCount; i++) {
     keyDone[i] = false;

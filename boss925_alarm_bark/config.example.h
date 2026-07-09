@@ -53,6 +53,17 @@ static const char* BARK_KEYS_ALARM[] = {
 #define ALARM_VOLUME    10          // 0-10, gilt nur bei level=critical
 #define ALARM_CALL      true        // call=1 -> Ton wiederholt sich ~30 s
 
+// --- Wöchentlicher Probealarm der Leitstelle (ca. 19 Uhr) ------------------
+// Alarme, die INNERHALB dieses Zeitfensters erkannt werden, gehen mit
+// PROBE_ALARM_VOLUME statt ALARM_VOLUME raus - sonst unverändert (gleicher
+// Text, gleicher Ton, weiterhin level=critical). Ohne NTP-Zeit oder an einem
+// anderen Wochentag gilt immer die volle Lautstärke: im Zweifel lieber zu
+// laut als zu leise.
+#define PROBE_WEEKDAY          3    // 0=So, 1=Mo ... 6=Sa; -1 = jeden Tag
+#define PROBE_WINDOW_START_MIN (18*60 + 55)   // 18:55 (Minuten seit Mitternacht)
+#define PROBE_WINDOW_END_MIN   (19*60 +  5)   // 19:05 (einschließlich)
+#define PROBE_ALARM_VOLUME     5    // 0-10, Lautstärke im Probealarm-Fenster
+
 // Status-/Heartbeat-Ton (leise, level=passive)
 #define STATUS_SOUND    "minuet"
 #define STATUS_VOLUME   3

@@ -397,17 +397,45 @@ externer Dienst, der **dich** alarmiert, wenn der erwartete Ping **ausbleibt**.
 
 ### 10a. Wöchentlicher Probealarm der ILS = automatischer Wochentest
 
-Ein **Probealarm der Leitstelle** (z. B. Mittwoch ~19 Uhr) alarmiert deinen Melder
+Ein **Probealarm der Leitstelle** (Mittwoch ~19 Uhr) alarmiert deinen Melder
 genauso wie ein echter Einsatz – der Relaiskontakt im Lader schließt also auch
-dabei, und die Box sendet **den vollen lauten Alarm an alle**.
+dabei, und die Box sendet **den vollen Alarm an alle**.
 
 Das ist **Absicht**: Der wöchentliche Probealarm testet damit automatisch die
 **komplette Kette** (Melder → Relais → ESP32 → WLAN → Bark → iPhones) – ein viel
-stärkerer Nachweis als der reine Heartbeat. Kommt am Probealarm-Tag der laute
-Alarm **nicht**, weißt du sofort, dass etwas in der Kette klemmt.
+stärkerer Nachweis als der reine Heartbeat. Kommt am Probealarm-Tag der Alarm
+**nicht**, weißt du sofort, dass etwas in der Kette klemmt.
 
 Alle Empfänger sollten also wissen: **Der Alarm zur wöchentlichen Probezeit ist
 der Test.**
+
+**Damit der Wochentest nicht jedes Mal erschreckt**, geht ein Alarm, den die Box
+im Probealarm-Fenster erkennt, mit **halber Lautstärke** raus (`volume=5` statt
+`volume=10`). Alles andere bleibt gleich: gleicher Text, gleicher Ton, weiterhin
+`level=critical`, also weiterhin durch Stummschalter und Fokus hindurch. Das
+Fenster steht in `config.h`:
+
+| Wert | Standard | Bedeutung |
+|---|---|---|
+| `PROBE_WEEKDAY` | `3` | 0 = So, 1 = Mo … 6 = Sa. `-1` = jeden Tag |
+| `PROBE_WINDOW_START_MIN` | `18*60 + 55` | Fensterbeginn 18:55 |
+| `PROBE_WINDOW_END_MIN` | `19*60 + 5` | Fensterende 19:05 (einschließlich) |
+| `PROBE_ALARM_VOLUME` | `5` | Lautstärke im Fenster (0–10) |
+
+Drei Sicherungen sind bewusst eingebaut:
+
+- **Nur am Probealarm-Wochentag.** Ein echter Einsatzalarm am Dienstag um 19:00
+  kommt mit voller Lautstärke.
+- **Nur mit gültiger NTP-Uhrzeit.** Weiß die Box nicht, wie spät es ist, alarmiert
+  sie laut. Im Zweifel lieber zu laut als zu leise.
+- **Die Lautstärke wird im Moment der Erkennung festgelegt**, nicht beim Senden.
+  Ein Alarm um 19:04, der wegen WLAN-Ausfall erst um 19:20 nachgesendet wird,
+  bleibt ein leiser Probealarm – und umgekehrt.
+
+Der **manuell im Dashboard ausgelöste REAL ALARM ist immer laut**, auch im
+Fenster: Den löst ein Mensch bewusst aus, das ist nie der Probealarm.
+Stummgeschaltete Empfänger (Arbeitsmodus, siehe unten) bleiben unabhängig davon
+lautlos (`volume=0`).
 
 ---
 

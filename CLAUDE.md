@@ -149,9 +149,21 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   verfällt nach `pending_command_ttl_seconds` (Default 300 s) als `expired` und
   ist im Dashboard abbrechbar (`cancelled`) — ein Befehl an einen toten ESP32
   darf nicht Stunden später noch ausgeführt werden.
-- **Kein Probealarm-Fenster mehr**: Der wöchentliche ILS-Probealarm löst bewusst
-  den vollen Alarm aus (testet die ganze Kette wöchentlich mit). Nicht wieder
-  einbauen, außer der Nutzer wünscht es.
+- **Probealarm-Fenster dämpft nur die Lautstärke, unterdrückt nichts**: Der
+  wöchentliche ILS-Probealarm löst weiterhin bewusst den vollen Alarm aus (testet
+  die ganze Kette wöchentlich mit) — er geht nur leiser raus. Erkennt die Firmware
+  einen Alarm im Fenster (`inProbeAlarmWindow()`: `PROBE_WEEKDAY`,
+  `PROBE_WINDOW_START_MIN`…`PROBE_WINDOW_END_MIN`, alles aus `config.h`), sendet sie
+  `PROBE_ALARM_VOLUME` (5) statt `ALARM_VOLUME` (10) — sonst zeichengenau identisch
+  (gleicher Text/Ton, weiterhin `level=critical`, weiterhin `call=1`). Das Fenster
+  darf **niemals** dazu führen, dass ein Alarm ausbleibt. Sicherungen, die bleiben
+  müssen: ohne NTP-Zeit (`getLocalTime()` schlägt fehl) gilt die volle Lautstärke;
+  außerhalb von `PROBE_WEEKDAY` ebenso; die Lautstärke wird **einmal bei der
+  Erkennung** in `pendingVolume` festgehalten (wie `pendingBody`), damit
+  Nachsende-Runden nach Fensterende nicht plötzlich laut werden. Stumme Empfänger
+  (Arbeitsmodus) bleiben unabhängig davon bei `volume=0`. Der manuelle
+  Dashboard-Alarm (`bark_send_alarm_all()`) kennt das Fenster bewusst **nicht** —
+  ein Mensch löst nie den Probealarm aus.
 - Bark-Versand: simple `application/x-www-form-urlencoded`-POST mit manuellem
   `urlEncode()` — **keine JSON-/HTTP-Bibliothek** hinzufügen. Nur ESP32-Core-Libs
   (`WiFi`, `HTTPClient`, `WiFiClientSecure`, `time.h`, `esp_task_wdt`,
