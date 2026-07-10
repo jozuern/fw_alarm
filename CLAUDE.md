@@ -85,13 +85,21 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   in `nas_dashboard/lib/common.php`, PHP-cURL, `level=critical`, pro Key isoliert
   mit Retry, HTTP 4xx ohne Retry). Bewusste Entscheidung: Die manuelle
   Alarmierung braucht man gerade dann, wenn die ESP32-Kette klemmt — sie darf
-  deshalb nicht am Poll des ESP32 hängen. Das Dashboard legt keine
-  `ALARM`-Commands mehr an; der `ALARM`-Zweig in der Firmware bleibt als
-  Protokoll-Absicherung erhalten und läuft weiterhin durch dieselbe
-  `startAlarm()`/`processPendingAlarm()`-Logik wie ein Relaisalarm.
+  deshalb nicht am Poll des ESP32 hängen. `ALARM`-Commands legt das
+  Dashboard nur noch als **Demo-Werkzeug** an (Button „DEMO-ALARM über
+  ESP32"): serverseitig doppelt gesichert — nur bei aktivem Demo-Modus UND
+  nur, wenn der letzte Status-Push des ESP32 die aktuelle `keys_version`
+  bestätigt und jünger als `offline_after_seconds` ist (sonst könnte der
+  Testalarm noch an die volle Liste gehen). Der `ALARM`-Zweig in der Firmware
+  läuft durch dieselbe `startAlarm()`/`processPendingAlarm()`-Logik wie ein
+  Relaisalarm.
   **TEST** läuft dagegen absichtlich über den ESP32 (Poll → `sendStatus()` an
   `BARK_KEY_STATUS`) — er testet die halbe Kette mit — und darf die
-  Alarm-Zustandsmaschine nicht verändern.
+  Alarm-Zustandsmaschine nicht verändern. **ENTWARNUNG** (`false_alarm` /
+  `bark_send_false_alarm_all()`): normale Push-Mitteilung (level=active,
+  bewusst KEIN Critical Alert, ASCII-Texte) an die effektive Empfängerliste,
+  direkt vom NAS — für versehentlich ausgelöste Alarme; im Demo-Modus geht
+  auch sie nur an den Test-Empfänger.
 - **Empfängerliste wird im Dashboard gepflegt** (eine Quelle für beide
   Alarmwege): versioniert in `alarm_keys.json(.php)` im `data_dir`, verwaltet
   über `dashboard_api.php` (`keys_list`/`keys_add`/`keys_delete`; letzter
@@ -120,25 +128,34 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   NAS-Version). Der Alarm selbst ist im Demo-Modus bewusst zeichengenau
   identisch mit einem echten (gleicher Text/Ton/Level, kein Demo-Zusatz) —
   nur die Empfängerliste ist kürzer.
-- **Arbeitsmodus (Stummschaltung pro Empfänger)**: `muted`/`muted_at` pro
-  Eintrag in `alarm_keys.json`; stumme Keys bekommen weiterhin denselben
-  Critical Alert, aber mit `volume=0` und ohne `call=1` — lautlos, durchbricht
-  trotzdem Stummschalter/Fokus (beide
-  Alarmwege: `bark_send_alarm_one()` mit `$muted` und die Firmware über
-  `alarmKeyMuted[]`). Umschalten per öffentlichem GET/POST-Endpoint
-  `api/mute.php?key=<BARK_KEY>&state=on|off` (Auth = Kenntnis des eigenen
-  Bark-Keys, Enumerations-Bremse für unbekannte Keys, idempotent) oder per
-  Dashboard-Aktion `keys_mute` (Admin+CSRF). Jeder Wechsel erhöht die
-  `keys_version`; `api/keys.php` liefert `muted{i}=0|1`-Zeilen mit, die
-  Firmware persistiert sie im NVS (`m{i}`, fehlend = laut — alte
-  Firmware/altes NAS bleiben so im sicheren „laut"-Modus).
-  Sicherheitsnetz `expire_stale_mutes()` (`mute_max_seconds`, Default 12 h,
-  0 = aus): läuft in mute.php, keys.php, keys_list, `bark_send_alarm_all()`
-  und im Cron-Wächter; nimmt selbst den `keys`-Lock (NIE aus einem gehaltenen
-  `keys`-Lock aufrufen), Bark-Pushes immer erst NACH dem Lock. Der Wächter
-  erinnert zusätzlich max. 1×/Tag am Status-Key, solange jemand stumm ist
-  (`mute_reminded_at` in `watchdog_state.json`). Bei jedem Umschalten geht
-  eine leise Bestätigung an den betroffenen Key (ASCII-Texte!).
+- **Arbeitsmodus (Stummschaltung pro Empfänger)**: `muted`/`muted_at`/
+  `mute_volume` pro Eintrag in `alarm_keys.json`; stumme Keys bekommen
+  weiterhin denselben Critical Alert, aber mit ihrer **Stumm-Lautstärke**
+  (`mute_volume` 0–10, Default 0 = lautlos) und ohne `call=1` — durchbricht
+  trotzdem Stummschalter/Fokus (beide Alarmwege: `bark_send_alarm_one()` mit
+  `$muted`/`$muteVolume` und die Firmware über `alarmKeyMuted[]`/
+  `alarmKeyMuteVolume[]`). Umschalten per öffentlichem GET/POST-Endpoint
+  `api/mute.php?t=<GEHEIM_TOKEN>&state=on|off` (Token `mute_token` pro
+  Eintrag, im Dashboard kopierbar und nur an die Admin-Rolle ausgeliefert;
+  Alt-Form `key=<BARK_KEY>` bleibt gültig; Enumerations-Bremse, idempotent;
+  bewusst KEIN `name=`-Parameter — Namen wären erratbar) oder per
+  Dashboard-Aktion `keys_mute` (Admin+CSRF); Stumm-Lautstärke über
+  `keys_set_mute_volume` (Admin+CSRF). Jeder Wechsel erhöht die
+  `keys_version`; `api/keys.php` liefert `muted{i}=0|1`- und
+  `mutevol{i}=0..10`-Zeilen mit (NIE die Tokens), die Firmware persistiert
+  sie im NVS (`m{i}`/`mv{i}`, fehlend = laut bzw. 0 — alte Firmware/altes
+  NAS bleiben so in sicheren Modi). `ensure_mute_tokens()` rüstet
+  Bestandseinträgen Tokens nach (Lazy, ohne Versions-Bump, nimmt selbst den
+  `keys`-Lock). Sicherheitsnetz `expire_stale_mutes()` (`mute_max_seconds`,
+  Default 12 h, 0 = aus): läuft in mute.php, keys.php, keys_list,
+  `bark_send_alarm_all()` und im Cron-Wächter; nimmt selbst den `keys`-Lock
+  (NIE aus einem gehaltenen `keys`-Lock aufrufen), Bark-Pushes immer erst
+  NACH dem Lock. Der Wächter erinnert zusätzlich max. 1×/Tag am Status-Key,
+  solange jemand stumm ist (`mute_reminded_at` in `watchdog_state.json`).
+  Beim **manuellen** Umschalten geht bewusst KEINE Bestätigung mehr an den
+  betroffenen Key (Nutzerentscheidung, störte nur); nur die **automatische**
+  Rückschaltung durch `expire_stale_mutes()` meldet sich weiterhin
+  (ASCII-Texte!).
 - **Command-Protokoll** ist Plain Text (`ok=1`, `nonce=...`, `id=...`,
   `type=...`). Der ESP32 schickt pro Poll eine Nonce, die das NAS spiegeln muss.
   Das NAS vergibt monotone IDs, markiert einen gepollten Befehl sofort persistent
@@ -161,7 +178,7 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   außerhalb von `PROBE_WEEKDAY` ebenso; die Lautstärke wird **einmal bei der
   Erkennung** in `pendingVolume` festgehalten (wie `pendingBody`), damit
   Nachsende-Runden nach Fensterende nicht plötzlich laut werden. Stumme Empfänger
-  (Arbeitsmodus) bleiben unabhängig davon bei `volume=0`. Der manuelle
+  (Arbeitsmodus) bleiben unabhängig davon bei ihrer Stumm-Lautstärke. Der manuelle
   Dashboard-Alarm (`bark_send_alarm_all()`) kennt das Fenster bewusst **nicht** —
   ein Mensch löst nie den Probealarm aus.
 - Bark-Versand: simple `application/x-www-form-urlencoded`-POST mit manuellem

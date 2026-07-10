@@ -6,22 +6,27 @@ require __DIR__ . '/../lib/common.php';
 // persönlichen Link aufruft - z.B. automatisch beim Betreten/Verlassen der
 // Arbeit ("Kurzbefehle"-App, Automation "URL abrufen"):
 //
-//   .../api/mute.php?key=<EIGENER_BARK_KEY>&state=on|off
+//   .../api/mute.php?t=<GEHEIM-TOKEN>&state=on|off     (im Dashboard kopierbar)
+//   .../api/mute.php?key=<EIGENER_BARK_KEY>&state=on|off  (alte Links, bleiben gültig)
 //
-// Authentifizierung = Kenntnis des eigenen Bark-Keys: Der Key ist lang und
-// zufällig, und wer ihn kennt, könnte der Person ohnehin beliebige
-// Bark-Nachrichten schicken - Stummschalten ist das kleinere Recht. Bewusst
-// auch per GET erreichbar (anders als die Maschinen-Endpoints), damit der
-// Kurzbefehl ein simples "URL öffnen" sein kann; der Key steht dafür in
-// Kauf genommen im Webserver-Log.
+// Authentifizierung = Kenntnis des eigenen Geheim-Tokens (zufällig, taucht
+// nirgends sonst auf) bzw. des eigenen Bark-Keys. Beides ist lang und nicht
+// erratbar - ein bloßer Name wäre es, deshalb gibt es bewusst KEINEN
+// name=-Parameter. Bewusst auch per GET erreichbar (anders als die
+// Maschinen-Endpoints), damit der Kurzbefehl ein simples "URL öffnen" sein
+// kann; der Token steht dafür in Kauf genommen im Webserver-Log.
 //
 // Stumm heißt: Der Alarm kommt weiterhin als Critical Alert an (durchbricht
-// Stummschalter/Fokus), aber mit volume=0 - also lautlos. Sicherheitsnetz:
-// Nach mute_max_seconds schaltet das NAS automatisch zurück auf laut
-// (expire_stale_mutes).
+// Stummschalter/Fokus), aber mit der im Dashboard eingestellten
+// Stumm-Lautstärke (Standard 0 = lautlos). Sicherheitsnetz: Nach
+// mute_max_seconds schaltet das NAS automatisch zurück auf laut
+// (expire_stale_mutes). Eine Bestätigungs-Nachricht gibt es beim manuellen
+// Umschalten bewusst NICHT mehr (störte nur); die automatische Rückschaltung
+// meldet sich weiterhin.
 
 $config = load_config();
 
+$token = trim((string)($_POST['t'] ?? $_GET['t'] ?? ''));
 $key = trim((string)($_POST['key'] ?? $_GET['key'] ?? ''));
 $stateParam = strtolower(trim((string)($_POST['state'] ?? $_GET['state'] ?? '')));
 
@@ -30,8 +35,8 @@ if (!in_array($stateParam, ['on', 'off'], true)) {
     text_response("ok=0\nerror=state fehlt (on oder off)\n");
 }
 
-// Enumerations-Bremse: Für ungültige wie unbekannte Keys dieselbe verzögerte,
-// generische Antwort - der Endpoint verrät nicht, welche Keys existieren.
+// Enumerations-Bremse: Für ungültige wie unbekannte Tokens/Keys dieselbe
+// verzögerte, generische Antwort - der Endpoint verrät nicht, was existiert.
 function mute_reject(): void
 {
     usleep(500000);
@@ -39,7 +44,7 @@ function mute_reject(): void
     text_response("ok=0\nerror=unbekannter Empfaenger\n");
 }
 
-if (!valid_bark_key($key)) {
+if ($token !== '' ? !valid_mute_token($token) : !valid_bark_key($key)) {
     mute_reject();
 }
 
@@ -49,11 +54,14 @@ expire_stale_mutes($config);
 
 $wantMuted = ($stateParam === 'on');
 
-$result = with_lock($config, 'keys', function () use ($config, $key, $wantMuted): array {
+$result = with_lock($config, 'keys', function () use ($config, $token, $key, $wantMuted): array {
     $state = read_json_file(data_path($config, 'alarm_keys.json'), alarm_keys_default());
     $idx = -1;
     foreach (($state['keys'] ?? []) as $i => $entry) {
-        if (hash_equals((string)($entry['key'] ?? ''), $key)) {
+        $match = $token !== ''
+            ? hash_equals((string)($entry['mute_token'] ?? ''), $token)
+            : hash_equals((string)($entry['key'] ?? ''), $key);
+        if ($match) {
             $idx = $i;
             break;
         }
@@ -64,7 +72,7 @@ $result = with_lock($config, 'keys', function () use ($config, $key, $wantMuted)
     $entry = $state['keys'][$idx];
     if (!empty($entry['muted']) === $wantMuted) {
         // Idempotent: Zustand stimmt schon (z.B. Geofence doppelt ausgelöst) -
-        // keine Versions-Erhöhung, kein Log-Spam, keine erneute Bestätigung.
+        // keine Versions-Erhöhung und kein Log-Spam.
         return ['found' => true, 'changed' => false, 'entry' => $entry];
     }
     $state['keys'][$idx]['muted'] = $wantMuted;
@@ -84,7 +92,9 @@ if (!empty($result['write_failed'])) {
     text_response("ok=0\nerror=speichern fehlgeschlagen\n");
 }
 
-// Log + Bestätigungs-Push nur bei echter Änderung, und NACH dem Lock.
+// Nur bei echter Änderung loggen, und NACH dem Lock. Bewusst KEIN
+// Bestätigungs-Push mehr an den Empfänger (Nutzer-Entscheidung: störte nur) -
+// der Kurzbefehl sieht den Erfolg an der ok=1-Antwort, das Dashboard am Badge.
 if (!empty($result['changed'])) {
     $entry = $result['entry'];
     append_command_log($config, [
@@ -92,22 +102,9 @@ if (!empty($result['changed'])) {
         'by' => 'Kurzbefehl-Link',
         'source' => 'shortcut',
         'label' => (string)($entry['label'] ?? ''),
-        'key' => mask_bark_key($key),
+        'key' => mask_bark_key((string)($entry['key'] ?? '')),
         'version' => (int)($result['version'] ?? 0),
     ]);
-    // Leise Bestätigung an den Empfänger selbst: So sieht man sofort auf dem
-    // iPhone, dass der Kurzbefehl funktioniert hat (ASCII-Texte!).
-    if ($wantMuted) {
-        $maxAge = mute_max_seconds($config);
-        $autoInfo = $maxAge > 0
-            ? 'Automatisch wieder LAUT nach ' . max(1, (int)round($maxAge / 3600)) . ' Std oder per Verlassen-Link.'
-            : 'ACHTUNG: Kein automatisches Zurueckschalten - Verlassen-Link nicht vergessen!';
-        bark_send_status($config, $key, 'Alarmton STUMM (Arbeitsmodus)',
-            date('[d.m.Y H:i] ') . 'Alarme kommen jetzt ohne Ton an (weiterhin sichtbar). ' . $autoInfo);
-    } else {
-        bark_send_status($config, $key, 'Alarmton wieder LAUT',
-            date('[d.m.Y H:i] ') . 'Arbeitsmodus beendet - Alarme kommen wieder als Critical Alert mit Ton.');
-    }
 }
 
 text_response("ok=1\nmuted=" . ($wantMuted ? '1' : '0') . "\n");

@@ -154,9 +154,9 @@ $readonly = $authed && dashboard_role() !== 'admin';
     <section class="panel">
       <h2>Alarm-Empfänger</h2>
       <p class="hint">Gilt für <strong>beide</strong> Alarmwege; der ESP32 übernimmt Änderungen beim nächsten Poll.<br>
-        <strong>🔇 STUMM (Arbeitsmodus):</strong> Alarme kommen weiterhin an, aber <strong>ohne Ton</strong> –
-        per Knopf oder Kurzbefehl-Link (<code>api/mute.php?key=BARK_KEY&amp;state=on|off</code>).
-        Nach 12&nbsp;Std automatisch wieder laut.</p>
+        <strong>🔇 STUMM (Arbeitsmodus):</strong> Alarme kommen weiterhin als Critical Alert an – nur mit der
+        eingestellten <strong>Stumm-Lautstärke</strong> (0&nbsp;=&nbsp;lautlos). Umschalten per Knopf oder
+        persönlichem Kurzbefehl-Link („Link“-Knöpfe am Eintrag). Nach 12&nbsp;Std automatisch wieder laut.</p>
       <div data-keys-list class="keys-list">Wird geladen…</div>
       <?php if (!$readonly): ?>
         <form data-keys-add class="keys-add">
@@ -188,9 +188,15 @@ $readonly = $authed && dashboard_role() !== 'admin';
         <div class="actions">
           <button type="button" data-command-test>TEST</button>
           <button type="button" class="danger" data-command-alarm>REAL ALARM</button>
+          <button type="button" class="danger" data-command-esp-alarm hidden>DEMO-ALARM über ESP32</button>
+          <button type="button" data-command-false-alarm>ENTWARNUNG (Fehlalarm)</button>
         </div>
         <p class="hint">TEST läuft über den ESP32 (leise Meldung nur an den Status-Empfänger).<br>
-          REAL ALARM geht direkt vom NAS an alle – auch wenn der ESP32 offline ist.</p>
+          REAL ALARM geht direkt vom NAS an alle – auch wenn der ESP32 offline ist.<br>
+          Der DEMO-ALARM erscheint nur im Demo-Modus und löst den Alarm über die komplette
+          ESP32-Kette aus (wie ein echter Relaisalarm, nur an den Test-Empfänger).<br>
+          ENTWARNUNG schickt allen eine <strong>normale</strong> Mitteilung („letzter Alarm war ein Fehlalarm“) –
+          kein Alarmton.</p>
         <p data-alarm-result hidden></p>
       </section>
     <?php endif; ?>

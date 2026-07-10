@@ -472,32 +472,38 @@ function demo_mode_info(array $config): array
     ];
 }
 
-// Die Empfänger, an die JETZT alarmiert würde, inklusive Stumm-Flag pro Key:
-// Demo-Modus -> nur der Demo-Key (mit seinem aktuellen Stumm-Zustand), sonst
-// die volle gepflegte Liste. Wird von api/keys.php (ESP32-Sync) und vom
-// NAS-Direktalarm benutzt - beide Alarmwege sehen immer dieselbe Liste.
+// Die Empfänger, an die JETZT alarmiert würde, inklusive Stumm-Flag und
+// Stumm-Lautstärke pro Key: Demo-Modus -> nur der Demo-Key (mit seinem
+// aktuellen Stumm-Zustand), sonst die volle gepflegte Liste. Wird von
+// api/keys.php (ESP32-Sync) und vom NAS-Direktalarm benutzt - beide Alarmwege
+// sehen immer dieselbe Liste.
 // muted = Arbeitsmodus: Der Alarm geht trotzdem als Critical Alert raus, aber
-// mit volume=0 - also lautlos (der Empfänger SIEHT ihn weiterhin).
+// mit der eingestellten Stumm-Lautstärke (mute_volume, Standard 0 = lautlos) -
+// der Empfänger SIEHT ihn also weiterhin.
 function effective_alarm_entries(array $config): array
 {
-    $mutedByKey = [];
+    $infoByKey = [];
     foreach ((load_alarm_keys($config)['keys'] ?? []) as $entry) {
         $key = trim((string)($entry['key'] ?? ''));
         if ($key !== '') {
-            $mutedByKey[$key] = !empty($entry['muted']);
+            $infoByKey[$key] = [
+                'muted' => !empty($entry['muted']),
+                'mute_volume' => mute_volume_of($entry),
+            ];
         }
     }
     $demo = load_demo_mode($config);
     if (!empty($demo['enabled'])) {
         $key = trim((string)($demo['key'] ?? ''));
         if (valid_bark_key($key)) {
-            return [['key' => $key, 'muted' => $mutedByKey[$key] ?? false]];
+            $info = $infoByKey[$key] ?? ['muted' => false, 'mute_volume' => 0];
+            return [['key' => $key, 'muted' => $info['muted'], 'mute_volume' => $info['mute_volume']]];
         }
         // Unplausibler Demo-Key: lieber die volle Liste als gar keine Alarmierung.
     }
     $entries = [];
-    foreach ($mutedByKey as $key => $muted) {
-        $entries[] = ['key' => (string)$key, 'muted' => $muted];
+    foreach ($infoByKey as $key => $info) {
+        $entries[] = ['key' => (string)$key, 'muted' => $info['muted'], 'mute_volume' => $info['mute_volume']];
     }
     return $entries;
 }
@@ -509,17 +515,73 @@ function effective_alarm_keys(array $config): array
 }
 
 // ========================= ARBEITSMODUS (STUMM) =============================
-// Kollegen können ihren Empfänger per Kurzbefehl-Link (api/mute.php) stumm
-// schalten, z.B. automatisch beim Betreten der Arbeit: Der Alarm kommt dann
-// als Critical Alert mit volume=0 an - lautlos, aber weiterhin sichtbar und
-// Fokus-durchbrechend; der Empfänger wird NICHT aus der Liste genommen.
-// Sicherheitsnetz: Nach mute_max_seconds wird automatisch auf laut
-// zurückgeschaltet - falls die "Arbeit verlassen"-Automation eines iPhones
-// mal nicht auslöst, verschläft niemand dauerhaft die Alarme.
+// Kollegen können ihren Empfänger per Kurzbefehl-Link (api/mute.php, Geheim-
+// Token t= oder alt key=) stumm schalten, z.B. automatisch beim Betreten der
+// Arbeit: Der Alarm kommt dann als Critical Alert mit der pro Empfänger
+// eingestellten Stumm-Lautstärke an (mute_volume, Standard 0 = lautlos) -
+// weiterhin sichtbar und Fokus-durchbrechend; der Empfänger wird NICHT aus
+// der Liste genommen. Sicherheitsnetz: Nach mute_max_seconds wird automatisch
+// auf laut zurückgeschaltet - falls die "Arbeit verlassen"-Automation eines
+// iPhones mal nicht auslöst, verschläft niemand dauerhaft die Alarme.
 
 function mute_max_seconds(array $config): int
 {
     return max(0, (int)($config['mute_max_seconds'] ?? 43200));
+}
+
+// Stumm-Lautstärke eines Eintrags: 0 = komplett lautlos (Standard, das alte
+// Verhalten), 1-10 = der Critical Alert kommt leise mit diesem Pegel an.
+// Wird im Dashboard pro Empfänger eingestellt und gilt für beide Alarmwege.
+function mute_volume_of(array $entry): int
+{
+    return max(0, min(10, (int)($entry['mute_volume'] ?? 0)));
+}
+
+// ==================== GEHEIM-LINK-TOKEN (KURZBEFEHL) ========================
+// Jeder Empfänger bekommt einen zufälligen Token für seinen persönlichen
+// Stummschalt-Link (api/mute.php?t=...). Bewusst ein EIGENER Token statt des
+// Bark-Keys: Der Token kann nur stumm/laut schalten (kleineres Recht), taucht
+// nirgends sonst auf (nicht in api/keys.php, nicht in Logs) und der alte
+// key=-Link bleibt für bestehende Kurzbefehle trotzdem gültig.
+
+// 9 Zufallsbytes -> 12 URL-sichere Zeichen (72 Bit, nicht erratbar).
+function new_mute_token(): string
+{
+    return rtrim(strtr(base64_encode(random_bytes(9)), '+/', '-_'), '=');
+}
+
+function valid_mute_token(string $token): bool
+{
+    return preg_match('/^[A-Za-z0-9_-]{8,32}$/', $token) === 1;
+}
+
+// Lazy-Migration: Einträgen aus der Zeit vor der Token-Funktion einen Token
+// nachrüsten. BEWUSST ohne Versions-Bump - der ESP32 braucht Tokens nicht,
+// er soll deswegen keine Liste neu synchronisieren.
+// ACHTUNG: nimmt selbst den 'keys'-Lock - NIE aus einem bereits gehaltenen
+// 'keys'-Lock heraus aufrufen (flock würde sich selbst blockieren).
+function ensure_mute_tokens(array $config): void
+{
+    $needsToken = static function (array $entry): bool {
+        return !valid_mute_token((string)($entry['mute_token'] ?? ''));
+    };
+    // Billiger Vorab-Check ohne Lock: Meist haben längst alle einen Token.
+    if (count(array_filter(load_alarm_keys($config)['keys'] ?? [], $needsToken)) === 0) {
+        return;
+    }
+    with_lock($config, 'keys', function () use ($config, $needsToken): void {
+        $state = read_json_file(data_path($config, 'alarm_keys.json'), alarm_keys_default());
+        $changed = false;
+        foreach (($state['keys'] ?? []) as $i => $entry) {
+            if ($needsToken($entry)) {
+                $state['keys'][$i]['mute_token'] = new_mute_token();
+                $changed = true;
+            }
+        }
+        if ($changed) {
+            backup_then_write($config, 'alarm_keys.json', $state);
+        }
+    });
 }
 
 // Schaltet zu lange stummgeschaltete Empfänger automatisch wieder laut.
@@ -601,7 +663,9 @@ function mask_bark_key(string $key): string
 // Login-Sperren-Meldung. Titel/Body müssen ASCII sein (ae/ue/oe, keine
 // Umlaute - Bark stellt sie nicht korrekt dar). Knappe Timeouts, damit z.B.
 // der Login-Pfad nie lange an Bark hängt.
-function bark_send_status(array $config, string $key, string $title, string $body): bool
+// $level: 'passive' (still) oder 'active' (normale Mitteilung mit Banner/Ton
+// nach iPhone-Einstellung) - die Entwarnung nutzt 'active'.
+function bark_send_status(array $config, string $key, string $title, string $body, string $level = 'passive'): bool
 {
     if (!function_exists('curl_init') || !valid_bark_key($key)) {
         return false;
@@ -610,7 +674,7 @@ function bark_send_status(array $config, string $key, string $title, string $bod
     $form = http_build_query([
         'title' => $title,
         'body'  => $body,
-        'level' => 'passive',
+        'level' => $level,
     ]);
     for ($attempt = 1; $attempt <= 2; $attempt++) {
         $ch = curl_init($host . '/' . rawurlencode($key));
@@ -640,9 +704,10 @@ function bark_send_status(array $config, string $key, string $title, string $bod
 
 // Sendet einen Critical Alert an EINEN Bark-Key, mit Wiederholung wie in der
 // Firmware: HTTP 4xx wird nicht wiederholt (Key falsch), alles andere schon.
-// muted = Arbeitsmodus: gleicher Critical Alert, aber mit volume=0 (lautlos,
-// durchbricht trotzdem Stummschalter/Fokus) und ohne call=1 (Ton-Wiederholung).
-function bark_send_alarm_one(array $config, string $key, string $body, bool $muted = false): array
+// muted = Arbeitsmodus: gleicher Critical Alert, aber mit der eingestellten
+// Stumm-Lautstärke (muteVolume, 0 = lautlos; durchbricht trotzdem
+// Stummschalter/Fokus) und ohne call=1 (Ton-Wiederholung).
+function bark_send_alarm_one(array $config, string $key, string $body, bool $muted = false, int $muteVolume = 0): array
 {
     $host = rtrim((string)($config['bark_host'] ?? 'https://api.day.app'), '/');
     $tries = max(1, (int)($config['bark_max_tries'] ?? 3));
@@ -651,7 +716,7 @@ function bark_send_alarm_one(array $config, string $key, string $body, bool $mut
         'body'   => $body,
         'sound'  => (string)($config['bark_alarm_sound'] ?? 'alarm_fw'),
         'level'  => 'critical',
-        'volume' => $muted ? 0 : (int)($config['bark_alarm_volume'] ?? 10),
+        'volume' => $muted ? max(0, min(10, $muteVolume)) : (int)($config['bark_alarm_volume'] ?? 10),
     ]);
     if (!$muted && !empty($config['bark_alarm_call'])) {
         $form .= '&call=1';
@@ -683,6 +748,55 @@ function bark_send_alarm_one(array $config, string $key, string $body, bool $mut
         }
     }
     return ['key' => mask_bark_key($key), 'ok' => false, 'http' => $httpCode, 'muted' => $muted];
+}
+
+// ENTWARNUNG (Fehlalarm): NORMALE Push-Mitteilung (level=active, bewusst KEIN
+// Critical Alert und kein Alarmton) an alle aktuellen Empfänger - für den
+// Fall, dass ein Alarm versehentlich ausgelöst wurde. Nutzt dieselbe
+// Empfängerliste wie der Alarm selbst (im Demo-Modus also nur den
+// Test-Empfänger, so lässt sich auch die Entwarnung gefahrlos üben).
+function bark_send_false_alarm_all(array $config): array
+{
+    if (!function_exists('curl_init')) {
+        return ['ok' => false, 'message' => 'PHP-cURL fehlt. In Web Station im PHP-Profil die Erweiterung "curl" aktivieren.', 'results' => []];
+    }
+    $demoActive = demo_mode_enabled($config);
+    $entries = effective_alarm_entries($config);
+    if (count($entries) === 0) {
+        // Gleicher Fallback wie beim Alarm: Not-Liste aus config.php.
+        $fallback = $config['bark_keys_alarm'] ?? [];
+        if (!is_array($fallback)) {
+            $fallback = [];
+        }
+        foreach (array_filter(array_map('trim', array_map('strval', $fallback))) as $key) {
+            $entries[] = ['key' => $key];
+        }
+    }
+    if (count($entries) === 0) {
+        return ['ok' => false, 'message' => 'Keine Empfaenger: Liste im Dashboard pflegen (Panel "Alarm-Empfaenger").', 'results' => []];
+    }
+
+    @set_time_limit(30 + count($entries) * 25);
+
+    // Bark-Texte bewusst ASCII (ae/ue/oe).
+    $title = 'ENTWARNUNG - Fehlalarm';
+    $body = date('[d.m.Y H:i] ') . 'Der letzte Alarm war ein FEHLALARM - kein Einsatz.';
+
+    $results = [];
+    $okCount = 0;
+    foreach ($entries as $entry) {
+        $ok = bark_send_status($config, (string)$entry['key'], $title, $body, 'active');
+        if ($ok) {
+            $okCount++;
+        }
+        $results[] = ['key' => mask_bark_key((string)$entry['key']), 'ok' => $ok];
+    }
+    return [
+        'ok' => $okCount === count($entries),
+        'message' => ($demoActive ? 'DEMO-MODUS: Entwarnung nur an den Test-Empfaenger. ' : '')
+            . sprintf('Entwarnung an %d/%d Empfaenger zugestellt.', $okCount, count($entries)),
+        'results' => $results,
+    ];
 }
 
 // Alarmiert alle konfigurierten Keys, pro Key isoliert - ein toter Key
@@ -733,7 +847,8 @@ function bark_send_alarm_all(array $config): array
         if ($muted) {
             $mutedCount++;
         }
-        $result = bark_send_alarm_one($config, (string)$entry['key'], $body, $muted);
+        $result = bark_send_alarm_one($config, (string)$entry['key'], $body, $muted,
+            (int)($entry['mute_volume'] ?? 0));
         if ($result['ok']) {
             $okCount++;
         }
@@ -745,7 +860,7 @@ function bark_send_alarm_all(array $config): array
         // sonst glaubt man, die (leere) Dashboard-Liste sei massgeblich gewesen.
         'message' => ($demoActive ? 'DEMO-MODUS: nur Test-Empfaenger alarmiert. ' : '')
             . sprintf('%d/%d Empfaenger erreicht.', $okCount, count($entries))
-            . ($mutedCount > 0 ? sprintf(' %d davon stumm (Arbeitsmodus, ohne Ton).', $mutedCount) : '')
+            . ($mutedCount > 0 ? sprintf(' %d davon stumm (Arbeitsmodus, leise/lautlos).', $mutedCount) : '')
             . ($usedFallback ? ' ACHTUNG: Fallback-Liste aus config.php verwendet, die Dashboard-Liste ist leer!' : ''),
         'results' => $results,
     ];

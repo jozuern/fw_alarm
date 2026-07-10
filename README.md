@@ -435,7 +435,7 @@ Drei Sicherungen sind bewusst eingebaut:
 Der **manuell im Dashboard ausgelöste REAL ALARM ist immer laut**, auch im
 Fenster: Den löst ein Mensch bewusst aus, das ist nie der Probealarm.
 Stummgeschaltete Empfänger (Arbeitsmodus, siehe unten) bleiben unabhängig davon
-lautlos (`volume=0`).
+bei ihrer eingestellten Stumm-Lautstärke (Standard 0 = lautlos).
 
 ---
 
@@ -456,6 +456,14 @@ Funktionen:
 - `REAL ALARM` wird dagegen **direkt vom NAS** per Bark Critical Alert an alle
   Empfänger gesendet – bewusst ohne Umweg über den ESP32, denn manuell
   alarmieren muss man vor allem dann, wenn die ESP32-Kette gerade klemmt.
+- `ENTWARNUNG (Fehlalarm)`: schickt allen Empfängern eine **normale**
+  Push-Mitteilung („Der letzte Alarm war ein FEHLALARM“) – bewusst kein
+  Critical Alert und kein Alarmton. Für den Fall, dass mal etwas schiefläuft.
+- `DEMO-ALARM über ESP32` (nur im Demo-Modus sichtbar): löst den Alarm über
+  die **komplette** ESP32-Kette aus (Poll → Alarm-Zustandsmaschine → Bark),
+  geht dank Demo-Modus aber nur an den Test-Empfänger. Der Server erlaubt den
+  Befehl nur, wenn der ESP32 die Demo-Liste nachweislich übernommen hat und
+  online ist.
 - **Empfängerverwaltung im Dashboard**: Bark-Keys lassen sich im Panel
   „Alarm-Empfänger" hinzufügen und löschen. Die Liste ist versioniert und gilt
   für beide Alarmwege; der ESP32 sieht die Version bei jedem Poll, holt sich
@@ -478,7 +486,8 @@ Funktionen:
   `REAL ALARM` auslösen und die Liste nicht ändern – die Sperre greift
   serverseitig, nicht nur im Browser.
 - **Arbeitsmodus (Stummschaltung pro Empfänger)**: Wer gerade auf der Arbeit ist,
-  bekommt den Alarm **ohne Ton** (derselbe Critical Alert, nur mit Lautstärke 0)
+  bekommt den Alarm **leise oder lautlos** (derselbe Critical Alert, nur mit der
+  pro Empfänger einstellbaren **Stumm-Lautstärke** 0–10; Standard 0 = lautlos)
   – er bleibt aber in der Liste und **sieht** jeden Alarm
   weiterhin. Umschaltbar im Dashboard (Knopf „Stumm/Laut schalten") oder per
   persönlichem Kurzbefehl-Link, siehe Abschnitt unten. Sicherheitsnetz: Nach
@@ -492,12 +501,17 @@ Funktionen:
 ### Arbeitsmodus per iPhone-Kurzbefehl (automatisch beim Betreten der Arbeit)
 
 Jeder Empfänger kann seinen Eintrag selbst stumm/laut schalten, indem er einen
-persönlichen Link aufruft – als Kennung dient sein eigener Bark-Key:
+persönlichen Link aufruft. Den fertigen Link kopierst du als Admin im Dashboard
+direkt am Eintrag der Person (🔗-Knöpfe „Link Stumm" / „Link Laut") – als
+Kennung dient ein zufälliger Geheim-Token:
 
 ```text
-https://dein-name.synology.me/fw_alarm/api/mute.php?key=EIGENER_BARK_KEY&state=on    (stumm)
-https://dein-name.synology.me/fw_alarm/api/mute.php?key=EIGENER_BARK_KEY&state=off   (wieder laut)
+https://dein-name.synology.me/fw_alarm/api/mute.php?t=GEHEIM_TOKEN&state=on    (stumm)
+https://dein-name.synology.me/fw_alarm/api/mute.php?t=GEHEIM_TOKEN&state=off   (wieder laut)
 ```
+
+(Die ältere Link-Form `?key=EIGENER_BARK_KEY` funktioniert weiterhin, damit
+bestehende Kurzbefehle nicht kaputtgehen.)
 
 Das lässt sich auf dem iPhone vollautomatisch machen (App **Kurzbefehle**):
 
@@ -506,17 +520,19 @@ Das lässt sich auf dem iPhone vollautomatisch machen (App **Kurzbefehle**):
 3. Als Aktion **„Inhalte der URL abrufen"** hinzufügen und den `state=on`-Link eintragen.
 4. Das Ganze wiederholen mit **„Verlassen"** und dem `state=off`-Link.
 
-Bei jedem Umschalten kommt eine leise Bark-Bestätigung auf dem eigenen iPhone an
-(„Alarmton STUMM (Arbeitsmodus)" bzw. „Alarmton wieder LAUT") – so merkt man
-sofort, ob die Automation funktioniert hat. Löst die Verlassen-Automation mal
-nicht aus, schaltet das NAS nach spätestens 12 Stunden von selbst zurück.
+Beim Umschalten kommt bewusst **keine** Bestätigungs-Nachricht mehr aufs
+iPhone (das störte nur). Ob es geklappt hat, sieht man im Dashboard am
+🔇-Badge; die **automatische** Rückschaltung nach spätestens 12 Stunden
+(falls die Verlassen-Automation mal nicht auslöst) meldet sich weiterhin –
+die passiert ja ohne eigenes Zutun.
 
 Hinweis zur Technik: „Stumm" heißt derselbe Critical Alert wie sonst, nur mit
-`volume=0` (und ohne `call=1`-Tonwiederholung) – die Meldung durchbricht also
+der im Dashboard pro Person einstellbaren **Stumm-Lautstärke** (0–10, Standard
+0 = lautlos; ohne `call=1`-Tonwiederholung) – die Meldung durchbricht also
 weiterhin Stummschalter und Fokus-Modi und erscheint prominent auf dem
-Sperrbildschirm, ist aber garantiert lautlos, egal wie das iPhone eingestellt
-ist. Der ESP32 übernimmt jeden Wechsel wie eine Listenänderung beim nächsten
-Poll (wenige Sekunden); das Dashboard zeigt stumme Empfänger mit 🔇-Badge.
+Sperrbildschirm. Der ESP32 übernimmt jeden Wechsel wie eine Listenänderung beim
+nächsten Poll (wenige Sekunden); das Dashboard zeigt stumme Empfänger mit
+🔇-Badge.
 
 Die Dashboard-URL sieht typischerweise so aus:
 

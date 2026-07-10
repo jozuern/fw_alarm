@@ -76,9 +76,13 @@ bool          keyDone[MAX_ALARM_KEYS];
 // ist die Dashboard-Liste führend und ersetzt die config.h-Liste komplett.
 String        alarmKeys[MAX_ALARM_KEYS];
 // Arbeitsmodus pro Empfänger (kommt vom Dashboard/api/keys.php mit): stumm
-// geschaltete Keys bekommen den Critical Alert mit volume=0 - lautlos, aber
-// weiterhin sichtbar; sie bleiben ganz normal in der Zustell-Liste.
+// geschaltete Keys bekommen den Critical Alert mit ihrer eingestellten
+// Stumm-Lautstärke (0 = lautlos) - weiterhin sichtbar; sie bleiben ganz
+// normal in der Zustell-Liste.
 bool          alarmKeyMuted[MAX_ALARM_KEYS];
+// Stumm-Lautstärke pro Empfänger (0-10, wird im Dashboard eingestellt):
+// gilt NUR, solange der Key stumm ist. 0 = komplett lautlos (Standard).
+uint8_t       alarmKeyMuteVolume[MAX_ALARM_KEYS];
 int           alarmKeyCount    = 0;
 unsigned long alarmKeysVersion = 0;
 Preferences   keyStore;
@@ -343,6 +347,7 @@ void saveAlarmKeys() {
   for (int i = 0; i < alarmKeyCount; i++) {
     keyStore.putString(("k" + String(i)).c_str(), alarmKeys[i]);
     keyStore.putUChar(("m" + String(i)).c_str(), alarmKeyMuted[i] ? 1 : 0);
+    keyStore.putUChar(("mv" + String(i)).c_str(), alarmKeyMuteVolume[i]);
   }
 }
 
@@ -356,6 +361,10 @@ void loadAlarmKeys() {
       alarmKeys[i] = keyStore.getString(("k" + String(i)).c_str(), "");
       // Fehlt das Stumm-Flag (NVS-Stand einer alten Firmware): laut = sicher.
       alarmKeyMuted[i] = keyStore.getUChar(("m" + String(i)).c_str(), 0) != 0;
+      // Fehlende Stumm-Lautstärke (alter NVS-Stand): 0 = lautlos, das alte
+      // Verhalten - so ändert das Update nichts an bestehenden Stummschaltungen.
+      uint8_t mv = keyStore.getUChar(("mv" + String(i)).c_str(), 0);
+      alarmKeyMuteVolume[i] = mv > 10 ? 10 : mv;
     }
     Serial.printf("Empfaengerliste aus NVS geladen: %d Keys (Version %lu, %d stumm).\n",
                   alarmKeyCount, alarmKeysVersion, mutedKeyCount());
@@ -366,6 +375,7 @@ void loadAlarmKeys() {
   for (int i = 0; i < BARK_KEYS_ALARM_COUNT && alarmKeyCount < MAX_ALARM_KEYS; i++) {
     if (BARK_KEYS_ALARM[i] != nullptr && strlen(BARK_KEYS_ALARM[i]) > 0) {
       alarmKeyMuted[alarmKeyCount] = false;   // Startliste: immer laut
+      alarmKeyMuteVolume[alarmKeyCount] = 0;
       alarmKeys[alarmKeyCount++] = String(BARK_KEYS_ALARM[i]);
     }
   }
@@ -463,12 +473,12 @@ void processPendingAlarm() {
   int ok = 0, fail = 0;
   for (int i = 0; i < alarmKeyCount; i++) {
     if (keyDone[i]) continue;   // hat den Alarm schon bekommen
-    // Arbeitsmodus: gleicher Critical Alert, aber mit volume=0 (lautlos,
-    // durchbricht trotzdem Stummschalter/Fokus) und ohne call=1
-    // (das wuerde den Ton wiederholen).
+    // Arbeitsmodus: gleicher Critical Alert, aber mit der im Dashboard
+    // eingestellten Stumm-Lautstärke (0 = lautlos; durchbricht trotzdem
+    // Stummschalter/Fokus) und ohne call=1 (das wuerde den Ton wiederholen).
     bool good = alarmKeyMuted[i]
       ? sendBark(alarmKeys[i].c_str(), ALARM_TITLE, body,
-                 "critical", ALARM_SOUND, 0, false)
+                 "critical", ALARM_SOUND, alarmKeyMuteVolume[i], false)
       : sendBark(alarmKeys[i].c_str(), ALARM_TITLE, body,
                  "critical", ALARM_SOUND, pendingVolume, ALARM_CALL);
     if (good) { keyDone[i] = true; ok++; }
@@ -674,6 +684,7 @@ void syncAlarmKeys() {
 
   String fresh[MAX_ALARM_KEYS];
   bool freshMuted[MAX_ALARM_KEYS];
+  uint8_t freshMuteVol[MAX_ALARM_KEYS];
   for (int i = 0; i < count; i++) {
     fresh[i] = lineValue(response, ("key" + String(i)).c_str());
     if (!validAlarmKey(fresh[i])) {
@@ -683,6 +694,12 @@ void syncAlarmKeys() {
     // Arbeitsmodus-Flag pro Key. Fehlt die Zeile (altes NAS ohne
     // Stumm-Funktion), liefert lineValue "" -> laut = sichere Richtung.
     freshMuted[i] = (lineValue(response, ("muted" + String(i)).c_str()) == "1");
+    // Stumm-Lautstärke pro Key (nur wirksam, solange der Key stumm ist).
+    // Fehlende Zeile (altes NAS): "" -> toInt()=0 -> lautlos = altes Verhalten.
+    int mv = lineValue(response, ("mutevol" + String(i)).c_str()).toInt();
+    if (mv < 0)  mv = 0;
+    if (mv > 10) mv = 10;
+    freshMuteVol[i] = (uint8_t)mv;
   }
 
   // Nur bei einer Änderung an den EMPFÄNGERN selbst (Anzahl oder Keys) den
@@ -695,8 +712,9 @@ void syncAlarmKeys() {
   }
 
   for (int i = 0; i < count; i++) {
-    alarmKeys[i]     = fresh[i];
-    alarmKeyMuted[i] = freshMuted[i];
+    alarmKeys[i]           = fresh[i];
+    alarmKeyMuted[i]       = freshMuted[i];
+    alarmKeyMuteVolume[i]  = freshMuteVol[i];
   }
   alarmKeyCount    = count;
   alarmKeysVersion = version;

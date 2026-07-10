@@ -9,6 +9,8 @@
   const updatedEl = document.querySelector('[data-updated]');
   const testBtn = document.querySelector('[data-command-test]');
   const alarmBtn = document.querySelector('[data-command-alarm]');
+  const espAlarmBtn = document.querySelector('[data-command-esp-alarm]');
+  const falseAlarmBtn = document.querySelector('[data-command-false-alarm]');
   const cancelBtn = document.querySelector('[data-command-cancel]');
   const alarmResultEl = document.querySelector('[data-alarm-result]');
   const keysListEl = document.querySelector('[data-keys-list]');
@@ -80,7 +82,7 @@
   }
 
   function setBusy(busy) {
-    [testBtn, alarmBtn, cancelBtn, demoToggleBtn].forEach((btn) => {
+    [testBtn, alarmBtn, espAlarmBtn, falseAlarmBtn, cancelBtn, demoToggleBtn].forEach((btn) => {
       if (btn) btn.disabled = busy;
     });
   }
@@ -184,7 +186,7 @@
     { key: 'keys_count', label: 'Empfänger auf ESP32',
       tip: 'Anzahl der Alarm-Empfänger, die der ESP32 aktuell gespeichert hat. Im Demo-Modus ist das genau 1 (nur der Test-Empfänger).' },
     { key: 'keys_muted', label: 'Davon stumm (ESP32)',
-      tip: 'Wie viele der Empfänger auf dem ESP32 gerade im Arbeitsmodus (stumm) sind. Diese bekommen Alarme als Critical Alert mit Lautstärke 0 – sichtbar, aber ohne Ton.' },
+      tip: 'Wie viele der Empfänger auf dem ESP32 gerade im Arbeitsmodus (stumm) sind. Diese bekommen Alarme als Critical Alert mit ihrer eingestellten Stumm-Lautstärke (Standard 0 = lautlos, aber sichtbar).' },
     { key: 'keys_version', label: 'Empfängerliste (Version)',
       tip: 'Version der Empfängerliste, die der ESP32 übernommen hat. Stimmt sie mit der NAS-Version überein, ist die Liste (auch ein Demo-Wechsel) angekommen.' },
     { key: 'last_alarm', label: 'Letzter Alarm',
@@ -356,6 +358,11 @@
       // Auswahl nur zeigen, solange sie gebraucht wird (zum Einschalten).
       demoTargetEl.hidden = !!(demoInfo && demoInfo.enabled);
     }
+    // Der ESP32-Testalarm ist ein reines Demo-Werkzeug - im LIVE-Modus wäre er
+    // ein echter Alarm an alle (der Server blockt das zusätzlich serverseitig).
+    if (espAlarmBtn) {
+      espAlarmBtn.hidden = !(demoInfo && demoInfo.enabled);
+    }
   }
 
   async function toggleDemo() {
@@ -466,6 +473,43 @@
     }
   }
 
+  // DEMO-Alarm über den ESP32: legt einen ALARM-Befehl in die Warteschlange,
+  // den die Box beim nächsten Poll abholt und wie einen echten Relaisalarm
+  // ausführt (startAlarm + Nachsende-Puffer). Der Server erlaubt das NUR im
+  // Demo-Modus und nur, wenn der ESP32 die Demo-Liste schon übernommen hat.
+  async function enqueueEspAlarm() {
+    setBusy(true);
+    try {
+      const data = await post({ action: 'enqueue', type: 'ALARM' });
+      showCommandMsg(data.message || (data.ok ? 'Befehl angelegt.' : 'Fehler.'));
+    } catch (err) {
+      showCommandMsg('Anfrage fehlgeschlagen.');
+    } finally {
+      setBusy(false);
+      refresh();
+      refreshLog();
+    }
+  }
+
+  // ENTWARNUNG (Fehlalarm): normale Push-Mitteilung an alle - direkt vom NAS.
+  async function sendFalseAlarm() {
+    setBusy(true);
+    alarmResultEl.hidden = false;
+    alarmResultEl.textContent = 'Entwarnung wird gesendet…';
+    try {
+      const data = await post({ action: 'false_alarm' });
+      const lines = (data.results || []).map((r) => `${r.key} ${r.ok ? 'OK' : 'FEHLER'}`);
+      alarmResultEl.textContent = `${data.message || 'Fehler.'}` +
+        (lines.length ? ` [${lines.join(', ')}]` : '');
+    } catch (err) {
+      alarmResultEl.textContent = 'Entwarnungs-Anfrage fehlgeschlagen – Verbindung zum NAS prüfen!';
+    } finally {
+      setBusy(false);
+      refresh();
+      refreshLog();
+    }
+  }
+
   async function cancelCommand() {
     setBusy(true);
     try {
@@ -516,15 +560,43 @@
       if (!data.keys.length) {
         setHtml(keysListEl, '<em>Noch keine Empfänger – der ESP32 nutzt seine config.h-Startliste.</em>');
       } else {
-        setHtml(keysListEl, data.keys.map((entry) =>
-          `<div class="keys-row${entry.muted ? ' muted' : ''}">
-             <strong>${escapeHtml(entry.label)}</strong>
-             <code>${escapeHtml(entry.key_masked)}</code>
-             ${entry.muted ? `<span class="badge-muted" title="Arbeitsmodus: Alarme kommen ohne Ton an. Stumm seit ${escapeHtml(formatTime(entry.muted_at))}.">🔇 STUMM</span>` : ''}
-             ${readOnly ? '' : `<button type="button" data-key-mute="${entry.id}" data-key-muted="${entry.muted ? '1' : '0'}" data-key-label="${escapeHtml(entry.label)}">${entry.muted ? 'Laut schalten' : 'Stumm schalten'}</button>`}
-             ${readOnly ? '' : `<button type="button" data-key-delete="${entry.id}" data-key-label="${escapeHtml(entry.label)}">Löschen</button>`}
-           </div>`).join('') +
-          `<p class="hint">Listen-Version auf dem NAS: ${escapeHtml(data.version)} – der ESP32 zeigt seine übernommene Version oben im Statusfeld.</p>`);
+        setHtml(keysListEl, data.keys.map((entry) => {
+          // Stumm-Lautstärke (0 = lautlos): gilt, sobald der Eintrag stumm ist.
+          const vol = Number(entry.mute_volume) || 0;
+          const volText = vol === 0 ? '0 (lautlos)' : `${vol} von 10`;
+          const badge = entry.muted
+            ? `<span class="badge-muted" title="Arbeitsmodus: Alarme kommen mit Stumm-Lautstärke ${volText} an. Stumm seit ${escapeHtml(formatTime(entry.muted_at))}.">🔇 STUMM</span>`
+            : '';
+          let actions = '';
+          if (!readOnly) {
+            const volOptions = Array.from({ length: 11 }, (_, v) =>
+              `<option value="${v}"${v === vol ? ' selected' : ''}>${v === 0 ? '0 (lautlos)' : v}</option>`).join('');
+            // Persönliche Kurzbefehl-Links (Geheim-Token, nur der Admin sieht
+            // sie): einmal kopieren, in der Kurzbefehle-App hinterlegen.
+            const linkButtons = entry.mute_token
+              ? `<button type="button" data-key-link="${escapeHtml(entry.mute_token)}" data-key-link-state="on" data-key-label="${escapeHtml(entry.label)}">🔗 Link „Stumm“</button>
+                 <button type="button" data-key-link="${escapeHtml(entry.mute_token)}" data-key-link-state="off" data-key-label="${escapeHtml(entry.label)}">🔗 Link „Laut“</button>`
+              : '';
+            actions = `<div class="keys-actions">
+               <label class="keys-volume">Stumm-Lautstärke
+                 <select data-key-volume="${entry.id}" data-key-label="${escapeHtml(entry.label)}">${volOptions}</select>
+               </label>
+               <button type="button" data-key-mute="${entry.id}" data-key-muted="${entry.muted ? '1' : '0'}" data-key-label="${escapeHtml(entry.label)}">${entry.muted ? '🔊 Laut schalten' : '🔇 Stumm schalten'}</button>
+               ${linkButtons}
+               <button type="button" class="btn-delete" data-key-delete="${entry.id}" data-key-label="${escapeHtml(entry.label)}">Löschen</button>
+             </div>`;
+          }
+          return `<div class="keys-row${entry.muted ? ' muted' : ''}">
+             <div class="keys-head">
+               <strong>${escapeHtml(entry.label)}</strong>
+               <code>${escapeHtml(entry.key_masked)}</code>
+               ${badge}
+             </div>
+             ${actions}
+           </div>`;
+        }).join('') +
+          `<p class="hint">Listen-Version auf dem NAS: ${escapeHtml(data.version)} – der ESP32 zeigt seine übernommene Version oben im Statusfeld.<br>
+           Die 🔗-Knöpfe kopieren den persönlichen Stumm-/Laut-Link der Person (für iPhone-Kurzbefehle, z.&nbsp;B. automatisch beim Betreten/Verlassen der Arbeit).</p>`);
       }
       // Dropdown für die Demo-Empfänger-Auswahl aus derselben Liste füllen.
       if (demoTargetEl) {
@@ -573,15 +645,19 @@
         return { text: `Empfänger "${entry.label}" (${entry.key}) gelöscht${who}`, cls: '' };
       case 'key_muted': {
         const src = entry.source === 'shortcut' ? ' – per Kurzbefehl-Link' : who;
-        return { text: `Empfänger "${entry.label}" stummgeschaltet (Arbeitsmodus, Alarme ohne Ton)${src}`, cls: 'log-warn' };
+        return { text: `Empfänger "${entry.label}" stummgeschaltet (Arbeitsmodus, Alarme mit Stumm-Lautstärke)${src}`, cls: 'log-warn' };
       }
       case 'key_unmuted': {
         const src = entry.source === 'shortcut' ? ' – per Kurzbefehl-Link'
           : (entry.source === 'auto' ? ' – automatisch (Zeitlimit erreicht)' : who);
         return { text: `Empfänger "${entry.label}" wieder laut geschaltet${src}`, cls: '' };
       }
+      case 'key_mute_volume':
+        return { text: `Stumm-Lautstärke für "${entry.label}" auf ${entry.volume === 0 ? '0 (lautlos)' : entry.volume} gestellt${who}`, cls: '' };
       case 'nas_alarm':
         return { text: `REAL ALARM direkt vom NAS: ${entry.message || ''}${who}`, cls: 'log-alarm' };
+      case 'false_alarm':
+        return { text: `ENTWARNUNG (Fehlalarm) gesendet: ${entry.message || ''}${who}`, cls: 'log-warn' };
       case 'relay_alarm':
         return { text: `RELAISALARM über den ESP32 ausgelöst: ${entry.info || ''}`, cls: 'log-alarm' };
       case 'box_offline':
@@ -622,6 +698,24 @@
   }
 
   keysListEl?.addEventListener('click', async (event) => {
+    // Persönlichen Kurzbefehl-Link (Geheim-Token) in die Zwischenablage
+    // kopieren - der Link schaltet den Eintrag stumm (state=on) bzw. laut.
+    const linkBtn = event.target.closest('[data-key-link]');
+    if (linkBtn) {
+      const url = new URL('api/mute.php', location.href);
+      url.searchParams.set('t', linkBtn.dataset.keyLink);
+      url.searchParams.set('state', linkBtn.dataset.keyLinkState);
+      const what = linkBtn.dataset.keyLinkState === 'on' ? 'Stumm' : 'Laut';
+      try {
+        await navigator.clipboard.writeText(url.toString());
+        keysMsgEl.textContent = `„${what}“-Link für ${linkBtn.dataset.keyLabel} kopiert – im iPhone-Kurzbefehl unter „URL öffnen“ / „Inhalte von URL abrufen“ einfügen.`;
+      } catch (err) {
+        // Zwischenablage kann blockiert sein (alter Browser, fehlende
+        // Berechtigung) - dann den Link zum manuellen Kopieren anzeigen.
+        keysMsgEl.textContent = `Kopieren nicht möglich – Link („${what}“, ${linkBtn.dataset.keyLabel}): ${url.toString()}`;
+      }
+      return;
+    }
     // Arbeitsmodus-Umschalter (Stumm/Laut) - Bestätigung nur beim
     // Stummschalten (lauter machen ist immer die "sichere" Richtung).
     const muteBtn = event.target.closest('[data-key-mute]');
@@ -647,6 +741,24 @@
     setBusy(true);
     try {
       const data = await post({ action: 'keys_delete', id: btn.dataset.keyDelete });
+      keysMsgEl.textContent = data.message || 'Fehler.';
+    } catch (err) {
+      keysMsgEl.textContent = 'Anfrage fehlgeschlagen.';
+    } finally {
+      setBusy(false);
+      refreshKeys();
+      refreshLog();
+    }
+  });
+
+  // Stumm-Lautstärke pro Empfänger (0 = lautlos): wirkt, sobald der Eintrag
+  // stumm geschaltet ist - für beide Alarmwege.
+  keysListEl?.addEventListener('change', async (event) => {
+    const sel = event.target.closest('[data-key-volume]');
+    if (!sel) return;
+    setBusy(true);
+    try {
+      const data = await post({ action: 'keys_set_mute_volume', id: sel.dataset.keyVolume, volume: sel.value });
       keysMsgEl.textContent = data.message || 'Fehler.';
     } catch (err) {
       keysMsgEl.textContent = 'Anfrage fehlgeschlagen.';
@@ -684,6 +796,20 @@
       : 'ECHTEN FEUERWEHR-ALARM direkt vom NAS an alle Empfänger senden?';
     if (confirm(question)) {
       sendRealAlarm();
+    }
+  });
+  espAlarmBtn?.addEventListener('click', () => {
+    const label = demoInfo?.label || 'Test-Empfänger';
+    if (confirm(`DEMO-MODUS: Alarm über den ESP32 auslösen? Er durchläuft die komplette Alarm-Kette der Box und geht an "${label}". Danach greift der normale 5-Minuten-Cooldown der Box.`)) {
+      enqueueEspAlarm();
+    }
+  });
+  falseAlarmBtn?.addEventListener('click', () => {
+    const question = demoInfo && demoInfo.enabled
+      ? `DEMO-MODUS: Entwarnung geht nur an "${demoInfo.label || 'Test-Empfänger'}". Jetzt senden?`
+      : 'ENTWARNUNG an ALLE senden? („Der letzte Alarm war ein FEHLALARM“ – normale Mitteilung, kein Alarmton)';
+    if (confirm(question)) {
+      sendFalseAlarm();
     }
   });
 

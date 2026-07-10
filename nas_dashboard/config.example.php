@@ -50,12 +50,16 @@ return [
     // ==== Arbeitsmodus (Stummschaltung per Kurzbefehl-Link) =================
     // Jeder Empfänger kann seinen Eintrag über einen persönlichen Link stumm
     // schalten (z.B. iPhone-Kurzbefehl beim Betreten/Verlassen der Arbeit):
-    //   .../api/mute.php?key=<EIGENER_BARK_KEY>&state=on|off
-    // Stumm = der Alarm kommt weiterhin als Critical Alert an, aber mit
-    // volume=0 (lautlos). Sicherheitsnetz: Nach so vielen Sekunden wird
-    // automatisch wieder auf laut geschaltet (0 = nie automatisch) - falls die
-    // "Arbeit verlassen"-Automation mal nicht auslöst. Der Wächter-Cron
-    // erinnert zusätzlich max. 1x pro Tag, solange Empfänger stumm sind.
+    //   .../api/mute.php?t=<GEHEIM-TOKEN>&state=on|off
+    // Den fertigen Link kopiert der Admin im Dashboard am jeweiligen Eintrag
+    // (🔗-Knöpfe). Die alte Form ?key=<EIGENER_BARK_KEY> bleibt für
+    // Bestands-Kurzbefehle gültig. Stumm = der Alarm kommt weiterhin als
+    // Critical Alert an, aber mit der im Dashboard eingestellten
+    // Stumm-Lautstärke (Standard 0 = lautlos). Sicherheitsnetz: Nach so
+    // vielen Sekunden wird automatisch wieder auf laut geschaltet (0 = nie
+    // automatisch) - falls die "Arbeit verlassen"-Automation mal nicht
+    // auslöst. Der Wächter-Cron erinnert zusätzlich max. 1x pro Tag,
+    // solange Empfänger stumm sind.
     'mute_max_seconds' => 43200,   // 12 Stunden
 
     // Delivered-Kommandos werden nicht erneut ausgeliefert. Nach dieser Zeit

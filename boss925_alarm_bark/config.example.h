@@ -80,7 +80,7 @@ static const char* BARK_KEYS_ALARM[] = {
 #define REMOTE_BASE_URL              "https://dein-name.synology.me/fw_alarm/api"
 #define REMOTE_MACHINE_TOKEN         "LANGER_ZUFAELLIGER_TOKEN_AUS_CONFIG_PHP"
 #define REMOTE_DEVICE_ID             "boss925-01"
-#define FW_BUILD_MARKER              "boss925-monitor-2026-07-06"
+#define FW_BUILD_MARKER              "boss925-monitor-2026-07-10"
 
 // Status alle 60 s: schnell genug für "lebt noch", aber sparsam für NAS/ESP32.
 // Ereignisse (Alarm, WLAN-Reconnect, Heartbeat-Ergebnis) werden zusätzlich

@@ -18,14 +18,18 @@ expire_stale_mutes($config);
 $state = load_alarm_keys($config);
 $entries = effective_alarm_entries($config);
 
-// Pro Empfänger zusätzlich das Stumm-Flag (Arbeitsmodus): Der ESP32 sendet an
-// stumme Keys den Critical Alert mit volume=0 (lautlos). Alte Firmware
-// ignoriert die muted-Zeilen und alarmiert weiter laut (sicherer Fehlermodus).
+// Pro Empfänger zusätzlich das Stumm-Flag (Arbeitsmodus) und die
+// Stumm-Lautstärke: Der ESP32 sendet an stumme Keys den Critical Alert mit
+// mutevol statt der vollen Lautstärke (0 = lautlos). Alte Firmware ignoriert
+// muted-/mutevol-Zeilen und alarmiert weiter laut bzw. (mit muted-Support,
+// ohne mutevol) lautlos - beides sichere Fehlermodi. Die Geheim-Link-Tokens
+// werden hier bewusst NICHT ausgeliefert, der ESP32 braucht sie nicht.
 $out = "ok=1\nnonce={$nonce}\nversion=" . (int)($state['version'] ?? 0)
      . "\ncount=" . count($entries) . "\n";
 foreach ($entries as $i => $entry) {
     $out .= "key{$i}={$entry['key']}\n";
     $out .= "muted{$i}=" . (empty($entry['muted']) ? '0' : '1') . "\n";
+    $out .= "mutevol{$i}=" . (int)($entry['mute_volume'] ?? 0) . "\n";
 }
 
 text_response($out);

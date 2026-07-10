@@ -17,14 +17,15 @@ main {
 
 .topbar {
   display: flex;
+  flex-wrap: wrap;               /* Handy: Abmelden-Knopf rutscht unter den Titel statt ihn zu quetschen */
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 10px 16px;
   margin-bottom: 24px;
 }
 
 h1 {
-  font-size: 28px;
+  font-size: clamp(21px, 5.5vw, 28px);   /* skaliert mit der Bildschirmbreite */
   margin: 0 0 6px;
 }
 
@@ -209,27 +210,67 @@ h2 {
   margin-bottom: 14px;
 }
 
+/* Ein Empfänger = eine kleine Karte: oben Name + maskierter Key + Badge,
+   darunter die Aktionen. Bricht sauber um statt sich (wie die alte
+   Ein-Zeilen-Flexbox) auf dem Handy zusammenzuquetschen. */
 .keys-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 0;
+  padding: 10px 0 12px;
   border-bottom: 1px solid #e1e6ea;
 }
 
-.keys-row strong {
-  min-width: 140px;
+.keys-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
 }
 
-.keys-row code {
+.keys-head strong {
+  font-size: 15px;
+}
+
+.keys-head code {
   color: #66717a;
-  flex: 1;
 }
 
-.keys-row button {
-  min-height: 34px;
+.keys-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.keys-actions button {
+  min-height: 38px;
   padding: 0 12px;
   font-size: 13px;
+}
+
+/* Stumm-Lautstärke: kompaktes Label + Auswahl in der Aktionszeile. */
+.keys-volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 400;
+  color: #66717a;
+  white-space: nowrap;
+}
+
+.keys-volume select {
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 6px;
+  font-size: 13px;
+}
+
+/* Löschen ist destruktiv - dezent rot abgesetzt, damit man nicht aus
+   Versehen danebentippt. */
+.btn-delete {
+  border-color: #d5a49e;
+  color: #8d1f14;
 }
 
 /* Arbeitsmodus: stummgeschaltete Empfänger sind grau markiert - sie bekommen
@@ -336,12 +377,18 @@ select {
 
 /* ==== ?-Tooltips an den Statusfeldern ==================================== */
 
+/* Anker für die Sprechblase ist das ganze FELD (nicht das (?)-Symbol):
+   So bleibt der Tooltip immer innerhalb der Feld-/Seitenbreite und ragt auf
+   dem Handy nicht mehr links/rechts aus dem Bildschirm. */
+.field {
+  position: relative;
+}
+
 /* Schlichtes (?) direkt hinter dem Feldtitel. WICHTIG: "span.help", damit die
    Regel gegen ".field span { display:block }" gewinnt - sonst rutscht das
    Symbol in eine eigene Zeile. */
 .field span span.help {
   display: inline;
-  position: relative;
   margin: 0;
   color: #97a1a9;
   font-size: 12px;
@@ -354,11 +401,9 @@ select {
 .help::after {
   content: attr(data-tip);
   position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  width: max-content;
-  max-width: min(240px, 70vw);
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
   background: #1b2328;
   color: #fff;
   font-size: 12px;
@@ -379,4 +424,67 @@ select {
 .help:focus::after {
   visibility: visible;
   opacity: 1;
+}
+
+/* ==== Handy-Layout (schmale Bildschirme) ================================= */
+
+@media (max-width: 640px) {
+  main {
+    padding: 16px 12px 40px;
+  }
+
+  .panel {
+    padding: 14px;
+    border-radius: 10px;
+  }
+
+  /* Statusfelder: zwei schmalere Spalten statt einer langen Einer-Spalte. */
+  .grid {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+  }
+
+  /* Aktions-Knöpfe (TEST / REAL ALARM, Demo) füllen die Breite gleichmäßig
+     und sind mit >=44 px bequem tippbar. */
+  .actions {
+    gap: 10px;
+  }
+
+  .actions button {
+    flex: 1 1 40%;
+    min-height: 46px;
+  }
+
+  .actions select {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  /* Empfängerliste: Aktionen dürfen umbrechen, Knöpfe teilen sich die Zeile. */
+  .keys-actions button {
+    flex: 1 1 45%;
+    min-height: 44px;
+  }
+
+  .keys-volume {
+    flex: 1 1 100%;
+    justify-content: space-between;
+  }
+
+  .keys-volume select {
+    min-height: 44px;
+    flex: 0 1 40%;
+  }
+
+  /* Formular "Empfänger hinzufügen": Felder untereinander statt gequetscht. */
+  .keys-add input,
+  .keys-add button {
+    flex: 1 1 100%;
+    min-height: 44px;
+  }
+
+  /* Verlauf: Zeitspalte schmaler halten, Text darf mehr Platz nutzen. */
+  .log-row {
+    gap: 8px;
+  }
 }
