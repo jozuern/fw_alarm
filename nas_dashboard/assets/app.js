@@ -340,8 +340,11 @@
       // werden gedimmt - außer den Zeilen, die weiterhin aktuell sind
       // ("Offline seit" und der NAS-seitige Wächter).
       const liveCls = offline && row.liveWhenOffline ? ' tele-current' : '';
+      // Der Erklärtext ist ein ECHTES Element (nicht CSS-::after): Nur so
+      // liest ein Screenreader ihn über aria-describedby auch wirklich vor.
+      const tipId = `tip-${groups.length}-${current.rows.length}`;
       current.rows.push(`<div class="tele-row${cls ? ' tele-' + cls : ''}${liveCls}">
-        <span class="tele-label">${escapeHtml(label)} <span class="help" tabindex="0" role="button" aria-expanded="false" aria-label="Erklärung zu „${escapeHtml(label)}“" data-tip="${escapeHtml(tip)}">?</span></span>
+        <span class="tele-label">${escapeHtml(label)} <span class="help" tabindex="0" role="button" aria-expanded="false" aria-label="Erklärung zu „${escapeHtml(label)}“" aria-describedby="${tipId}"><span aria-hidden="true">?</span><span class="tip-bubble" id="${tipId}" role="tooltip">${escapeHtml(tip)}</span></span></span>
         <span class="tele-value">${escapeHtml(value)}</span>
       </div>`);
     });
@@ -847,22 +850,22 @@
       // kam "voll" zurück) und der Deckel noch nicht erreicht ist.
       if (logMoreBtn) logMoreBtn.hidden = logLimit >= LOG_MAX || entries.length < logLimit;
       if (!entries.length) {
-        setHtml(logEl, '<em>Noch keine Ereignisse aufgezeichnet.</em>');
+        setHtml(logEl, '<li class="log-plain"><em>Noch keine Ereignisse aufgezeichnet.</em></li>');
         return;
       }
       const serverTime = Number(data.server_time) || Math.floor(Date.now() / 1000);
       setHtml(logEl, entries.map((entry) => {
         const { text, cls } = describeLogEntry(entry);
-        return `<div class="log-row${cls ? ' ' + cls : ''}">
+        return `<li class="log-row${cls ? ' ' + cls : ''}">
           <span class="log-dot" aria-hidden="true"></span>
           <span class="log-time" title="${escapeHtml(formatTime(entry.at))}">${escapeHtml(fmtRelTime(entry.at, serverTime))}</span>
           <span class="log-text">${escapeHtml(text)}</span>
-        </div>`;
+        </li>`;
       }).join(''));
     } catch (err) {
       // Wie bei der Empfängerliste: letzten bekannten Stand stehen lassen.
       if (logEl.__lastHtml === undefined) {
-        setHtml(logEl, '<em>Verlauf konnte nicht geladen werden – neuer Versuch läuft automatisch.</em>');
+        setHtml(logEl, '<li class="log-plain"><em>Verlauf konnte nicht geladen werden – neuer Versuch läuft automatisch.</em></li>');
       }
     } finally {
       logBusy = false;

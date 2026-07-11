@@ -412,10 +412,11 @@ p {
   border-color: #46515c;
 }
 
-/* Sprechblase: Text kommt aus data-tip. Anker ist die ganze ZEILE, damit
-   sie nie aus dem Bildschirm ragt. */
-.help::after {
-  content: attr(data-tip);
+/* Sprechblase: ein ECHTES Element (kein ::after), damit Screenreader den
+   Text über aria-describedby vorlesen können. Sie steckt IM ?-Chip, ist
+   aber absolut positioniert - Anker ist die ganze ZEILE (position:relative),
+   damit sie nie aus dem Bildschirm ragt. */
+.tip-bubble {
   position: absolute;
   bottom: calc(100% + 6px);
   left: 0;
@@ -438,6 +439,7 @@ p {
   transition: opacity 0.12s ease;
   z-index: 45;                     /* über der klebenden Kopfzeile (40) */
   pointer-events: none;
+  cursor: auto;
 }
 
 /* Hover zeigt die Sprechblase NUR auf echten Maus-Geräten: Auf dem Handy
@@ -445,14 +447,14 @@ p {
    nicht mehr schließen. Dort öffnet/schließt stattdessen ein Tipp auf das ?
    (Klasse tip-open, gesetzt in app.js); Escape schließt zusätzlich. */
 @media (hover: hover) {
-  .help:hover::after {
+  .help:hover .tip-bubble {
     visibility: visible;
     opacity: 1;
   }
 }
 
-.help:focus-visible::after,
-.help.tip-open::after {
+.help:focus-visible .tip-bubble,
+.help.tip-open .tip-bubble {
   visibility: visible;
   opacity: 1;
 }
@@ -909,8 +911,16 @@ details.keys-more .keys-links {
 /* ==== Verlauf ============================================================= */
 
 .log-list {
+  /* <ol> nur wegen der Semantik - optisch bleibt es die schlichte Liste. */
+  list-style: none;
+  margin: 0;
+  padding: 0;
   font-size: 14px;
   color: var(--muted);
+}
+
+.log-plain {
+  padding: 8px 0;
 }
 
 .log-row {
