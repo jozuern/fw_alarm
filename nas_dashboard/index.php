@@ -265,6 +265,9 @@ $readonly = $authed && dashboard_role() !== 'admin';
     <section class="panel">
       <h2 class="panel-title">Verlauf</h2>
       <div data-log class="log-list">Wird geladen…</div>
+      <?php // Erscheint nur, wenn es voraussichtlich noch ältere Einträge gibt
+            // (app.js blendet ihn ein); lädt in 25er-Schritten bis maximal 100. ?>
+      <p class="log-more"><button type="button" class="ghost-button" data-log-more hidden>Ältere Ereignisse anzeigen</button></p>
       <details class="explain">
         <summary>Was landet im Verlauf?</summary>
         <p>Die letzten Ereignisse aus dem NAS-Protokoll: Alarme, Tests, Demo-Wechsel

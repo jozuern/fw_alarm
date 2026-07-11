@@ -133,7 +133,12 @@
     })[char]);
   }
 
+  // Merker für renderDemo(): Das 5-s-Polling darf den Demo-Knopf nicht
+  // wieder aktivieren, während noch eine Aktion läuft (Doppelklick-Schutz).
+  let actionBusy = false;
+
   function setBusy(busy) {
+    actionBusy = busy;
     // keysAddBtn ist mit dabei, damit ein Doppelklick auf "Hinzufügen" nicht
     // zwei Anfragen abschickt (die zweite endet sonst in einer verwirrenden
     // "bereits eingetragen"-Meldung).
@@ -449,7 +454,7 @@
       }
     }
     if (demoToggleBtn && demoInfo) {
-      demoToggleBtn.disabled = false;
+      demoToggleBtn.disabled = actionBusy;
       demoToggleBtn.textContent = demoInfo.enabled
         ? 'Demo-Modus beenden (zurück zu LIVE)'
         : 'Demo-Modus einschalten';
@@ -757,7 +762,12 @@
         }
       }
     } catch (err) {
-      setHtml(keysListEl, escapeHtml('Empfängerliste konnte nicht geladen werden.'));
+      // Netz-Schluckauf: Die zuletzt bekannte Liste stehen lassen, statt sie
+      // durch die Fehlerzeile zu ersetzen (das sah nach Datenverlust aus).
+      // Nur wenn noch nie etwas geladen wurde, erscheint der Fehler direkt.
+      if (keysListEl.__lastHtml === undefined) {
+        setHtml(keysListEl, '<em>Empfängerliste konnte nicht geladen werden – neuer Versuch läuft automatisch.</em>');
+      }
     } finally {
       keysBusy = false;
     }
@@ -817,15 +827,25 @@
     }
   }
 
+  // Standardmäßig die letzten 25 Ereignisse; der "Ältere anzeigen"-Knopf
+  // erhöht in 25er-Schritten bis zum Server-Deckel von 100.
+  const LOG_STEP = 25;
+  const LOG_MAX = 100;
+  let logLimit = LOG_STEP;
+  const logMoreBtn = document.querySelector('[data-log-more]');
+
   async function refreshLog() {
     if (!logEl || logBusy) return;
     logBusy = true;
     try {
-      const res = await fetch('dashboard_api.php?action=log_view', { credentials: 'same-origin' });
+      const res = await fetch(`dashboard_api.php?action=log_view&limit=${logLimit}`, { credentials: 'same-origin' });
       if (res.status === 401) { handleAuthLoss(); return; }
       const data = await res.json();
       if (!data.ok) return;
       const entries = data.entries || [];
+      // Knopf nur zeigen, wenn es voraussichtlich noch mehr gibt (die Seite
+      // kam "voll" zurück) und der Deckel noch nicht erreicht ist.
+      if (logMoreBtn) logMoreBtn.hidden = logLimit >= LOG_MAX || entries.length < logLimit;
       if (!entries.length) {
         setHtml(logEl, '<em>Noch keine Ereignisse aufgezeichnet.</em>');
         return;
@@ -840,7 +860,10 @@
         </div>`;
       }).join(''));
     } catch (err) {
-      setHtml(logEl, escapeHtml('Verlauf konnte nicht geladen werden.'));
+      // Wie bei der Empfängerliste: letzten bekannten Stand stehen lassen.
+      if (logEl.__lastHtml === undefined) {
+        setHtml(logEl, '<em>Verlauf konnte nicht geladen werden – neuer Versuch läuft automatisch.</em>');
+      }
     } finally {
       logBusy = false;
     }
@@ -960,6 +983,10 @@
   testBtn?.addEventListener('click', enqueueTest);
   cancelBtn?.addEventListener('click', cancelCommand);
   demoToggleBtn?.addEventListener('click', toggleDemo);
+  logMoreBtn?.addEventListener('click', () => {
+    logLimit = Math.min(LOG_MAX, logLimit + LOG_STEP);
+    refreshLog();
+  });
 
   // ==== Zweistufige Inline-Bestätigung für Aktionen mit Folgen ==============
   // Ein natives confirm() ist mit einem einzigen (auch versehentlichen)

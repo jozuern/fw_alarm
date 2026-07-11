@@ -542,6 +542,9 @@ select {
   color: var(--text);
   padding: 0 12px;
   font: inherit;
+  /* Mindestens 16px: iOS Safari zoomt sonst beim Fokussieren die ganze
+     Seite heran (gilt auch für <select>). */
+  font-size: 16px;
 }
 
 input:focus,
@@ -794,7 +797,7 @@ details.explain li {
   width: auto;
   min-height: 36px;
   padding: 0 6px;
-  font-size: 13px;
+  /* Bewusst KEINE kleinere Schrift: unter 16px zoomt iOS beim Antippen. */
 }
 
 /* Löschen ist destruktiv - rot abgesetzt UND nach rechts abgerückt,
@@ -951,6 +954,11 @@ details.keys-more .keys-links {
 .log-text {
   overflow-wrap: anywhere;
   color: var(--muted);
+}
+
+/* "Ältere Ereignisse anzeigen" - leiser Knopf unter der Liste. */
+.log-more {
+  margin-top: 10px;
 }
 
 .log-alarm .log-text {

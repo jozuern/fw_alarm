@@ -187,8 +187,11 @@ if ($action === 'keys_list') {
 // zusätzlich ins Log geschrieben wird. Bark-Keys stehen im Log ohnehin nur
 // maskiert (mask_bark_key beim Schreiben).
 if ($action === 'log_view') {
+    // Auf Wunsch ältere Ereignisse nachladen ("Ältere anzeigen" im Dashboard).
+    // Gedeckelt, damit niemand das komplette Log in den Browser zieht.
+    $limit = max(1, min(100, (int)($_GET['limit'] ?? 25)));
     $out = [];
-    foreach (read_command_log_tail($config, 25) as $entry) {
+    foreach (read_command_log_tail($config, $limit) as $entry) {
         $event = (string)($entry['event'] ?? '');
         $item = ['at' => (int)($entry['log_at'] ?? 0), 'event' => $event];
         $cmd = is_array($entry['command'] ?? null) ? $entry['command'] : [];
