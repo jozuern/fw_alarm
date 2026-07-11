@@ -174,6 +174,17 @@ $readonly = $authed && dashboard_role() !== 'admin';
     <section class="panel">
       <h2 class="panel-title">Status der Box</h2>
       <div class="tele" data-fields></div>
+      <?php // Statischer Hinweis (Werte stammen aus config.h der Firmware und
+            // können sich dort ändern) - erspart die Mittwochs-Verwirrung,
+            // warum der Probealarm leiser ankam. ?>
+      <details class="explain">
+        <summary>Mittwochs leiser? Das Probealarm-Fenster</summary>
+        <p>Der wöchentliche Probealarm der Leitstelle löst bewusst die <strong>komplette</strong>
+          Alarmkette aus – er kommt nur leiser an: Laut Firmware-Einstellung sendet die Box
+          mittwochs zwischen 18:55 und 19:05&nbsp;Uhr mit Lautstärke 5 statt 10; alles andere
+          (Ton, Text, Critical Alert) ist identisch. Alarme außerhalb dieses Fensters kommen
+          immer in voller Lautstärke.</p>
+      </details>
     </section>
 
     <section class="panel">
@@ -203,24 +214,6 @@ $readonly = $authed && dashboard_role() !== 'admin';
       <p class="hint" data-keys-msg aria-live="polite"></p>
     </section>
 
-    <section class="panel">
-      <h2 class="panel-title">Betriebsmodus</h2>
-      <p data-demo-state>Wird geladen…</p>
-      <?php if (!$readonly): ?>
-        <div class="actions spaced">
-          <select data-demo-target aria-label="Demo-Empfänger"></select>
-          <button type="button" data-demo-toggle disabled>Wird geladen…</button>
-        </div>
-      <?php endif; ?>
-      <details class="explain">
-        <summary>Wie funktioniert der Demo-Modus?</summary>
-        <p>Im <strong>Demo-Modus</strong> gehen alle Alarme nur an den gewählten Test-Empfänger.
-          Der ESP32 übernimmt den Wechsel erst beim <strong>nächsten Poll</strong> (das Banner
-          oben zeigt den Stand). Nach dem Testen zurück auf <strong>LIVE</strong> schalten!</p>
-      </details>
-      <p class="hint" data-demo-msg aria-live="polite"></p>
-    </section>
-
     <?php if (!$readonly): ?>
       <section class="panel">
         <h2 class="panel-title">Auslösen &amp; Testen</h2>
@@ -247,6 +240,25 @@ $readonly = $authed && dashboard_role() !== 'admin';
           </ul>
         </details>
         <p data-alarm-result aria-live="polite" hidden></p>
+
+        <?php // Der Demo-Modus wohnt beim Testen (er IST ein Test-Werkzeug).
+              // Für die Lese-Rolle entfällt er komplett - den einzig wichtigen
+              // Fall (Demo aktiv) zeigt das gelbe Banner oben unübersehbar. ?>
+        <div class="sub-block">
+          <h3 class="sub-title">Demo-Modus</h3>
+          <p data-demo-state>Wird geladen…</p>
+          <div class="actions spaced">
+            <select data-demo-target aria-label="Demo-Empfänger"></select>
+            <button type="button" data-demo-toggle disabled>Wird geladen…</button>
+          </div>
+          <details class="explain">
+            <summary>Wie funktioniert der Demo-Modus?</summary>
+            <p>Im <strong>Demo-Modus</strong> gehen alle Alarme nur an den gewählten Test-Empfänger.
+              Der ESP32 übernimmt den Wechsel erst beim <strong>nächsten Poll</strong> (das Banner
+              oben zeigt den Stand). Nach dem Testen zurück auf <strong>LIVE</strong> schalten!</p>
+          </details>
+          <p class="hint" data-demo-msg aria-live="polite"></p>
+        </div>
       </section>
     <?php endif; ?>
 

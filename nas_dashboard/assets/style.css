@@ -205,6 +205,24 @@ p {
   background: var(--line-soft);
 }
 
+/* Unter-Abschnitt in einem Panel (z.B. Demo-Modus im Testen-Panel):
+   durch Haarlinie abgesetzt, Überschrift im Stil der Statusgruppen. */
+.sub-block {
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.sub-title {
+  font-family: var(--font-din);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--faint);
+  margin-bottom: 10px;
+}
+
 /* ==== Held-Bereich: die große Statuslampe ================================ */
 
 .hero {
@@ -279,7 +297,9 @@ p {
   border-top: 1px solid var(--line-soft);
 }
 
-[data-command] {
+/* Nur ein AKTIVER Befehl bekommt volle Textfarbe - der Leerzustand
+   ("Kein Befehl aktiv.") bleibt gedimmt, er ist der Normalfall. */
+[data-command].command-active {
   color: var(--text);
 }
 
@@ -344,6 +364,24 @@ p {
    Gelb = auffällig/übergangsweise, Rot = handeln. */
 .tele-warn .tele-value { color: var(--warn-text); }
 .tele-crit .tele-value { color: var(--crit-text); }
+
+/* Box offline: Die Box-Werte sind nur der letzte bekannte Stand - auf Grau
+   dimmen (auch Warnfarben!), damit niemand sie für live hält. Zeilen, die
+   weiterhin gelten ("Offline seit", NAS-Wächter), behalten ihre Farben
+   (tele-current aus app.js). Bewusst Farbe statt opacity: opacity würde
+   eine geöffnete ?-Sprechblase (Kind der Zeile) mit ausgrauen. */
+.tele.is-stale .tele-row:not(.tele-current) .tele-label,
+.tele.is-stale .tele-row:not(.tele-current) .tele-value {
+  color: var(--faint);
+}
+
+/* Hinweiszeile über den gedimmten Werten (volle Grid-Breite). */
+.stale-note {
+  grid-column: 1 / -1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--warn-text);
+}
 
 /* ==== ?-Tooltips an den Statuszeilen ===================================== */
 

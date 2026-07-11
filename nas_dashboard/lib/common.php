@@ -485,6 +485,8 @@ function demo_mode_info(array $config): array
 // der Empfänger SIEHT ihn also weiterhin.
 function effective_alarm_entries(array $config): array
 {
+    // label läuft mit, damit das Dashboard im Sende-Ergebnis NAMEN zeigen kann
+    // ("Josh FEHLER" statt "abc... FEHLER") - unter Stress zählt, WER fehlt.
     $infoByKey = [];
     foreach ((load_alarm_keys($config)['keys'] ?? []) as $entry) {
         $key = trim((string)($entry['key'] ?? ''));
@@ -492,6 +494,7 @@ function effective_alarm_entries(array $config): array
             $infoByKey[$key] = [
                 'muted' => !empty($entry['muted']),
                 'mute_volume' => mute_volume_of($entry),
+                'label' => (string)($entry['label'] ?? ''),
             ];
         }
     }
@@ -499,14 +502,17 @@ function effective_alarm_entries(array $config): array
     if (!empty($demo['enabled'])) {
         $key = trim((string)($demo['key'] ?? ''));
         if (valid_bark_key($key)) {
-            $info = $infoByKey[$key] ?? ['muted' => false, 'mute_volume' => 0];
-            return [['key' => $key, 'muted' => $info['muted'], 'mute_volume' => $info['mute_volume']]];
+            $info = $infoByKey[$key]
+                ?? ['muted' => false, 'mute_volume' => 0, 'label' => (string)($demo['label'] ?? '')];
+            return [['key' => $key, 'muted' => $info['muted'],
+                'mute_volume' => $info['mute_volume'], 'label' => (string)($info['label'] ?? '')]];
         }
         // Unplausibler Demo-Key: lieber die volle Liste als gar keine Alarmierung.
     }
     $entries = [];
     foreach ($infoByKey as $key => $info) {
-        $entries[] = ['key' => (string)$key, 'muted' => $info['muted'], 'mute_volume' => $info['mute_volume']];
+        $entries[] = ['key' => (string)$key, 'muted' => $info['muted'],
+            'mute_volume' => $info['mute_volume'], 'label' => (string)($info['label'] ?? '')];
     }
     return $entries;
 }
@@ -792,7 +798,8 @@ function bark_send_false_alarm_all(array $config): array
         if ($ok) {
             $okCount++;
         }
-        $results[] = ['key' => mask_bark_key((string)$entry['key']), 'ok' => $ok];
+        $results[] = ['key' => mask_bark_key((string)$entry['key']), 'ok' => $ok,
+            'label' => (string)($entry['label'] ?? '')];
     }
     return [
         'ok' => $okCount === count($entries),
@@ -854,6 +861,7 @@ function bark_send_alarm_all(array $config): array
         }
         $result = bark_send_alarm_one($config, (string)$entry['key'], $body, $muted,
             (int)($entry['mute_volume'] ?? 0));
+        $result['label'] = (string)($entry['label'] ?? '');
         if ($result['ok']) {
             $okCount++;
         }

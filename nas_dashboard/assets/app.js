@@ -96,6 +96,12 @@
     return new Date(epoch * 1000).toLocaleString('de-DE');
   }
 
+  // Nur die Uhrzeit (HH:MM) - für "Stumm bis ~18:30". Das Datum wäre hier
+  // Rauschen, die Stummschaltung endet spätestens nach wenigen Stunden.
+  function fmtClock(epoch) {
+    return new Date(epoch * 1000).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  }
+
   // Relative Zeit für junge Ereignisse ("vor 5 min"); ältere bekommen das
   // absolute Datum. Rechnet mit der Server-Zeit, nicht der Browser-Uhr.
   function fmtRelTime(epoch, serverTime) {
@@ -286,7 +292,7 @@
       tip: 'Name der Box (device_id aus config.h) und der Kompilier-Zeitpunkt der laufenden Firmware – so sieht man, ob wirklich der neueste Stand läuft.',
       value: (s) => (na(s.device_id) && na(s.fw_build)) ? 'n/a'
         : `${show(s.device_id)} · ${show(s.fw_build)}` },
-    { group: 'Box & Wartung',
+    { group: 'Box & Wartung', liveWhenOffline: true,
       label: (ctx) => ctx.offline ? 'Offline seit' : 'Läuft seit',
       tip: (ctx) => ctx.offline
         ? 'Zeit seit dem letzten Lebenszeichen des ESP32 beim NAS. Mögliche Ursachen: Stromausfall, WLAN weg oder NAS nicht erreichbar.'
@@ -302,11 +308,17 @@
     { group: 'Box & Wartung', label: 'Freier Speicher',
       tip: 'Freier Arbeitsspeicher (Heap) des ESP32. Normal sind grob 150–250 kB. Sinkt der Wert über Tage stetig, deutet das auf ein Speicherleck hin; unter ~50 kB wird es kritisch.',
       value: (s) => na(s.free_heap) ? 'n/a' : fmtHeap(s.free_heap),
-      cls: (s) => { const b = parseInt(s.free_heap, 10); return !isNaN(b) && b < 50000 ? 'warn' : ''; } }
+      cls: (s) => { const b = parseInt(s.free_heap, 10); return !isNaN(b) && b < 50000 ? 'warn' : ''; } },
+    // NAS-seitig, nicht Box-seitig: Der Wächter (DSM-Aufgabe) muss auch dann
+    // laufen, wenn die Box offline ist - deshalb liveWhenOffline.
+    { group: 'Box & Wartung', label: 'Offline-Wächter (NAS)', liveWhenOffline: true,
+      tip: 'Die DSM-Aufgabe auf dem NAS prüft alle 15 Minuten, ob die Box sich noch meldet, und schickt sonst eine Bark-Warnung. Hier steht, ob diese Aufgabe selbst noch läuft – der Wächter darf nicht unbemerkt ausfallen.',
+      value: (s, ctx) => ctx.watchdog ? ctx.watchdog.text : 'n/a',
+      cls: (s, ctx) => ctx.watchdog && ctx.watchdog.warn ? 'warn' : '' }
   ];
 
-  function renderFields(status, offline, seenAge) {
-    const ctx = { offline, seenAge };
+  function renderFields(status, offline, seenAge, watchdog) {
+    const ctx = { offline, seenAge, watchdog };
     // Zeilen nach Gruppen bündeln; jede Gruppe wird eine eigene Spalte.
     const groups = [];
     let current = null;
@@ -319,12 +331,22 @@
       const tip = typeof row.tip === 'function' ? row.tip(ctx) : row.tip;
       const value = row.value(status, ctx);
       const cls = row.cls ? (row.cls(status, ctx) || '') : '';
-      current.rows.push(`<div class="tele-row${cls ? ' tele-' + cls : ''}">
+      // Offline gilt: Alle Box-Werte sind nur der letzte bekannte Stand und
+      // werden gedimmt - außer den Zeilen, die weiterhin aktuell sind
+      // ("Offline seit" und der NAS-seitige Wächter).
+      const liveCls = offline && row.liveWhenOffline ? ' tele-current' : '';
+      current.rows.push(`<div class="tele-row${cls ? ' tele-' + cls : ''}${liveCls}">
         <span class="tele-label">${escapeHtml(label)} <span class="help" tabindex="0" role="button" aria-expanded="false" aria-label="Erklärung zu „${escapeHtml(label)}“" data-tip="${escapeHtml(tip)}">?</span></span>
         <span class="tele-value">${escapeHtml(value)}</span>
       </div>`);
     });
-    setHtml(fieldsEl, groups.map((g) =>
+    // Stale-Hinweis: Wer nur dieses Panel scannt, soll veraltete Werte nicht
+    // für live halten (der Hero sagt "Box offline", aber der steht weiter oben).
+    fieldsEl.classList.toggle('is-stale', !!offline);
+    const staleNote = offline
+      ? `<p class="stale-note">Box offline – die gedimmten Werte sind der letzte bekannte Stand${status.seen_at ? ' von ' + escapeHtml(formatTime(status.seen_at)) : ' (die Box hat sich noch nie gemeldet)'}.</p>`
+      : '';
+    setHtml(fieldsEl, staleNote + groups.map((g) =>
       `<section class="tele-group"><h3>${escapeHtml(g.name)}</h3>${g.rows.join('')}</section>`).join(''));
   }
 
@@ -342,7 +364,10 @@
       if (finishedAt && serverTime - finishedAt > COMMAND_LINGER_S) command = null;
     }
     if (!command) {
+      // Leerzustand gedimmt (Klasse weg = muted-Grundfarbe): "Kein Befehl
+      // aktiv" ist der Normalfall und soll nicht wie eine Meldung wirken.
       commandEl.textContent = 'Kein Befehl aktiv.';
+      commandEl.classList.remove('command-active');
       if (cancelBtn) cancelBtn.hidden = true;
       return;
     }
@@ -353,36 +378,37 @@
       if (command.ack_message) text += ` (${fmtAckMessage(command.ack_message)})`;
     }
     commandEl.textContent = text;
+    commandEl.classList.add('command-active');
     if (cancelBtn) cancelBtn.hidden = command.state !== 'pending';
   }
 
-  // Selbstüberwachung des Offline-Wächters: warnen, wenn die DSM-Aufgabe
-  // fehlt oder nicht mehr läuft (der Wächter, der das Schweigen der Box
-  // melden soll, darf nicht selbst unbemerkt schweigen).
-  function renderWatchdog(info, serverTime) {
-    if (!watchdogEl) return;
-    let text;
-    let warn = true;
-    if (!info) {
-      text = '';
-      warn = false;
-    } else if (!info.configured) {
-      text = 'Offline-Wächter: nicht konfiguriert (bark_key_status in config.php setzen, siehe SETUP.md).';
-    } else if (!info.last_run) {
-      text = 'Offline-Wächter: noch nie gelaufen – DSM-Aufgabe im Aufgabenplaner eingerichtet?';
-    } else {
-      const age = Math.max(0, serverTime - info.last_run);
-      // Die DSM-Aufgabe läuft alle 15 min - erst warnen, wenn mehr als zwei
-      // Läufe ausgefallen sind (35 min), sonst schlägt die Warnung ständig
-      // fälschlich an, nur weil der nächste Lauf noch aussteht.
-      if (age > 2100) {
-        text = `Offline-Wächter: seit ${fmtUptime(age)} nicht gelaufen – DSM-Aufgabe prüfen!`;
-      } else {
-        text = `Offline-Wächter: zuletzt gelaufen ${age < 60 ? 'gerade eben' : 'vor ' + fmtUptime(age)}.`;
-        warn = false;
-      }
+  // Selbstüberwachung des Offline-Wächters: Der Wächter, der das Schweigen
+  // der Box melden soll, darf nicht selbst unbemerkt schweigen. Der Zustand
+  // wird EINMAL bewertet und zweifach genutzt: als ruhige Statuszeile in
+  // "Box & Wartung" (immer) und als Warnzeile im Hero (NUR im Warnfall -
+  // "läuft normal" wäre dort Dauerrauschen im wichtigsten Panel).
+  function watchdogState(info, serverTime) {
+    if (!info) return null;
+    if (!info.configured) {
+      return { warn: true, text: 'nicht konfiguriert (bark_key_status in config.php setzen)' };
     }
-    watchdogEl.textContent = text;
+    if (!info.last_run) {
+      return { warn: true, text: 'noch nie gelaufen – DSM-Aufgabe im Aufgabenplaner eingerichtet?' };
+    }
+    const age = Math.max(0, serverTime - info.last_run);
+    // Die DSM-Aufgabe läuft alle 15 min - erst warnen, wenn mehr als zwei
+    // Läufe ausgefallen sind (35 min), sonst schlägt die Warnung ständig
+    // fälschlich an, nur weil der nächste Lauf noch aussteht.
+    if (age > 2100) {
+      return { warn: true, text: `seit ${fmtUptime(age)} nicht gelaufen – DSM-Aufgabe prüfen!` };
+    }
+    return { warn: false, text: `läuft (zuletzt ${age < 60 ? 'gerade eben' : 'vor ' + fmtUptime(age)})` };
+  }
+
+  function renderWatchdog(state) {
+    if (!watchdogEl) return;
+    const warn = !!(state && state.warn);
+    watchdogEl.textContent = warn ? `Offline-Wächter: ${state.text}` : '';
     watchdogEl.classList.toggle('warn-text', warn);
   }
 
@@ -521,9 +547,10 @@
       const seenAge = data.seen_age_seconds == null ? NaN : Number(data.seen_age_seconds);
       const ageText = fmtAgeShort(seenAge);
       updatedEl.textContent = `Letzter Status: ${formatTime(status.seen_at)}${ageText ? ` (${ageText})` : ''}`;
-      renderFields(status, !!data.offline, seenAge);
+      const wdState = watchdogState(data.watchdog, Number(data.server_time));
+      renderFields(status, !!data.offline, seenAge, wdState);
       renderCommand(data.command, Number(data.server_time));
-      renderWatchdog(data.watchdog, Number(data.server_time));
+      renderWatchdog(wdState);
       renderDemo(status, !!data.offline);
     } catch (err) {
       // Hier ist das NAS selbst nicht erreichbar (oder die Antwort kaputt) -
@@ -597,7 +624,8 @@
     alarmResultEl.textContent = 'Entwarnung wird gesendet…';
     try {
       const data = await post({ action: 'false_alarm' });
-      const lines = (data.results || []).map((r) => `${r.key} ${r.ok ? 'OK' : 'FEHLER'}`);
+      // Namen statt maskierter Keys: Unter Stress zählt, WER fehlt.
+      const lines = (data.results || []).map((r) => `${r.label || r.key} ${r.ok ? 'OK' : 'FEHLER'}`);
       alarmResultEl.textContent = `${data.message || 'Fehler.'}` +
         (lines.length ? ` [${lines.join(', ')}]` : '');
     } catch (err) {
@@ -631,8 +659,9 @@
     alarmResultEl.textContent = 'Alarm wird gesendet…';
     try {
       const data = await post({ action: 'alarm' });
+      // Namen statt maskierter Keys: Unter Stress zählt, WER fehlt.
       const lines = (data.results || []).map((r) =>
-        `${r.key} ${r.ok ? 'OK' : 'FEHLER (HTTP ' + r.http + ')'}`);
+        `${r.label || r.key} ${r.ok ? 'OK' : 'FEHLER (HTTP ' + r.http + ')'}`);
       alarmResultEl.textContent = `${data.message || 'Fehler.'}` +
         (lines.length ? ` [${lines.join(', ')}]` : '');
     } catch (err) {
@@ -669,8 +698,11 @@
           // Stumm-Lautstärke (0 = lautlos): gilt, sobald der Eintrag stumm ist.
           const vol = Number(entry.mute_volume) || 0;
           const volText = vol === 0 ? '0 (lautlos)' : `${vol} von 10`;
+          // "bis ~HH:MM": Zeitpunkt der automatischen Laut-Rückschaltung
+          // (Sicherheitsnetz) - so überrascht sie später niemanden.
+          const until = Number(entry.mute_until) || 0;
           const badge = entry.muted
-            ? `<span class="badge-muted" title="Arbeitsmodus: Alarme kommen mit Stumm-Lautstärke ${volText} an. Stumm seit ${escapeHtml(formatTime(entry.muted_at))}.">Stumm</span>`
+            ? `<span class="badge-muted" title="Arbeitsmodus: Alarme kommen mit Stumm-Lautstärke ${volText} an. Stumm seit ${escapeHtml(formatTime(entry.muted_at))}${until ? `; spätestens um ${escapeHtml(fmtClock(until))} Uhr schaltet die Box automatisch wieder laut` : ''}.">Stumm${until ? ` bis ~${escapeHtml(fmtClock(until))}` : ''}</span>`
             : '';
           let actions = '';
           if (!readOnly) {

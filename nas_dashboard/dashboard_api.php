@@ -149,6 +149,7 @@ if ($action === 'keys_list') {
     ensure_mute_tokens($config);
     $state = load_alarm_keys($config);
     $isAdmin = dashboard_role() === 'admin';
+    $maxMute = mute_max_seconds($config);
     $entries = [];
     foreach (($state['keys'] ?? []) as $entry) {
         $item = [
@@ -159,6 +160,12 @@ if ($action === 'keys_list') {
             'muted_at' => (int)($entry['muted_at'] ?? 0),
             'mute_volume' => mute_volume_of($entry),
         ];
+        // Wann schaltet das Sicherheitsnetz automatisch wieder laut? So kann
+        // das Dashboard "Stumm bis ~HH:MM" zeigen, statt dass die Rückschaltung
+        // die Betroffenen später überrascht.
+        if ($item['muted'] && $item['muted_at'] > 0 && $maxMute > 0) {
+            $item['mute_until'] = $item['muted_at'] + $maxMute;
+        }
         // Der Geheim-Link-Token geht NUR an den Admin (er verteilt die
         // Kurzbefehl-Links) - der Lese-Benutzer bekommt ihn nicht zu sehen.
         if ($isAdmin) {
