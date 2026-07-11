@@ -57,18 +57,18 @@ if ($action === 'enqueue') {
     require_dashboard_admin();
     $type = strtoupper((string)($_POST['type'] ?? ''));
     if (!in_array($type, ['TEST', 'ALARM'], true)) {
-        json_response(['ok' => false, 'message' => 'Ungueltiger Befehl.']);
+        json_response(['ok' => false, 'message' => 'Ungültiger Befehl.']);
     }
     if ($type === 'ALARM') {
         if (!demo_mode_enabled($config)) {
-            json_response(['ok' => false, 'message' => 'ALARM ueber den ESP32 geht nur im Demo-Modus. Im LIVE-Betrieb den REAL ALARM (direkt vom NAS) benutzen.']);
+            json_response(['ok' => false, 'message' => 'ALARM über den ESP32 geht nur im Demo-Modus. Im LIVE-Betrieb den REAL ALARM (direkt vom NAS) benutzen.']);
         }
         $latest = read_json_file(data_path($config, 'latest_status.json'), []);
         $espVersion = (int)($latest['keys_version'] ?? -1);
         $nasVersion = (int)(load_alarm_keys($config)['version'] ?? 0);
         $age = time() - (int)($latest['seen_at'] ?? 0);
         if ($espVersion !== $nasVersion || $age > (int)($config['offline_after_seconds'] ?? 180)) {
-            json_response(['ok' => false, 'message' => 'Der ESP32 hat die Demo-Liste noch nicht uebernommen oder ist offline - warten, bis das Demo-Banner die Uebernahme bestaetigt.']);
+            json_response(['ok' => false, 'message' => 'Der ESP32 hat die Demo-Liste noch nicht übernommen oder ist offline - warten, bis das Demo-Banner die Übernahme bestätigt.']);
         }
     }
 
@@ -102,7 +102,7 @@ if ($action === 'enqueue') {
         $state['next_id'] = $id + 1;
         $state['current'] = $command;
         if (!write_json_file($path, $state)) {
-            return ['ok' => false, 'message' => 'Befehl konnte nicht gespeichert werden (data_dir pruefen).'];
+            return ['ok' => false, 'message' => 'Befehl konnte nicht gespeichert werden (data_dir prüfen).'];
         }
         append_command_log($config, ['event' => 'created', 'command' => $command]);
         return ['ok' => true, 'message' => 'Befehl angelegt.', 'command' => $command];
@@ -277,7 +277,7 @@ if ($action === 'demo_set') {
                 }
             }
             if ($target === null) {
-                return ['ok' => false, 'message' => 'Demo-Empfaenger nicht gefunden. Zuerst im Panel "Alarm-Empfaenger" anlegen, dann Demo-Modus einschalten.'];
+                return ['ok' => false, 'message' => 'Demo-Empfänger nicht gefunden. Zuerst im Panel "Alarm-Empfänger" anlegen, dann Demo-Modus einschalten.'];
             }
             $demo = [
                 'enabled' => true,
@@ -288,20 +288,20 @@ if ($action === 'demo_set') {
                 'by' => $user,
             ];
             $message = 'DEMO-MODUS aktiviert: Alarme gehen nur noch an "' . (string)($target['label'] ?? '') . '". '
-                . 'WICHTIG: Der ESP32 uebernimmt das erst beim naechsten Poll - Banner oben beobachten!';
+                . 'WICHTIG: Der ESP32 übernimmt das erst beim nächsten Poll - Banner oben beobachten!';
         } else {
             if (empty($demo['enabled'])) {
                 return ['ok' => false, 'message' => 'Demo-Modus ist bereits aus.'];
             }
             $demo = ['enabled' => false, 'changed_at' => time(), 'by' => $user];
-            $message = 'LIVE-Modus aktiv: Alarme gehen wieder an ALLE Empfaenger. '
-                . 'Der ESP32 uebernimmt die volle Liste beim naechsten Poll.';
+            $message = 'LIVE-Modus aktiv: Alarme gehen wieder an ALLE Empfänger. '
+                . 'Der ESP32 übernimmt die volle Liste beim nächsten Poll.';
         }
 
         $state['version'] = (int)($state['version'] ?? 0) + 1;
         if (!backup_then_write($config, 'demo_mode.json', $demo)
             || !backup_then_write($config, 'alarm_keys.json', $state)) {
-            return ['ok' => false, 'message' => 'Demo-Modus konnte nicht gespeichert werden (data_dir pruefen).'];
+            return ['ok' => false, 'message' => 'Demo-Modus konnte nicht gespeichert werden (data_dir prüfen).'];
         }
         append_command_log($config, [
             'event' => $enable ? 'demo_enabled' : 'demo_disabled',
@@ -321,10 +321,10 @@ if ($action === 'keys_add') {
     $label = trim((string)($_POST['label'] ?? ''));
     $key = trim((string)($_POST['key'] ?? ''));
     if ($label === '' || mb_strlen($label) > 40) {
-        json_response(['ok' => false, 'message' => 'Name fehlt oder ist laenger als 40 Zeichen.']);
+        json_response(['ok' => false, 'message' => 'Name fehlt oder ist länger als 40 Zeichen.']);
     }
     if (!valid_bark_key($key)) {
-        json_response(['ok' => false, 'message' => 'Ungueltiger Bark-Key (erlaubt: 5-64 Zeichen, A-Z a-z 0-9 _ -).']);
+        json_response(['ok' => false, 'message' => 'Ungültiger Bark-Key (erlaubt: 5-64 Zeichen, A-Z a-z 0-9 _ -).']);
     }
 
     $result = with_lock($config, 'keys', function () use ($config, $label, $key): array {
@@ -332,7 +332,7 @@ if ($action === 'keys_add') {
         $state = read_json_file($path, alarm_keys_default());
         $keys = is_array($state['keys'] ?? null) ? $state['keys'] : [];
         if (count($keys) >= 10) {
-            return ['ok' => false, 'message' => 'Maximal 10 Empfaenger moeglich.'];
+            return ['ok' => false, 'message' => 'Maximal 10 Empfänger möglich.'];
         }
         foreach ($keys as $entry) {
             if (hash_equals((string)($entry['key'] ?? ''), $key)) {
@@ -361,7 +361,7 @@ if ($action === 'keys_add') {
             'key' => mask_bark_key($key),
             'version' => $state['version'],
         ]);
-        return ['ok' => true, 'message' => 'Empfaenger hinzugefuegt. Der ESP32 uebernimmt die Liste beim naechsten Poll.'];
+        return ['ok' => true, 'message' => 'Empfänger hinzugefügt. Der ESP32 übernimmt die Liste beim nächsten Poll.'];
     });
 
     json_response($result);
@@ -377,7 +377,7 @@ if ($action === 'keys_delete') {
         // erst gelöscht werden, wenn der Demo-Modus wieder aus ist.
         $demo = load_demo_mode($config);
         if (!empty($demo['enabled']) && (int)($demo['key_id'] ?? 0) === $id) {
-            return ['ok' => false, 'message' => 'Dieser Empfaenger ist gerade der Demo-Empfaenger. Zuerst den Demo-Modus beenden.'];
+            return ['ok' => false, 'message' => 'Dieser Empfänger ist gerade der Demo-Empfänger. Zuerst den Demo-Modus beenden.'];
         }
         $path = data_path($config, 'alarm_keys.json');
         $state = read_json_file($path, alarm_keys_default());
@@ -392,11 +392,11 @@ if ($action === 'keys_delete') {
             }
         }
         if ($removed === null) {
-            return ['ok' => false, 'message' => 'Empfaenger nicht gefunden.'];
+            return ['ok' => false, 'message' => 'Empfänger nicht gefunden.'];
         }
         // Sicherheitsnetz: Die Alarmierung darf nie ohne Empfaenger dastehen.
         if (count($remaining) === 0) {
-            return ['ok' => false, 'message' => 'Der letzte Empfaenger kann nicht geloescht werden.'];
+            return ['ok' => false, 'message' => 'Der letzte Empfänger kann nicht gelöscht werden.'];
         }
         $state['keys'] = $remaining;
         $state['version'] = (int)($state['version'] ?? 0) + 1;
@@ -410,7 +410,7 @@ if ($action === 'keys_delete') {
             'key' => mask_bark_key((string)($removed['key'] ?? '')),
             'version' => $state['version'],
         ]);
-        return ['ok' => true, 'message' => 'Empfaenger geloescht. Der ESP32 uebernimmt die Liste beim naechsten Poll.'];
+        return ['ok' => true, 'message' => 'Empfänger gelöscht. Der ESP32 übernimmt die Liste beim nächsten Poll.'];
     });
 
     json_response($result);
@@ -440,12 +440,12 @@ if ($action === 'keys_mute') {
             }
         }
         if ($idx < 0) {
-            return ['ok' => false, 'message' => 'Empfaenger nicht gefunden.'];
+            return ['ok' => false, 'message' => 'Empfänger nicht gefunden.'];
         }
         $entry = $state['keys'][$idx];
         if (!empty($entry['muted']) === $wantMuted) {
             return ['ok' => true, 'changed' => false,
-                'message' => $wantMuted ? 'Empfaenger ist bereits stumm.' : 'Empfaenger ist bereits laut.'];
+                'message' => $wantMuted ? 'Empfänger ist bereits stumm.' : 'Empfänger ist bereits laut.'];
         }
         $state['keys'][$idx]['muted'] = $wantMuted;
         $state['keys'][$idx]['muted_at'] = $wantMuted ? time() : 0;
@@ -455,8 +455,8 @@ if ($action === 'keys_mute') {
         }
         return ['ok' => true, 'changed' => true, 'entry' => $state['keys'][$idx], 'version' => (int)$state['version'],
             'message' => $wantMuted
-                ? 'Empfaenger stummgeschaltet (Arbeitsmodus): Alarme kommen dort nur mit der eingestellten Stumm-Lautstaerke an. Der ESP32 uebernimmt das beim naechsten Poll.'
-                : 'Empfaenger wieder laut geschaltet. Der ESP32 uebernimmt das beim naechsten Poll.'];
+                ? 'Empfänger stummgeschaltet (Arbeitsmodus): Alarme kommen dort nur mit der eingestellten Stumm-Lautstärke an. Der ESP32 übernimmt das beim nächsten Poll.'
+                : 'Empfänger wieder laut geschaltet. Der ESP32 übernimmt das beim nächsten Poll.'];
     });
 
     // Log erst NACH dem Lock. Bewusst KEIN Bestätigungs-Push mehr an den
@@ -488,7 +488,7 @@ if ($action === 'keys_set_mute_volume') {
     $id = (int)($_POST['id'] ?? 0);
     $volume = (int)($_POST['volume'] ?? -1);
     if ($volume < 0 || $volume > 10) {
-        json_response(['ok' => false, 'message' => 'Ungueltige Lautstaerke (erlaubt: 0-10).']);
+        json_response(['ok' => false, 'message' => 'Ungültige Lautstärke (erlaubt: 0-10).']);
     }
 
     $result = with_lock($config, 'keys', function () use ($config, $id, $volume): array {
@@ -502,10 +502,10 @@ if ($action === 'keys_set_mute_volume') {
             }
         }
         if ($idx < 0) {
-            return ['ok' => false, 'message' => 'Empfaenger nicht gefunden.'];
+            return ['ok' => false, 'message' => 'Empfänger nicht gefunden.'];
         }
         if (mute_volume_of($state['keys'][$idx]) === $volume) {
-            return ['ok' => true, 'changed' => false, 'message' => 'Stumm-Lautstaerke ist bereits so eingestellt.'];
+            return ['ok' => true, 'changed' => false, 'message' => 'Stumm-Lautstärke ist bereits so eingestellt.'];
         }
         $state['keys'][$idx]['mute_volume'] = $volume;
         $state['version'] = (int)($state['version'] ?? 0) + 1;
@@ -515,8 +515,8 @@ if ($action === 'keys_set_mute_volume') {
         return ['ok' => true, 'changed' => true, 'entry' => $state['keys'][$idx], 'version' => (int)$state['version'],
             'message' => ($volume === 0
                 ? 'Gespeichert: Stumm = komplett lautlos.'
-                : 'Gespeichert: Stumm = leise mit Lautstaerke ' . $volume . '.')
-                . ' Der ESP32 uebernimmt das beim naechsten Poll.'];
+                : 'Gespeichert: Stumm = leise mit Lautstärke ' . $volume . '.')
+                . ' Der ESP32 übernimmt das beim nächsten Poll.'];
     });
 
     // Log erst NACH dem Lock; kein Push an den Betroffenen.

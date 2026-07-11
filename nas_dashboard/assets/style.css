@@ -1,221 +1,707 @@
+/* =========================================================================
+   BOSS-925 Alarm-Wächter — „Leitstand“-Design, 2. Ausbaustufe
+   Dunkles Kontrollraum-Thema wie die Statustafel einer Feuerwache:
+   - DIN-Schrift (Bahnschrift auf Windows, DIN Alternate auf dem iPhone) -
+     beide vorinstalliert, KEINE Webfonts nötig (CSP erlaubt nur 'self').
+   - Statuslampen in Grün/Gelb/Rot mit fester Bedeutung (Ampel-Logik).
+   - Warnstreifen tragen echte Bedeutung: rot-weißes Absperrband markiert
+     den scharfen Alarm-Bereich, gelb-schwarzes den Demo-/Übungsmodus.
+   - Statuswerte als ruhige Beschriftung/Wert-Zeilen statt Kästchen-Gitter.
+   Die CSP erlaubt kein 'unsafe-inline' - ALLE Styles leben in dieser Datei.
+   ========================================================================= */
+
 :root {
-  color-scheme: light;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #f5f7f8;
-  color: #1b2328;
+  color-scheme: dark;
+
+  /* Flächen (Graphit, leicht kühl - wie Schaltschrank-Blech) */
+  --bg: #14181d;
+  --panel: #1a2026;
+  --inset: #161b21;
+  --line: #2b333c;
+  --line-soft: #232a32;
+
+  /* Text */
+  --text: #e9edf1;
+  --muted: #97a2ad;
+  /* Hell genug für WCAG AA (>= 4,5:1 auf --panel) - der alte Wert #6a7681
+     fiel für Kleintext wie Panel-Titel und Log-Zeiten mit 3,5:1 durch. */
+  --faint: #7d8895;
+
+  /* Signalfarben (Lampen): Grün = bereit, Gelb = unsicher, Rot = handeln */
+  --ok: #45d07d;
+  --ok-text: #7de3a6;
+  --warn: #ffb224;
+  --warn-text: #ffc95c;
+  --crit: #ff5147;
+  --crit-text: #ff857c;
+
+  /* Feuerwehrrot (RAL-3000-nah, passend zum Favicon) für Knöpfe/Marke */
+  --brand: #b42318;
+  --brand-bright: #d92c1f;
+
+  /* Schrift-Rollen */
+  --font-din: "Bahnschrift", "DIN Alternate", "Franklin Gothic Medium", "Arial Narrow", "Segoe UI", sans-serif;
+  --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, Menlo, monospace;
 }
+
+/* ==== Grundgerüst ======================================================== */
 
 body {
   margin: 0;
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* hidden-Attribut IMMER durchsetzen: Eigene display-Regeln (z.B. auf button)
+   schlagen sonst das Browser-Default "display:none" - versteckte Knöpfe wie
+   "Befehl abbrechen" oder "DEMO-ALARM" wären dauerhaft sichtbar. */
+[hidden] {
+  display: none !important;
 }
 
 main {
-  max-width: 980px;
+  max-width: 1000px;
   margin: 0 auto;
-  padding: 28px 18px 48px;
+  padding: 22px 18px calc(48px + env(safe-area-inset-bottom));
 }
 
-.topbar {
-  display: flex;
-  flex-wrap: wrap;               /* Handy: Abmelden-Knopf rutscht unter den Titel statt ihn zu quetschen */
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 16px;
-  margin-bottom: 24px;
-}
-
-h1 {
-  font-size: clamp(21px, 5.5vw, 28px);   /* skaliert mit der Bildschirmbreite */
-  margin: 0 0 6px;
+h1, h2, h3 {
+  margin: 0;
 }
 
 p {
   margin: 0;
-  color: #5b6670;
+  color: var(--muted);
 }
 
-.panel {
-  background: #fff;
-  border: 1px solid #d8dee3;
-  border-radius: 8px;
-  padding: 18px;
-  margin-bottom: 18px;
+::selection {
+  background: rgba(255, 81, 71, 0.35);
 }
 
-.badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 36px;
-  padding: 0 14px;
-  border-radius: 6px;
-  font-weight: 750;
-  letter-spacing: 0;
+:focus-visible {
+  outline: 2px solid #d9e6f2;
+  outline-offset: 2px;
 }
 
-.badge-online {
-  background: #d9f2e4;
-  color: #07542d;
+.noscript {
+  background: rgba(255, 178, 36, 0.12);
+  border-bottom: 1px solid var(--warn);
+  color: var(--warn-text);
+  text-align: center;
+  padding: 10px 16px;
+  font-size: 14px;
 }
 
-.badge-offline {
-  background: #ffe1de;
-  color: #8d1f14;
+/* ==== Kopfzeile (klebt beim Scrollen oben) =============================== */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: rgba(18, 22, 27, 0.92);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line-soft);
 }
 
-/* Gelb = Aussage unsicher: NAS nicht erreichbar oder Sitzung abgelaufen.
-   Bewusst von badge-offline (rot = ESP32 meldet sich nicht) getrennt. */
-.badge-stale {
-  background: #fff3cd;
-  color: #7c3d00;
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 10px;
-}
-
-.field {
-  border: 1px solid #e1e6ea;
-  border-radius: 6px;
-  padding: 10px 12px;
-  min-height: 58px;
-}
-
-.field span {
-  display: block;
-  color: #66717a;
-  font-size: 13px;
-  margin-bottom: 4px;
-}
-
-.field strong {
-  overflow-wrap: anywhere;
-}
-
-/* Warnfarben: Probleme sollen ins Auge springen, ohne dass man die Werte
-   lesen muss. Gelb = auffällig/übergangsweise, Rot = handeln. */
-.field-warn {
-  border-color: #d97706;
-  background: #fff8e6;
-}
-
-.field-crit {
-  border-color: #b42318;
-  background: #fdecea;
-}
-
-.actions {
+.topbar-inner {
+  max-width: 1000px;
+  margin: 0 auto;
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
   align-items: center;
+  gap: 8px 12px;
+  padding: 10px max(18px, env(safe-area-inset-right)) 10px max(18px, env(safe-area-inset-left));
 }
 
-button,
-.link-button {
-  border: 1px solid #b8c0c7;
-  border-radius: 6px;
-  background: #fff;
-  color: #1b2328;
-  min-height: 42px;
-  padding: 0 16px;
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.brand h1 {
+  font-family: var(--font-din);
+  font-size: 15px;
   font-weight: 700;
-  cursor: pointer;
-  text-decoration: none;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+}
+
+.brand-tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+/* Kleine Spiegel-Lampe des großen Status: beim Scrollen bleibt so immer
+   sichtbar, ob alles grün ist. JS setzt mini-ok/-stale/-crit/-alarm. */
+.mini-lamp {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #39434d;
+}
+
+.mini-ok    { background: var(--ok); box-shadow: 0 0 7px rgba(69, 208, 125, 0.7); }
+.mini-stale { background: var(--warn); box-shadow: 0 0 7px rgba(255, 178, 36, 0.6); }
+.mini-crit,
+.mini-alarm { background: var(--crit); box-shadow: 0 0 7px rgba(255, 81, 71, 0.7); }
+
+.chip-readonly {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warn-text);
+  border: 1px solid rgba(255, 178, 36, 0.4);
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.logout-form {
+  margin-left: auto;
+}
+
+/* ==== Panels ============================================================== */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 14px;
+}
+
+/* Panel-Titel: ruhige DIN-Versalien mit Haarlinie bis zum Rand. */
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-din);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+  margin-bottom: 16px;
+}
+
+.panel-title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line-soft);
+}
+
+/* ==== Held-Bereich: die große Statuslampe ================================ */
+
+.hero {
+  padding: 22px 20px;
+}
+
+.state {
   display: inline-flex;
   align-items: center;
-}
-
-.danger {
-  background: #b42318;
-  border-color: #b42318;
-  color: #fff;
-}
-
-.login {
-  max-width: 380px;
-  margin: 12vh auto 0;
-}
-
-label {
-  display: block;
+  gap: 12px;
+  font-family: var(--font-din);
+  font-size: clamp(22px, 5.5vw, 32px);
   font-weight: 700;
-  margin: 14px 0 6px;
+  line-height: 1.15;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text);
 }
 
-input {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 42px;
-  border: 1px solid #b8c0c7;
-  border-radius: 6px;
-  padding: 0 10px;
-  font: inherit;
+.state::before {
+  content: "";
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #39434d;
 }
 
-.error {
-  color: #8d1f14;
-  margin-top: 12px;
+.state-boot { color: var(--muted); }
+
+.state-ok { color: var(--ok-text); }
+.state-ok::before {
+  background: radial-gradient(circle at 35% 30%, #d9ffe9, var(--ok) 55%, #157a41);
+  box-shadow: 0 0 8px rgba(69, 208, 125, 0.7), 0 0 22px rgba(69, 208, 125, 0.25);
 }
 
-button:disabled {
-  opacity: 0.55;
-  cursor: wait;
+.state-stale { color: var(--warn-text); }
+.state-stale::before {
+  background: radial-gradient(circle at 35% 30%, #ffe9bd, var(--warn) 55%, #8a5c00);
+  box-shadow: 0 0 8px rgba(255, 178, 36, 0.65), 0 0 22px rgba(255, 178, 36, 0.22);
 }
 
-.hint {
-  margin-top: 12px;
-  font-size: 13px;
-  color: #66717a;
+.state-crit,
+.state-alarm { color: var(--crit-text); }
+.state-crit::before,
+.state-alarm::before {
+  background: radial-gradient(circle at 35% 30%, #ffc7c2, var(--crit) 55%, #8c150c);
+  box-shadow: 0 0 8px rgba(255, 81, 71, 0.7), 0 0 26px rgba(255, 81, 71, 0.3);
 }
 
-/* Warntext (z.B. Offline-Wächter läuft nicht) - dezent, aber sichtbar. */
-.warn-text {
-  color: #7c3d00;
-  font-weight: 700;
+/* Nur ein LAUFENDER Alarm blinkt - Offline leuchtet ruhig rot. */
+@keyframes lamp-alarm {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.3; }
 }
 
-/* Abstände, die vorher als style=""-Attribute im HTML standen - die CSP
-   erlaubt bewusst kein 'unsafe-inline' mehr für Styles. */
+.state-alarm::before,
+.mini-alarm {
+  animation: lamp-alarm 1.1s ease-in-out infinite;
+}
+
+.hero-updated {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.hero-command {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
 [data-command] {
-  margin-top: 10px;
-}
-
-.submit-row {
-  margin-top: 16px;
-}
-
-.actions.spaced {
-  margin-top: 12px;
-}
-
-[data-alarm-result] {
-  margin-top: 12px;
-  font-weight: 700;
-  color: #1b2328;
-  overflow-wrap: anywhere;
+  color: var(--text);
 }
 
 [data-command-cancel] {
   margin-top: 10px;
 }
 
-h2 {
-  font-size: 18px;
-  margin: 0 0 10px;
+/* ==== Statuswerte: Beschriftung/Wert-Zeilen in Gruppen =================== */
+
+.tele {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px 44px;
+  align-items: start;
 }
 
-.keys-list {
+.tele-group h3 {
+  font-family: var(--font-din);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--faint);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* Jede Zeile: kleines Label oben, Wert darunter. Bewusst IMMER gestapelt -
+   die Werte sind unterschiedlich lang, und ein Mix aus "Wert rechts daneben"
+   und "Wert umgebrochen darunter" sah zerrissen aus. */
+.tele-row {
+  position: relative;              /* Anker für die ?-Sprechblase */
+  padding: 9px 0 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+/* Die letzte Zeile einer Gruppe endet ohne Trennlinie - ruhiger Abschluss. */
+.tele-group .tele-row:last-child {
+  border-bottom: none;
+  padding-bottom: 2px;
+}
+
+.tele-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tele-value {
+  display: block;
+  margin-top: 3px;
+  font-size: 14px;
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* Warnfarben: Probleme springen ins Auge, ohne dass man Werte lesen muss.
+   Gelb = auffällig/übergangsweise, Rot = handeln. */
+.tele-warn .tele-value { color: var(--warn-text); }
+.tele-crit .tele-value { color: var(--crit-text); }
+
+/* ==== ?-Tooltips an den Statuszeilen ===================================== */
+
+/* Das ? als kleiner runder Chip: klar als "hier gibt es Hilfe" erkennbar
+   und groß genug zum Tippen. */
+.tele-label .help {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.help:hover,
+.help.tip-open {
+  color: var(--text);
+  border-color: #46515c;
+}
+
+/* Sprechblase: Text kommt aus data-tip. Anker ist die ganze ZEILE, damit
+   sie nie aus dem Bildschirm ragt. */
+.help::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: #0d1114;
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  z-index: 45;                     /* über der klebenden Kopfzeile (40) */
+  pointer-events: none;
+}
+
+/* Hover zeigt die Sprechblase NUR auf echten Maus-Geräten: Auf dem Handy
+   "klebt" der Hover-Zustand nach einem Tipp fest, und die Blase ließe sich
+   nicht mehr schließen. Dort öffnet/schließt stattdessen ein Tipp auf das ?
+   (Klasse tip-open, gesetzt in app.js); Escape schließt zusätzlich. */
+@media (hover: hover) {
+  .help:hover::after {
+    visibility: visible;
+    opacity: 1;
+  }
+}
+
+.help:focus-visible::after,
+.help.tip-open::after {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* ==== Knöpfe & Formulare ================================================== */
+
+button {
+  font-family: var(--font-din);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-height: 40px;
+  padding: 0 16px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+button:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: #46515c;
+}
+
+button:active {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+/* Rote Knöpfe = lösen etwas aus bzw. schalten scharf. */
+.danger {
+  background: var(--brand);
+  border-color: var(--brand-bright);
+  color: #fff;
+  font-weight: 700;
+}
+
+.danger:hover {
+  background: #c62a1d;
+  border-color: #e6402f;
+}
+
+/* Abmelden: bewusst leise. */
+.ghost-button {
+  border-color: transparent;
+  color: var(--muted);
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.ghost-button:hover {
+  color: var(--text);
+  border-color: var(--line);
+}
+
+label {
+  display: block;
+  font-family: var(--font-din);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin: 14px 0 6px;
+}
+
+input,
+select {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 42px;
+  background: var(--inset);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 0 12px;
+  font: inherit;
+}
+
+input:focus,
+select:focus {
+  border-color: #4a5560;
+}
+
+select {
+  width: auto;
+  min-width: 200px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.actions.spaced {
+  margin-top: 12px;
+}
+
+/* Scharfer Bereich: rot-weißes Absperrband oben - wie an der Einsatzstelle
+   markiert es die Zone, in der ein Klick echte Folgen hat. */
+.hazard-strip {
+  position: relative;
+  margin-top: 12px;
+  padding: 20px 14px 14px;
+  border: 1px solid rgba(255, 81, 71, 0.3);
+  border-radius: 10px;
+  background: rgba(180, 35, 24, 0.06);
+}
+
+.hazard-strip::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  border-radius: 9px 9px 0 0;
+  background: repeating-linear-gradient(-45deg,
+    #a8231a 0 10px,
+    #c9c2b8 10px 20px);
+}
+
+[data-alarm-result] {
+  margin-top: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* Zweistufige Inline-Bestätigung (app.js): erscheint anstelle des
+   "geschärften" Auslöse-Knopfs. Gelber Rahmen = "Achtung, Entscheidung
+   steht an"; der eigentliche Auslöser bleibt der rote Bestätigungsknopf.
+   Der Countdown zeigt, dass sich die Frage von selbst wieder entschärft. */
+.arm-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 178, 36, 0.45);
+  border-radius: 8px;
+  background: rgba(255, 178, 36, 0.07);
+}
+
+.arm-question {
+  flex: 1 1 100%;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--warn-text);
+}
+
+.arm-count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+
+/* ==== Hinweise & aufklappbare Erklärungen ================================ */
+
+.hint {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.hint:empty {
+  display: none;
+}
+
+/* Warntext (z.B. Offline-Wächter läuft nicht) - dezent, aber sichtbar. */
+.warn-text {
+  color: var(--warn-text);
+  font-weight: 600;
+}
+
+/* Lange Hilfetexte stören den Überblick - sie stecken in aufklappbaren
+   Erklärungen (<details>): Hilfe bleibt erreichbar, Seite bleibt ruhig. */
+details.explain {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+details.explain summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--faint);
+}
+
+details.explain summary:hover {
+  color: var(--text);
+}
+
+details.explain[open] summary {
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+details.explain p,
+details.explain ul {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+details.explain ul {
+  padding-left: 20px;
+}
+
+details.explain li {
+  margin-bottom: 4px;
+}
+
+/* ==== Demo-Banner (gelb-schwarzes Absperrband = Übungsbetrieb) =========== */
+
+.demo-banner {
+  position: relative;
+  background: rgba(255, 178, 36, 0.08);
+  border: 1px solid rgba(255, 178, 36, 0.45);
+  border-radius: 10px;
+  color: var(--warn-text);
+  font-size: 14px;
+  line-height: 1.55;
+  padding: 20px 16px 14px;
   margin-bottom: 14px;
 }
 
-/* Ein Empfänger = eine kleine Karte: oben Name + maskierter Key + Badge,
-   darunter die Aktionen. Bricht sauber um statt sich (wie die alte
-   Ein-Zeilen-Flexbox) auf dem Handy zusammenzuquetschen. */
+.demo-banner::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  border-radius: 9px 9px 0 0;
+  background: repeating-linear-gradient(-45deg,
+    #cf9a0e 0 10px,
+    #14181d 10px 20px);
+}
+
+.demo-banner strong {
+  color: #ffd88a;
+}
+
+.demo-banner code {
+  font-family: var(--font-mono);
+  color: inherit;
+}
+
+.mode-demo {
+  color: var(--warn-text);
+}
+
+.mode-live {
+  color: var(--ok-text);
+}
+
+/* ==== Empfängerliste ====================================================== */
+
+.keys-list {
+  margin-bottom: 14px;
+  color: var(--muted);
+}
+
 .keys-row {
-  padding: 10px 0 12px;
-  border-bottom: 1px solid #e1e6ea;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.keys-row:first-child {
+  padding-top: 4px;
 }
 
 .keys-head {
@@ -227,10 +713,13 @@ h2 {
 
 .keys-head strong {
   font-size: 15px;
+  color: var(--text);
 }
 
 .keys-head code {
-  color: #66717a;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--muted);
 }
 
 .keys-actions {
@@ -242,7 +731,7 @@ h2 {
 }
 
 .keys-actions button {
-  min-height: 38px;
+  min-height: 36px;
   padding: 0 12px;
   font-size: 13px;
 }
@@ -253,45 +742,115 @@ h2 {
   align-items: center;
   gap: 6px;
   margin: 0;
+  font-family: var(--font-body);
   font-size: 13px;
   font-weight: 400;
-  color: #66717a;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
   white-space: nowrap;
 }
 
 .keys-volume select {
   min-width: 0;
-  min-height: 38px;
+  width: auto;
+  min-height: 36px;
   padding: 0 6px;
   font-size: 13px;
 }
 
-/* Löschen ist destruktiv - dezent rot abgesetzt, damit man nicht aus
-   Versehen danebentippt. */
+/* Löschen ist destruktiv - rot abgesetzt UND nach rechts abgerückt,
+   damit niemand danebentippt. */
 .btn-delete {
-  border-color: #d5a49e;
-  color: #8d1f14;
+  margin-left: auto;
+  border-color: rgba(255, 81, 71, 0.35);
+  color: var(--crit-text);
 }
 
-/* Arbeitsmodus: stummgeschaltete Empfänger sind grau markiert - sie bekommen
-   Alarme weiterhin, aber ohne Ton (Critical Alert mit volume=0). */
+.btn-delete:hover {
+  background: rgba(255, 81, 71, 0.08);
+  border-color: rgba(255, 81, 71, 0.55);
+}
+
+/* Kurzbefehl-Links: eine leise eigene Zeile mit kleinen Chips statt großer
+   Knöpfe - man braucht sie nur einmal (Link kopieren, im iPhone-Kurzbefehl
+   hinterlegen), danach sollen sie nicht mehr auffallen. */
+.keys-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--faint);
+}
+
+.chip-link {
+  min-height: 28px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border-color: var(--line-soft);
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+.chip-link:hover {
+  color: var(--text);
+}
+
+/* Kurzes Erfolgs-Feedback direkt am Chip ("kopiert"). */
+.chip-link.copied {
+  color: var(--ok-text);
+  border-color: rgba(69, 208, 125, 0.45);
+}
+
+/* Kurzbefehl-Links pro Empfänger eingeklappt: Man braucht sie nur einmal
+   (Link kopieren, im iPhone-Kurzbefehl hinterlegen) - danach sollen sie
+   die Liste nicht mehr verbreitern. */
+details.keys-more {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--faint);
+}
+
+details.keys-more summary {
+  cursor: pointer;
+  font-weight: 600;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+details.keys-more summary:hover {
+  color: var(--text);
+}
+
+details.keys-more .keys-links {
+  margin-top: 8px;
+}
+
+/* Arbeitsmodus: stumme Empfänger sind gedimmt + gelb markiert - sie
+   bekommen Alarme weiterhin, nur mit ihrer Stumm-Lautstärke. */
 .badge-muted {
   display: inline-flex;
   align-items: center;
-  min-height: 26px;
-  padding: 0 10px;
-  border-radius: 6px;
+  min-height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
   font-size: 12px;
-  font-weight: 750;
+  font-weight: 600;
   white-space: nowrap;
-  background: #e6eaee;
-  color: #4a5560;
+  background: rgba(255, 178, 36, 0.1);
+  border: 1px solid rgba(255, 178, 36, 0.4);
+  color: var(--warn-text);
   cursor: help;
 }
 
 .keys-row.muted strong,
 .keys-row.muted code {
-  color: #8a949c;
+  color: var(--faint);
 }
 
 .keys-add {
@@ -306,146 +865,173 @@ h2 {
   min-width: 160px;
 }
 
-/* ==== Demo-Modus ========================================================= */
-
-.demo-banner {
-  background: #fff3cd;
-  border: 2px solid #d97706;
-  border-radius: 8px;
-  color: #7c3d00;
-  font-size: 15px;
-  line-height: 1.5;
-  padding: 14px 16px;
-  margin-bottom: 18px;
-}
-
-.demo-banner code {
-  color: inherit;
-}
-
-.mode-demo {
-  color: #d97706;
-}
-
-.mode-live {
-  color: #07542d;
-}
-
-select {
-  box-sizing: border-box;
-  min-height: 42px;
-  min-width: 200px;
-  border: 1px solid #b8c0c7;
-  border-radius: 6px;
-  padding: 0 10px;
-  font: inherit;
-  background: #fff;
-}
-
-/* ==== Verlaufs-Panel ===================================================== */
+/* ==== Verlauf ============================================================= */
 
 .log-list {
   font-size: 14px;
+  color: var(--muted);
 }
 
 .log-row {
   display: flex;
-  gap: 12px;
-  padding: 7px 0;
-  border-bottom: 1px solid #eef1f3;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.log-row:last-child {
+  border-bottom: none;
+}
+
+/* Ereignis-Lampe: grau = normal, gelb = Warnung, rot = echter Alarm. */
+.log-dot {
+  flex: none;
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #39434d;
+}
+
+.log-warn .log-dot {
+  background: var(--warn);
+}
+
+.log-alarm .log-dot {
+  background: var(--crit);
 }
 
 .log-time {
-  color: #66717a;
+  color: var(--faint);
   white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
   font-variant-numeric: tabular-nums;
 }
 
 .log-text {
   overflow-wrap: anywhere;
+  color: var(--muted);
 }
 
-/* Echte Alarme stechen im Verlauf hervor, Warnungen (abgelaufen/Demo) dezent. */
 .log-alarm .log-text {
-  color: #8d1f14;
-  font-weight: 700;
+  color: var(--crit-text);
+  font-weight: 600;
 }
 
 .log-warn .log-text {
-  color: #7c3d00;
+  color: var(--warn-text);
 }
 
-/* ==== ?-Tooltips an den Statusfeldern ==================================== */
+/* ==== Login-Seite ========================================================= */
 
-/* Anker für die Sprechblase ist das ganze FELD (nicht das (?)-Symbol):
-   So bleibt der Tooltip immer innerhalb der Feld-/Seitenbreite und ragt auf
-   dem Handy nicht mehr links/rechts aus dem Bildschirm. */
-.field {
-  position: relative;
+.login {
+  max-width: 420px;
+  margin: 0 auto;
+  padding: max(48px, 10vh) 16px 48px;
 }
 
-/* Schlichtes (?) direkt hinter dem Feldtitel. WICHTIG: "span.help", damit die
-   Regel gegen ".field span { display:block }" gewinnt - sonst rutscht das
-   Symbol in eine eigene Zeile. */
-.field span span.help {
-  display: inline;
-  margin: 0;
-  color: #97a1a9;
-  font-size: 12px;
+.brand-block {
+  text-align: center;
+  margin-bottom: 22px;
+}
+
+/* Die rote Rundumleuchte als Markenzeichen. */
+.brand-lamp {
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffb3ac, var(--brand-bright) 50%, #7a150d);
+  box-shadow: 0 0 14px rgba(217, 44, 31, 0.45), 0 0 36px rgba(217, 44, 31, 0.18);
+  margin-bottom: 14px;
+}
+
+.brand-title {
+  font-family: var(--font-din);
+  font-size: 26px;
   font-weight: 700;
-  cursor: help;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
 }
 
-/* Sprechblase per CSS: Text kommt aus data-tip, kein JavaScript nötig.
-   tabindex="0" macht sie auch per Tastatur/Touch (Fokus) erreichbar. */
-.help::after {
-  content: attr(data-tip);
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  right: 0;
-  background: #1b2328;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 1.45;
-  text-align: left;
-  padding: 8px 10px;
-  border-radius: 6px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
-  visibility: hidden;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-  z-index: 20;
-  pointer-events: none;
+.brand-sub {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--faint);
 }
 
-.help:hover::after,
-.help:focus::after {
-  visibility: visible;
-  opacity: 1;
+.login-panel {
+  border-top: 3px solid var(--brand);
+}
+
+.login-panel button {
+  width: 100%;
+}
+
+.error {
+  color: var(--crit-text);
+  margin-top: 12px;
+}
+
+.error:empty {
+  display: none;
+}
+
+.submit-row {
+  margin-top: 18px;
+}
+
+/* ==== Sanfter Seitenaufbau ================================================ */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+main > * {
+  animation: rise 0.3s ease backwards;
+}
+
+main > :nth-child(2) { animation-delay: 0.03s; }
+main > :nth-child(3) { animation-delay: 0.06s; }
+main > :nth-child(4) { animation-delay: 0.09s; }
+main > :nth-child(5) { animation-delay: 0.12s; }
+main > :nth-child(6) { animation-delay: 0.15s; }
+main > :nth-child(7) { animation-delay: 0.18s; }
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 /* ==== Handy-Layout (schmale Bildschirme) ================================= */
 
 @media (max-width: 640px) {
   main {
-    padding: 16px 12px 40px;
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+    padding-top: 14px;
   }
 
   .panel {
     padding: 14px;
-    border-radius: 10px;
   }
 
-  /* Statusfelder: zwei schmalere Spalten statt einer langen Einer-Spalte. */
-  .grid {
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 8px;
+  .hero {
+    padding: 18px 14px;
   }
 
-  /* Aktions-Knöpfe (TEST / REAL ALARM, Demo) füllen die Breite gleichmäßig
-     und sind mit >=44 px bequem tippbar. */
+  /* Aktions-Knöpfe füllen die Breite und sind >= 46 px bequem tippbar. */
   .actions {
     gap: 10px;
   }
@@ -466,6 +1052,13 @@ select {
     min-height: 44px;
   }
 
+  /* Die Link-Chips behalten ihre natürliche Breite, werden aber hoch genug
+     zum bequemen Tippen. */
+  .keys-links .chip-link {
+    min-height: 44px;
+    padding: 0 16px;
+  }
+
   .keys-volume {
     flex: 1 1 100%;
     justify-content: space-between;
@@ -483,8 +1076,15 @@ select {
     min-height: 44px;
   }
 
-  /* Verlauf: Zeitspalte schmaler halten, Text darf mehr Platz nutzen. */
   .log-row {
     gap: 8px;
+  }
+}
+
+/* Sehr schmale Bildschirme: das BOSS-925-Kürzel weglassen, damit Lampe,
+   Titel und Abmelden-Knopf in EINE Kopfzeile passen. */
+@media (max-width: 480px) {
+  .brand-tag {
+    display: none;
   }
 }

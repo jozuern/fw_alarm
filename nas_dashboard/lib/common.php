@@ -13,6 +13,9 @@ if (!headers_sent()) {
     header('X-Content-Type-Options: nosniff');
     header('Referrer-Policy: strict-origin-when-cross-origin');
     header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
+    // Privates Betriebs-Werkzeug im offenen Internet: Suchmaschinen sollen
+    // weder die Login-Seite noch API-Antworten indexieren.
+    header('X-Robots-Tag: noindex, nofollow');
     if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
         header('Strict-Transport-Security: max-age=31536000');
     }
@@ -773,7 +776,7 @@ function bark_send_false_alarm_all(array $config): array
         }
     }
     if (count($entries) === 0) {
-        return ['ok' => false, 'message' => 'Keine Empfaenger: Liste im Dashboard pflegen (Panel "Alarm-Empfaenger").', 'results' => []];
+        return ['ok' => false, 'message' => 'Keine Empfänger: Liste im Dashboard pflegen (Panel "Alarm-Empfänger").', 'results' => []];
     }
 
     @set_time_limit(30 + count($entries) * 25);
@@ -793,8 +796,10 @@ function bark_send_false_alarm_all(array $config): array
     }
     return [
         'ok' => $okCount === count($entries),
-        'message' => ($demoActive ? 'DEMO-MODUS: Entwarnung nur an den Test-Empfaenger. ' : '')
-            . sprintf('Entwarnung an %d/%d Empfaenger zugestellt.', $okCount, count($entries)),
+        // Diese Zusammenfassung geht nur an Dashboard und Verlauf (nie an
+        // Bark) - darf deshalb, anders als $title/$body, echte Umlaute haben.
+        'message' => ($demoActive ? 'DEMO-MODUS: Entwarnung nur an den Test-Empfänger. ' : '')
+            . sprintf('Entwarnung an %d/%d Empfänger zugestellt.', $okCount, count($entries)),
         'results' => $results,
     ];
 }
@@ -827,7 +832,7 @@ function bark_send_alarm_all(array $config): array
         $usedFallback = count($entries) > 0;
     }
     if (count($entries) === 0) {
-        return ['ok' => false, 'message' => 'Keine Alarm-Empfaenger: Liste im Dashboard pflegen (Panel "Alarm-Empfaenger").', 'results' => []];
+        return ['ok' => false, 'message' => 'Keine Alarm-Empfänger: Liste im Dashboard pflegen (Panel "Alarm-Empfänger").', 'results' => []];
     }
 
     // Genug Laufzeit für viele Keys mit Wiederholungen (Standardlimit: 30 s).
@@ -857,9 +862,10 @@ function bark_send_alarm_all(array $config): array
     return [
         'ok' => $okCount === count($entries),
         // Deutlich machen, wenn die statische Fallback-Liste zum Einsatz kam -
-        // sonst glaubt man, die (leere) Dashboard-Liste sei massgeblich gewesen.
-        'message' => ($demoActive ? 'DEMO-MODUS: nur Test-Empfaenger alarmiert. ' : '')
-            . sprintf('%d/%d Empfaenger erreicht.', $okCount, count($entries))
+        // sonst glaubt man, die (leere) Dashboard-Liste sei maßgeblich gewesen.
+        // Geht nur an Dashboard/Verlauf (nie an Bark) - echte Umlaute erlaubt.
+        'message' => ($demoActive ? 'DEMO-MODUS: nur Test-Empfänger alarmiert. ' : '')
+            . sprintf('%d/%d Empfänger erreicht.', $okCount, count($entries))
             . ($mutedCount > 0 ? sprintf(' %d davon stumm (Arbeitsmodus, leise/lautlos).', $mutedCount) : '')
             . ($usedFallback ? ' ACHTUNG: Fallback-Liste aus config.php verwendet, die Dashboard-Liste ist leer!' : ''),
         'results' => $results,
