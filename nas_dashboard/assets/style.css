@@ -39,10 +39,36 @@
   --brand: #b42318;
   --brand-bright: #d92c1f;
 
+  /* Signal-Ableitungen: Flächen und Haarlinien aus den Lampenfarben.
+     EINE Quelle statt gestreuter rgba-Werte - wer die Signalfarbe ändert,
+     ändert damit auch alle Banner/Badges/Rahmen mit. */
+  --warn-bg: rgba(255, 178, 36, 0.08);
+  --warn-line: rgba(255, 178, 36, 0.45);
+  --crit-bg: rgba(255, 81, 71, 0.08);
+  --crit-line: rgba(255, 81, 71, 0.35);
+  --ok-line: rgba(69, 208, 125, 0.45);
+
   /* Schrift-Rollen */
   --font-din: "Bahnschrift", "DIN Alternate", "Franklin Gothic Medium", "Arial Narrow", "Segoe UI", sans-serif;
   --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, Menlo, monospace;
+
+  /* Typo-Skala in ganzen Pixel-Stufen (die alten Zwischenstufen 12,5/13,5
+     waren optisch nicht unterscheidbar): xs = Gruppen-/Tag-Versalien,
+     caption = Beschriftungen/Zeiten, ui = Knöpfe/Hinweise, value =
+     Statuswerte/Verlauf, body = Fließtext, input = Formularfelder
+     (16px Minimum, sonst zoomt iOS beim Fokussieren). */
+  --fs-xs: 11px;
+  --fs-caption: 12px;
+  --fs-ui: 13px;
+  --fs-value: 14px;
+  --fs-body: 15px;
+  --fs-input: 16px;
+
+  /* Eck-Rundungen: Panels/Banner, Bedienelemente, Pillen-Chips. */
+  --r-panel: 10px;
+  --r-ctl: 8px;
+  --r-pill: 999px;
 }
 
 /* ==== Grundgerüst ======================================================== */
@@ -50,7 +76,7 @@
 body {
   margin: 0;
   font-family: var(--font-body);
-  font-size: 15px;
+  font-size: var(--fs-body);
   line-height: 1.5;
   color: var(--text);
   background: var(--bg);
@@ -88,12 +114,12 @@ p {
 }
 
 .noscript {
-  background: rgba(255, 178, 36, 0.12);
+  background: var(--warn-bg);
   border-bottom: 1px solid var(--warn);
   color: var(--warn-text);
   text-align: center;
   padding: 10px 16px;
-  font-size: 14px;
+  font-size: var(--fs-value);
 }
 
 /* ==== Kopfzeile (klebt beim Scrollen oben) =============================== */
@@ -127,7 +153,7 @@ p {
 
 .brand h1 {
   font-family: var(--font-din);
-  font-size: 15px;
+  font-size: var(--fs-body);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.12em;
@@ -136,7 +162,7 @@ p {
 
 .brand-tag {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -160,11 +186,11 @@ p {
 .mini-alarm { background: var(--crit); box-shadow: 0 0 7px rgba(255, 81, 71, 0.7); }
 
 .chip-readonly {
-  font-size: 12px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   color: var(--warn-text);
-  border: 1px solid rgba(255, 178, 36, 0.4);
-  border-radius: 999px;
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r-pill);
   padding: 2px 10px;
   white-space: nowrap;
   cursor: help;
@@ -179,7 +205,7 @@ p {
 .panel {
   background: var(--panel);
   border: 1px solid var(--line-soft);
-  border-radius: 10px;
+  border-radius: var(--r-panel);
   padding: 20px;
   margin-bottom: 14px;
 }
@@ -190,7 +216,7 @@ p {
   align-items: center;
   gap: 12px;
   font-family: var(--font-din);
-  font-size: 12px;
+  font-size: var(--fs-caption);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.14em;
@@ -215,7 +241,7 @@ p {
 
 .sub-title {
   font-family: var(--font-din);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.16em;
@@ -287,7 +313,7 @@ p {
 .hero-updated {
   margin-top: 8px;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--fs-caption);
   color: var(--muted);
 }
 
@@ -318,7 +344,7 @@ p {
 
 .tele-group h3 {
   font-family: var(--font-din);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.16em;
@@ -346,14 +372,14 @@ p {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: var(--fs-caption);
   color: var(--muted);
 }
 
 .tele-value {
   display: block;
   margin-top: 3px;
-  font-size: 14px;
+  font-size: var(--fs-value);
   color: var(--text);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -378,7 +404,7 @@ p {
 /* Hinweiszeile über den gedimmten Werten (volle Grid-Breite). */
 .stale-note {
   grid-column: 1 / -1;
-  font-size: 13px;
+  font-size: var(--fs-ui);
   font-weight: 600;
   color: var(--warn-text);
 }
@@ -397,7 +423,7 @@ p {
   border: 1px solid var(--line);
   border-radius: 50%;
   color: var(--faint);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   line-height: 1;
   cursor: help;
@@ -425,14 +451,14 @@ p {
   border: 1px solid var(--line);
   color: var(--text);
   font-family: var(--font-body);
-  font-size: 12px;
+  font-size: var(--fs-caption);
   font-weight: 400;
   line-height: 1.45;
   text-align: left;
   text-transform: none;
   letter-spacing: 0;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: var(--r-ctl);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
   visibility: hidden;
   opacity: 0;
@@ -463,13 +489,13 @@ p {
 
 button {
   font-family: var(--font-din);
-  font-size: 13.5px;
+  font-size: var(--fs-ui);
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text);
   background: transparent;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-ctl);
   min-height: 40px;
   padding: 0 16px;
   cursor: pointer;
@@ -514,7 +540,7 @@ button:disabled {
   color: var(--muted);
   min-height: 34px;
   padding: 0 10px;
-  font-size: 13px;
+  font-size: var(--fs-ui);
 }
 
 .ghost-button:hover {
@@ -525,7 +551,7 @@ button:disabled {
 label {
   display: block;
   font-family: var(--font-din);
-  font-size: 12px;
+  font-size: var(--fs-caption);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -540,13 +566,13 @@ select {
   min-height: 42px;
   background: var(--inset);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-ctl);
   color: var(--text);
   padding: 0 12px;
   font: inherit;
   /* Mindestens 16px: iOS Safari zoomt sonst beim Fokussieren die ganze
      Seite heran (gilt auch für <select>). */
-  font-size: 16px;
+  font-size: var(--fs-input);
 }
 
 input:focus,
@@ -576,9 +602,9 @@ select {
   position: relative;
   margin-top: 12px;
   padding: 20px 14px 14px;
-  border: 1px solid rgba(255, 81, 71, 0.3);
-  border-radius: 10px;
-  background: rgba(180, 35, 24, 0.06);
+  border: 1px solid var(--crit-line);
+  border-radius: var(--r-panel);
+  background: rgba(180, 35, 24, 0.06);   /* Feuerwehrrot-Hauch, bewusst kein --crit */
 }
 
 .hazard-strip::before {
@@ -612,14 +638,14 @@ select {
   gap: 10px;
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid rgba(255, 178, 36, 0.45);
-  border-radius: 8px;
-  background: rgba(255, 178, 36, 0.07);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r-ctl);
+  background: var(--warn-bg);
 }
 
 .arm-question {
   flex: 1 1 100%;
-  font-size: 13.5px;
+  font-size: var(--fs-ui);
   font-weight: 600;
   color: var(--warn-text);
 }
@@ -627,7 +653,7 @@ select {
 .arm-count {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--fs-caption);
   font-variant-numeric: tabular-nums;
   color: var(--faint);
 }
@@ -636,7 +662,7 @@ select {
 
 .hint {
   margin-top: 12px;
-  font-size: 13px;
+  font-size: var(--fs-ui);
   color: var(--muted);
 }
 
@@ -654,7 +680,7 @@ select {
    Erklärungen (<details>): Hilfe bleibt erreichbar, Seite bleibt ruhig. */
 details.explain {
   margin-top: 12px;
-  font-size: 13px;
+  font-size: var(--fs-ui);
   color: var(--muted);
 }
 
@@ -691,11 +717,11 @@ details.explain li {
 
 .demo-banner {
   position: relative;
-  background: rgba(255, 178, 36, 0.08);
-  border: 1px solid rgba(255, 178, 36, 0.45);
-  border-radius: 10px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r-panel);
   color: var(--warn-text);
-  font-size: 14px;
+  font-size: var(--fs-value);
   line-height: 1.55;
   padding: 20px 16px 14px;
   margin-bottom: 14px;
@@ -755,13 +781,13 @@ details.explain li {
 }
 
 .keys-head strong {
-  font-size: 15px;
+  font-size: var(--fs-body);
   color: var(--text);
 }
 
 .keys-head code {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--fs-ui);
   color: var(--muted);
 }
 
@@ -776,7 +802,7 @@ details.explain li {
 .keys-actions button {
   min-height: 36px;
   padding: 0 12px;
-  font-size: 13px;
+  font-size: var(--fs-ui);
 }
 
 /* Stumm-Lautstärke: kompaktes Label + Auswahl in der Aktionszeile. */
@@ -786,7 +812,7 @@ details.explain li {
   gap: 6px;
   margin: 0;
   font-family: var(--font-body);
-  font-size: 13px;
+  font-size: var(--fs-ui);
   font-weight: 400;
   text-transform: none;
   letter-spacing: 0;
@@ -806,12 +832,12 @@ details.explain li {
    damit niemand danebentippt. */
 .btn-delete {
   margin-left: auto;
-  border-color: rgba(255, 81, 71, 0.35);
+  border-color: var(--crit-line);
   color: var(--crit-text);
 }
 
 .btn-delete:hover {
-  background: rgba(255, 81, 71, 0.08);
+  background: var(--crit-bg);
   border-color: rgba(255, 81, 71, 0.55);
 }
 
@@ -824,17 +850,17 @@ details.explain li {
   align-items: center;
   gap: 8px;
   margin-top: 10px;
-  font-size: 12.5px;
+  font-size: var(--fs-caption);
   color: var(--faint);
 }
 
 .chip-link {
   min-height: 28px;
   padding: 0 11px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   border-color: var(--line-soft);
   font-family: var(--font-body);
-  font-size: 12.5px;
+  font-size: var(--fs-caption);
   font-weight: 500;
   letter-spacing: 0;
   color: var(--muted);
@@ -847,7 +873,7 @@ details.explain li {
 /* Kurzes Erfolgs-Feedback direkt am Chip ("kopiert"). */
 .chip-link.copied {
   color: var(--ok-text);
-  border-color: rgba(69, 208, 125, 0.45);
+  border-color: var(--ok-line);
 }
 
 /* Kurzbefehl-Links pro Empfänger eingeklappt: Man braucht sie nur einmal
@@ -855,7 +881,7 @@ details.explain li {
    die Liste nicht mehr verbreitern. */
 details.keys-more {
   margin-top: 10px;
-  font-size: 12.5px;
+  font-size: var(--fs-caption);
   color: var(--faint);
 }
 
@@ -881,12 +907,12 @@ details.keys-more .keys-links {
   align-items: center;
   min-height: 22px;
   padding: 0 9px;
-  border-radius: 999px;
-  font-size: 12px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-caption);
   font-weight: 600;
   white-space: nowrap;
-  background: rgba(255, 178, 36, 0.1);
-  border: 1px solid rgba(255, 178, 36, 0.4);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
   color: var(--warn-text);
   cursor: help;
 }
@@ -915,7 +941,7 @@ details.keys-more .keys-links {
   list-style: none;
   margin: 0;
   padding: 0;
-  font-size: 14px;
+  font-size: var(--fs-value);
   color: var(--muted);
 }
 
@@ -957,7 +983,7 @@ details.keys-more .keys-links {
   color: var(--faint);
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--fs-caption);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1014,7 +1040,7 @@ details.keys-more .keys-links {
 
 .brand-sub {
   margin-top: 6px;
-  font-size: 12.5px;
+  font-size: var(--fs-caption);
   color: var(--faint);
 }
 
