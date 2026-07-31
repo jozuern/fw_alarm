@@ -90,6 +90,18 @@ return [
     'bark_alarm_call' => true,
     'bark_max_tries' => 3,
 
+    // ==== ENTWARNUNG (Fehlalarm) ===========================================
+    // Geht an dieselben Empfaenger wie der Alarm und ist ebenfalls ein
+    // CRITICAL ALERT - wer schon zum Einsatz aufgebrochen ist, muss die
+    // Entwarnung genauso sicher mitbekommen (durch Stummschalter und Fokus
+    // hindurch). Unterschied zum Alarm: ein kurzer, normaler Ton statt des
+    // Alarmtons und keine Ton-Wiederholung (kein call=1).
+    // Ton: einer der in Bark eingebauten Kurztoene, z.B. 'glass' (klassisches
+    // kurzes "Pling"), 'bell', 'chime', 'telegraph' oder 'paymentsuccess'.
+    'bark_false_alarm_sound' => 'glass',
+    // Lautstaerke 0-10. Ohne Eintrag wird bark_alarm_volume verwendet.
+    'bark_false_alarm_volume' => 10,
+
     'timezone' => 'Europe/Berlin',
     // WICHTIG: data_dir UNBEDINGT ausserhalb des Web-Roots waehlen! Hier liegen
     // die Bark-Keys im KLARTEXT. Ein Pfad unter dem ausgelieferten Verzeichnis

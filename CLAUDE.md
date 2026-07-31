@@ -96,9 +96,12 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   **TEST** läuft dagegen absichtlich über den ESP32 (Poll → `sendStatus()` an
   `BARK_KEY_STATUS`) — er testet die halbe Kette mit — und darf die
   Alarm-Zustandsmaschine nicht verändern. **ENTWARNUNG** (`false_alarm` /
-  `bark_send_false_alarm_all()`): normale Push-Mitteilung (level=active,
-  bewusst KEIN Critical Alert, ASCII-Texte) an die effektive Empfängerliste,
-  direkt vom NAS — für versehentlich ausgelöste Alarme; im Demo-Modus geht
+  `bark_send_false_alarm_all()` → `bark_send_false_alarm_one()`): ebenfalls
+  **Critical Alert** (ASCII-Texte) an die effektive Empfängerliste, direkt vom
+  NAS — muss durchdringen, sonst fährt jemand umsonst los. Unterschied zum
+  Alarm: kurzer Standardton (`bark_false_alarm_sound`, Default `glass`) statt
+  `alarm_fw` und **kein** `call=1`. Stummschaltungen (Arbeitsmodus) gelten
+  wie beim Alarm, `expire_stale_mutes()` läuft vorher. Im Demo-Modus geht
   auch sie nur an den Test-Empfänger.
 - **Empfängerliste wird im Dashboard gepflegt** (eine Quelle für beide
   Alarmwege): versioniert in `alarm_keys.json(.php)` im `data_dir`, verwaltet

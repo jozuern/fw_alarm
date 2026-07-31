@@ -625,7 +625,8 @@
     }
   }
 
-  // ENTWARNUNG (Fehlalarm): normale Push-Mitteilung an alle - direkt vom NAS.
+  // ENTWARNUNG (Fehlalarm): Critical Alert mit kurzem, normalem Ton an alle -
+  // direkt vom NAS. Muss durchdringen, damit niemand umsonst losfährt.
   async function sendFalseAlarm() {
     setBusy(true);
     alarmResultEl.hidden = false;
@@ -1084,7 +1085,7 @@
 
   armButton(falseAlarmBtn, () => demoInfo && demoInfo.enabled
       ? `DEMO-MODUS: Entwarnung geht nur an "${demoInfo.label || 'Test-Empfänger'}". Jetzt senden?`
-      : 'ENTWARNUNG an ALLE senden? („Der letzte Alarm war ein FEHLALARM“ – normale Mitteilung, kein Alarmton)',
+      : 'ENTWARNUNG an ALLE senden? („Der letzte Alarm war ein FEHLALARM“ – Critical Alert mit kurzem Ton, kommt auch durch Stummschalter durch)',
     'Ja, Entwarnung senden', sendFalseAlarm);
 
   // ==== ?-Tooltips per Tipp/Klick ===========================================

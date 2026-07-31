@@ -546,9 +546,10 @@ if ($action === 'keys_set_mute_volume') {
     json_response($result);
 }
 
-// ENTWARNUNG (Fehlalarm): normale Push-Mitteilung an alle Empfänger, dass der
-// letzte Alarm ein Fehlalarm war - bewusst KEIN Critical Alert. Läuft wie der
-// REAL ALARM direkt vom NAS (funktioniert also auch bei toter ESP32-Kette).
+// ENTWARNUNG (Fehlalarm): Critical Alert mit kurzem, normalem Ton an alle
+// Empfänger, dass der letzte Alarm ein Fehlalarm war. Bewusst ebenfalls
+// critical - wer schon unterwegs ist, muss die Entwarnung sicher mitbekommen.
+// Läuft wie der REAL ALARM direkt vom NAS (also auch bei toter ESP32-Kette).
 if ($action === 'false_alarm') {
     require_csrf();
     require_dashboard_admin();

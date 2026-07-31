@@ -232,8 +232,9 @@ $readonly = $authed && dashboard_role() !== 'admin';
           <summary>Was macht welcher Knopf?</summary>
           <ul>
             <li><strong>TEST</strong> läuft über den ESP32 – leise Meldung nur an den Status-Empfänger.</li>
-            <li><strong>ENTWARNUNG</strong> schickt allen eine <strong>normale</strong> Mitteilung
-              („letzter Alarm war ein Fehlalarm“) – kein Alarmton.</li>
+            <li><strong>ENTWARNUNG</strong> schickt allen einen <strong>Critical Alert</strong>
+              („letzter Alarm war ein Fehlalarm“) – kurzer, normaler Ton statt Alarmton,
+              kommt aber auch durch Stummschalter und Fokus durch.</li>
             <li><strong>REAL ALARM</strong> geht direkt vom NAS an alle – auch wenn der ESP32 offline ist.</li>
             <li><strong>DEMO-ALARM</strong> erscheint nur im Demo-Modus und löst den Alarm über die
               komplette ESP32-Kette aus (wie ein echter Relaisalarm, nur an den Test-Empfänger).</li>

@@ -456,9 +456,14 @@ Funktionen:
 - `REAL ALARM` wird dagegen **direkt vom NAS** per Bark Critical Alert an alle
   Empfänger gesendet – bewusst ohne Umweg über den ESP32, denn manuell
   alarmieren muss man vor allem dann, wenn die ESP32-Kette gerade klemmt.
-- `ENTWARNUNG (Fehlalarm)`: schickt allen Empfängern eine **normale**
-  Push-Mitteilung („Der letzte Alarm war ein FEHLALARM“) – bewusst kein
-  Critical Alert und kein Alarmton. Für den Fall, dass mal etwas schiefläuft.
+- `ENTWARNUNG (Fehlalarm)`: schickt allen Empfängern ebenfalls einen **Critical
+  Alert** („Der letzte Alarm war ein FEHLALARM“) – aber mit einem **kurzen,
+  normalen Ton** (`bark_false_alarm_sound`, Standard `glass`) statt des
+  Alarmtons und ohne Ton-Wiederholung (`call=1`). Absichtlich critical: Wer
+  schon zum Einsatz aufgebrochen ist, muss die Entwarnung genauso sicher
+  mitbekommen wie den Alarm – also auch durch Stummschalter und Fokus hindurch.
+  Wer im **Arbeitsmodus** (stumm) steht, bekommt die Entwarnung mit derselben
+  Stumm-Lautstärke wie den Alarm.
 - `DEMO-ALARM über ESP32` (nur im Demo-Modus sichtbar): löst den Alarm über
   die **komplette** ESP32-Kette aus (Poll → Alarm-Zustandsmaschine → Bark),
   geht dank Demo-Modus aber nur an den Test-Empfänger. Der Server erlaubt den

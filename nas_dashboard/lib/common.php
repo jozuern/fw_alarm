@@ -759,16 +759,74 @@ function bark_send_alarm_one(array $config, string $key, string $body, bool $mut
     return ['key' => mask_bark_key($key), 'ok' => false, 'http' => $httpCode, 'muted' => $muted];
 }
 
-// ENTWARNUNG (Fehlalarm): NORMALE Push-Mitteilung (level=active, bewusst KEIN
-// Critical Alert und kein Alarmton) an alle aktuellen Empfänger - für den
-// Fall, dass ein Alarm versehentlich ausgelöst wurde. Nutzt dieselbe
-// Empfängerliste wie der Alarm selbst (im Demo-Modus also nur den
-// Test-Empfänger, so lässt sich auch die Entwarnung gefahrlos üben).
+// ENTWARNUNG (Fehlalarm) an EINEN Bark-Key: ebenfalls ein CRITICAL ALERT, denn
+// wer gerade zum Einsatz aufbricht, muss die Entwarnung genauso sicher
+// mitbekommen wie den Alarm - auch durch Stummschalter und Fokus hindurch.
+// Unterschied zum Alarm: ein kurzer, normaler Ton (bark_false_alarm_sound,
+// z.B. 'glass') statt des Alarmtons und KEIN call=1 - es soll einmal deutlich
+// klingeln, nicht dauerhaft schrillen.
+// muted = Arbeitsmodus: gleiche Regel wie beim Alarm - wer den Alarm leise
+// bekommen hat, bekommt auch die Entwarnung leise.
+function bark_send_false_alarm_one(array $config, string $key, string $title, string $body, bool $muted = false, int $muteVolume = 0): array
+{
+    if (!function_exists('curl_init') || !valid_bark_key($key)) {
+        return ['key' => mask_bark_key($key), 'ok' => false, 'http' => 0, 'muted' => $muted];
+    }
+    $host = rtrim((string)($config['bark_host'] ?? 'https://api.day.app'), '/');
+    $tries = max(1, (int)($config['bark_max_tries'] ?? 3));
+    // Lautstärke standardmäßig wie beim Alarm - die Entwarnung soll ja jeden
+    // erreichen; bark_false_alarm_volume kann das bei Bedarf absenken.
+    $volume = (int)($config['bark_false_alarm_volume'] ?? ($config['bark_alarm_volume'] ?? 10));
+    $form = http_build_query([
+        'title'  => $title,
+        'body'   => $body,
+        'sound'  => (string)($config['bark_false_alarm_sound'] ?? 'glass'),
+        'level'  => 'critical',
+        'volume' => $muted ? max(0, min(10, $muteVolume)) : max(0, min(10, $volume)),
+    ]);
+
+    $httpCode = 0;
+    for ($attempt = 1; $attempt <= $tries; $attempt++) {
+        $ch = curl_init($host . '/' . rawurlencode($key));
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $form,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => 10,
+        ]);
+        curl_exec($ch);
+        $httpCode = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        curl_close($ch);
+
+        if ($httpCode === 200) {
+            return ['key' => mask_bark_key($key), 'ok' => true, 'http' => 200, 'muted' => $muted];
+        }
+        if ($httpCode >= 400 && $httpCode < 500) {
+            break;  // Client-Fehler: Wiederholen zwecklos, Key prüfen.
+        }
+        if ($attempt < $tries) {
+            usleep(500000);
+        }
+    }
+    return ['key' => mask_bark_key($key), 'ok' => false, 'http' => $httpCode, 'muted' => $muted];
+}
+
+// ENTWARNUNG (Fehlalarm): CRITICAL ALERT mit kurzem, normalem Ton an alle
+// aktuellen Empfänger - für den Fall, dass ein Alarm versehentlich ausgelöst
+// wurde. Muss genauso durchdringen wie der Alarm selbst, sonst fährt jemand
+// umsonst los. Nutzt dieselbe Empfängerliste wie der Alarm (im Demo-Modus also
+// nur den Test-Empfänger, so lässt sich auch die Entwarnung gefahrlos üben).
 function bark_send_false_alarm_all(array $config): array
 {
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'message' => 'PHP-cURL fehlt. In Web Station im PHP-Profil die Erweiterung "curl" aktivieren.', 'results' => []];
     }
+    // Wie beim Alarm: abgelaufene Stummschaltungen zuerst beenden, damit die
+    // Entwarnung nicht wegen einer vergessenen Stummschaltung leise ankommt.
+    expire_stale_mutes($config);
+
     $demoActive = demo_mode_enabled($config);
     $entries = effective_alarm_entries($config);
     if (count($entries) === 0) {
@@ -793,20 +851,27 @@ function bark_send_false_alarm_all(array $config): array
 
     $results = [];
     $okCount = 0;
+    $mutedCount = 0;
     foreach ($entries as $entry) {
-        $ok = bark_send_status($config, (string)$entry['key'], $title, $body, 'active');
-        if ($ok) {
+        $muted = !empty($entry['muted']);
+        if ($muted) {
+            $mutedCount++;
+        }
+        $result = bark_send_false_alarm_one($config, (string)$entry['key'], $title, $body, $muted,
+            (int)($entry['mute_volume'] ?? 0));
+        $result['label'] = (string)($entry['label'] ?? '');
+        if ($result['ok']) {
             $okCount++;
         }
-        $results[] = ['key' => mask_bark_key((string)$entry['key']), 'ok' => $ok,
-            'label' => (string)($entry['label'] ?? '')];
+        $results[] = $result;
     }
     return [
         'ok' => $okCount === count($entries),
         // Diese Zusammenfassung geht nur an Dashboard und Verlauf (nie an
         // Bark) - darf deshalb, anders als $title/$body, echte Umlaute haben.
         'message' => ($demoActive ? 'DEMO-MODUS: Entwarnung nur an den Test-Empfänger. ' : '')
-            . sprintf('Entwarnung an %d/%d Empfänger zugestellt.', $okCount, count($entries)),
+            . sprintf('Entwarnung an %d/%d Empfänger zugestellt.', $okCount, count($entries))
+            . ($mutedCount > 0 ? sprintf(' %d davon stumm (Arbeitsmodus, leise/lautlos).', $mutedCount) : ''),
         'results' => $results,
     ];
 }
