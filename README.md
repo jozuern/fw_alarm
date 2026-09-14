@@ -499,6 +499,19 @@ Funktionen:
   12 Stunden (`mute_max_seconds` in `config.php`) schaltet das NAS automatisch
   zurück auf laut, und der Offline-Wächter erinnert dich max. 1×/Tag, solange
   jemand stumm ist.
+- **Dauerhaft stumm** (Knopf „Dauerhaft stumm" am Eintrag, nur Admin): schaltet
+  genau dieses Sicherheitsnetz **für einen einzelnen Empfänger ab** – gedacht für
+  längere Abwesenheiten (Schichtdienst, Krankheit, Urlaub), bei denen jemand in
+  der Liste bleiben, aber auf unbestimmte Zeit keinen Ton bekommen soll. Die
+  Stummschaltung läuft dann **nicht** mehr nach 12 Stunden aus, sondern gilt, bis
+  ein Mensch sie beendet: über „Dauer beenden", über „Laut schalten" oder über
+  den persönlichen Laut-Kurzbefehl der Person. Der Alarm kommt weiterhin als
+  Critical Alert an und bleibt auf dem Sperrbildschirm **sichtbar** – niemand
+  fällt aus der Alarmierung heraus. In der Liste trägt so ein Eintrag einen
+  roten Badge „Dauerhaft stumm"; der Offline-Wächter erinnert zusätzlich
+  1×/Woche daran, wer dauerhaft stumm geschaltet ist. Einschalten geht bewusst
+  **nur** im Dashboard – der öffentliche Kurzbefehl-Link kann eine dauerhafte
+  Stummschaltung nur beenden, nie beginnen.
 - **Offline-Wächter** (`cron/check_offline.php`, DSM-Aufgabenplaner): meldet leise
   per Bark, wenn die Box zu lange keinen Status mehr pusht (und wenn sie wieder
   da ist). Details in `nas_dashboard/SETUP.md`.

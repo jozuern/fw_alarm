@@ -710,9 +710,16 @@
           // "bis ~HH:MM": Zeitpunkt der automatischen Laut-Rückschaltung
           // (Sicherheitsnetz) - so überrascht sie später niemanden.
           const until = Number(entry.mute_until) || 0;
-          const badge = entry.muted
-            ? `<span class="badge-muted" title="Arbeitsmodus: Alarme kommen mit Stumm-Lautstärke ${volText} an. Stumm seit ${escapeHtml(formatTime(entry.muted_at))}${until ? `; spätestens um ${escapeHtml(fmtClock(until))} Uhr schaltet die Box automatisch wieder laut` : ''}.">Stumm${until ? ` bis ~${escapeHtml(fmtClock(until))}` : ''}</span>`
-            : '';
+          // Dauerhaft stumm: Das Sicherheitsnetz (automatische Rückschaltung)
+          // ist für diesen Eintrag abgeschaltet - deshalb ein eigener, klar
+          // unterscheidbarer Badge OHNE Endzeit. Nur ein Mensch beendet das.
+          const permanent = !!entry.mute_permanent;
+          let badge = '';
+          if (entry.muted && permanent) {
+            badge = `<span class="badge-muted badge-permanent" title="DAUERHAFT stumm: Alarme kommen mit Stumm-Lautstärke ${volText} an (sichtbar, aber ohne vollen Ton). Stumm seit ${escapeHtml(formatTime(entry.muted_at))}. Die automatische Rückschaltung ist hier abgeschaltet – das bleibt so, bis es jemand von Hand beendet.">Dauerhaft stumm</span>`;
+          } else if (entry.muted) {
+            badge = `<span class="badge-muted" title="Arbeitsmodus: Alarme kommen mit Stumm-Lautstärke ${volText} an. Stumm seit ${escapeHtml(formatTime(entry.muted_at))}${until ? `; spätestens um ${escapeHtml(fmtClock(until))} Uhr schaltet die Box automatisch wieder laut` : ''}.">Stumm${until ? ` bis ~${escapeHtml(fmtClock(until))}` : ''}</span>`;
+          }
           let actions = '';
           if (!readOnly) {
             const volOptions = Array.from({ length: 11 }, (_, v) =>
@@ -736,6 +743,7 @@
                  <select data-key-volume="${entry.id}" data-key-label="${escapeHtml(entry.label)}">${volOptions}</select>
                </label>
                <button type="button" data-key-mute="${entry.id}" data-key-muted="${entry.muted ? '1' : '0'}" data-key-label="${escapeHtml(entry.label)}">${entry.muted ? 'Laut schalten' : 'Stumm schalten'}</button>
+               <button type="button" data-key-permanent="${entry.id}" data-key-is-permanent="${permanent ? '1' : '0'}" data-key-label="${escapeHtml(entry.label)}" title="${permanent ? 'Dauer-Stummschaltung beenden: Der Empfänger bleibt zunächst stumm, wird aber wieder automatisch laut geschaltet.' : 'Dauerhaft stumm schalten: Die automatische Rückschaltung wird für diesen Empfänger abgeschaltet. Alarme kommen weiterhin sichtbar an, aber ohne vollen Ton.'}">${permanent ? 'Dauer beenden' : 'Dauerhaft stumm'}</button>
                <button type="button" class="btn-delete" data-key-delete="${entry.id}" data-key-label="${escapeHtml(entry.label)}">Löschen</button>
              </div>${linkRow}`;
           }
@@ -816,6 +824,12 @@
       }
       case 'key_mute_volume':
         return { text: `Stumm-Lautstärke für "${entry.label}" auf ${entry.volume === 0 ? '0 (lautlos)' : entry.volume} gestellt${who}`, cls: '' };
+      case 'key_mute_permanent': {
+        const src = entry.source === 'shortcut' ? ' – per Kurzbefehl-Link' : who;
+        return entry.permanent
+          ? { text: `Empfänger "${entry.label}" DAUERHAFT stumm geschaltet (keine automatische Rückschaltung mehr)${src}`, cls: 'log-warn' }
+          : { text: `Dauerhafte Stummschaltung für "${entry.label}" beendet (läuft wieder automatisch aus)${src}`, cls: '' };
+      }
       case 'nas_alarm':
         return { text: `REAL ALARM direkt vom NAS: ${entry.message || ''}${who}`, cls: 'log-alarm' };
       case 'false_alarm':
@@ -928,6 +942,40 @@
       }
       return;
     }
+
+    // Dauerhaft stumm: schaltet für EINEN Empfänger das Sicherheitsnetz ab
+    // (keine automatische Rückschaltung mehr). Einschalten ist die riskante
+    // Richtung -> Inline-Bestätigung; Beenden geht direkt.
+    const permBtn = event.target.closest('[data-key-permanent]');
+    if (permBtn) {
+      const toPermanent = permBtn.dataset.keyIsPermanent !== '1';
+      const doPermanent = async () => {
+        setBusy(true);
+        try {
+          const data = await post({
+            action: 'keys_set_mute_permanent',
+            id: permBtn.dataset.keyPermanent,
+            permanent: toPermanent ? '1' : '0',
+          });
+          keysMsgEl.textContent = data.message || 'Fehler.';
+        } catch (err) {
+          keysMsgEl.textContent = 'Anfrage fehlgeschlagen.';
+        } finally {
+          setBusy(false);
+          refreshKeys();
+          refreshLog();
+        }
+      };
+      if (toPermanent) {
+        armInline(permBtn,
+          `"${permBtn.dataset.keyLabel}" DAUERHAFT stumm schalten? Alarme kommen dort weiterhin sichtbar an, aber ohne vollen Ton – und die automatische Rückschaltung greift nicht mehr, bis du das hier wieder beendest.`,
+          'Ja, dauerhaft stumm', doPermanent);
+      } else {
+        doPermanent();
+      }
+      return;
+    }
+
     const btn = event.target.closest('[data-key-delete]');
     if (!btn) return;
     armInline(btn,

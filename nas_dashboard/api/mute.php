@@ -75,13 +75,23 @@ $result = with_lock($config, 'keys', function () use ($config, $token, $key, $wa
         // keine Versions-Erhöhung und kein Log-Spam.
         return ['found' => true, 'changed' => false, 'entry' => $entry];
     }
+    $wasPermanent = mute_is_permanent($entry);
     $state['keys'][$idx]['muted'] = $wantMuted;
     $state['keys'][$idx]['muted_at'] = $wantMuted ? time() : 0;
+    // "Laut" (state=off) beendet auch eine DAUERHAFTE Stummschaltung: Der
+    // Kurzbefehl darf immer in die sichere Richtung wirken - wer sich selbst
+    // wieder laut schaltet, soll danach nicht heimlich weiter vom
+    // Sicherheitsnetz ausgenommen sein. Umgekehrt kann der Link eine
+    // Dauer-Stummschaltung NICHT beginnen (das geht nur im Dashboard).
+    if (!$wantMuted) {
+        $state['keys'][$idx]['mute_permanent'] = false;
+    }
     $state['version'] = (int)($state['version'] ?? 0) + 1;
     if (!backup_then_write($config, 'alarm_keys.json', $state)) {
         return ['found' => true, 'changed' => false, 'entry' => $entry, 'write_failed' => true];
     }
-    return ['found' => true, 'changed' => true, 'entry' => $state['keys'][$idx], 'version' => (int)$state['version']];
+    return ['found' => true, 'changed' => true, 'entry' => $state['keys'][$idx],
+        'version' => (int)$state['version'], 'permanent_ended' => ($wasPermanent && !$wantMuted)];
 });
 
 if (empty($result['found'])) {
@@ -105,6 +115,20 @@ if (!empty($result['changed'])) {
         'key' => mask_bark_key((string)($entry['key'] ?? '')),
         'version' => (int)($result['version'] ?? 0),
     ]);
+    // Hat der Link eine DAUERHAFTE Stummschaltung beendet, das extra
+    // festhalten - sonst wäre im Verlauf nicht zu sehen, dass eine bewusst
+    // gesetzte Dauer-Einstellung nebenbei aufgehoben wurde.
+    if (!empty($result['permanent_ended'])) {
+        append_command_log($config, [
+            'event' => 'key_mute_permanent',
+            'by' => 'Kurzbefehl-Link',
+            'source' => 'shortcut',
+            'label' => (string)($entry['label'] ?? ''),
+            'key' => mask_bark_key((string)($entry['key'] ?? '')),
+            'permanent' => false,
+            'version' => (int)($result['version'] ?? 0),
+        ]);
+    }
 }
 
 text_response("ok=1\nmuted=" . ($wantMuted ? '1' : '0') . "\n");

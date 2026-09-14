@@ -532,10 +532,29 @@ function effective_alarm_keys(array $config): array
 // der Liste genommen. Sicherheitsnetz: Nach mute_max_seconds wird automatisch
 // auf laut zurückgeschaltet - falls die "Arbeit verlassen"-Automation eines
 // iPhones mal nicht auslöst, verschläft niemand dauerhaft die Alarme.
+//
+// AUSNAHME "Dauerhaft stumm" (mute_permanent): Für Kollegen, die auf
+// unbestimmte Zeit keinen Ton bekommen sollen (Schichtdienst, Krankheit,
+// längere Abwesenheit), lässt sich das Sicherheitsnetz pro Empfänger
+// abschalten - die Stummschaltung läuft dann NICHT mehr nach
+// mute_max_seconds ab, sondern gilt bis jemand sie von Hand beendet.
+// Bewusst nur über das Dashboard und nur für die Admin-Rolle setzbar (der
+// Kurzbefehl-Link kann das NICHT einschalten, nur beenden) - eine dauerhafte
+// Stummschaltung ist eine Entscheidung, die jemand bewusst treffen muss.
+// Der Alarm selbst kommt weiterhin als Critical Alert an: sichtbar auf dem
+// Sperrbildschirm, nur eben mit der Stumm-Lautstärke.
 
 function mute_max_seconds(array $config): int
 {
     return max(0, (int)($config['mute_max_seconds'] ?? 43200));
+}
+
+// Ist dieser Eintrag dauerhaft stumm geschaltet (Sicherheitsnetz aus)?
+// Fehlt das Feld (Alt-Eintrag), gilt die sichere Richtung: nein, also läuft
+// die Stummschaltung wie bisher nach mute_max_seconds ab.
+function mute_is_permanent(array $entry): bool
+{
+    return !empty($entry['mute_permanent']);
 }
 
 // Stumm-Lautstärke eines Eintrags: 0 = komplett lautlos (Standard, das alte
@@ -607,6 +626,11 @@ function expire_stale_mutes(array $config): void
     // Billiger Vorab-Check ohne Lock: Meist ist gar nichts abgelaufen.
     $isStale = function (array $entry) use ($maxAge): bool {
         if (empty($entry['muted'])) {
+            return false;
+        }
+        // Dauerhaft stumm (bewusst im Dashboard gesetzt): Das Sicherheitsnetz
+        // greift hier absichtlich NICHT - nur ein Mensch beendet das wieder.
+        if (mute_is_permanent($entry)) {
             return false;
         }
         $since = (int)($entry['muted_at'] ?? 0);

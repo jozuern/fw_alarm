@@ -9,7 +9,9 @@ require __DIR__ . '/../lib/common.php';
 // Demo-Modus zu lange aktiv bleibt (echte Alarme erreichen dann nur den
 // Test-Empfänger!), beendet überfällige Stummschaltungen (Arbeitsmodus,
 // Sicherheitsnetz gegen hängengebliebene "Arbeit verlassen"-Automationen),
-// erinnert max. 1x pro Tag, solange Empfänger stumm sind, und protokolliert
+// erinnert max. 1x pro Tag, solange Empfänger stumm sind (bei DAUERHAFT
+// stummen nur 1x pro Woche - die sind eine bewusste Einstellung und laufen
+// nie von selbst aus, eine tägliche Meldung wäre nur Lärm), und protokolliert
 // jeden Lauf (last_run_at), damit das Dashboard warnen kann, falls die
 // DSM-Aufgabe nicht mehr läuft.
 // Ohne 'bark_key_status' in config.php tut es nichts (bewusst: so kann es
@@ -123,8 +125,17 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
     // erinnern - stumme Empfänger bekommen echte Alarme nur OHNE Ton.
     expire_stale_mutes($config);
     $mutedLabels = [];
+    $permanentLabels = [];
     foreach ((load_alarm_keys($config)['keys'] ?? []) as $entry) {
-        if (!empty($entry['muted'])) {
+        if (empty($entry['muted'])) {
+            continue;
+        }
+        // Dauerhaft Stumme getrennt zählen: Sie sind eine bewusste
+        // Entscheidung im Dashboard und laufen nie von selbst aus - eine
+        // TÄGLICHE Erinnerung dafür wäre nur Lärm, den man wegklickt.
+        if (mute_is_permanent($entry)) {
+            $permanentLabels[] = (string)($entry['label'] ?? '?');
+        } else {
             $mutedLabels[] = (string)($entry['label'] ?? '?');
         }
     }
@@ -143,6 +154,28 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
         }
     } elseif (!empty($state['mute_reminded_at'])) {
         $state['mute_reminded_at'] = 0;   // alle wieder laut: Erinnerung zurücksetzen
+    }
+
+    // ==== 4) Dauerhaft Stumme: seltene Erinnerung (max. 1x pro Woche) ======
+    // Ganz verschweigen wäre falsch - wer seit Monaten lautlos ist, wurde
+    // vielleicht schlicht vergessen. Einmal pro Woche reicht dafür.
+    if (count($permanentLabels) > 0) {
+        $lastReminded = (int)($state['permanent_mute_reminded_at'] ?? 0);
+        if (time() - $lastReminded > 604800) {
+            $ok = bark_send_status($config, $statusKey, 'Dauerhaft stummgeschaltet',
+                date('[d.m.Y H:i] ') . count($permanentLabels)
+                . ' Empfaenger sind DAUERHAFT stumm (Alarme kommen dort ohne Ton an, '
+                . 'die automatische Rueckschaltung ist fuer sie abgeschaltet): '
+                . implode(', ', $permanentLabels) . '. Noch aktuell? Sonst im Dashboard beenden.');
+            if ($ok) {
+                $state['permanent_mute_reminded_at'] = time();
+            }
+            $out[] = $ok ? 'PERMANENT_MUTE_REMINDED' : 'PERMANENT_MUTE_REMIND_FAILED';
+        } else {
+            $out[] = 'PERMANENT_MUTED (' . count($permanentLabels) . ')';
+        }
+    } elseif (!empty($state['permanent_mute_reminded_at'])) {
+        $state['permanent_mute_reminded_at'] = 0;   // keiner mehr dauerhaft stumm
     }
 
     write_json_file($path, $state);

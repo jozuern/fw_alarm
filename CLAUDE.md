@@ -159,6 +159,23 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   betroffenen Key (Nutzerentscheidung, störte nur); nur die **automatische**
   Rückschaltung durch `expire_stale_mutes()` meldet sich weiterhin
   (ASCII-Texte!).
+- **Dauerhaft stumm (`mute_permanent`)**: Pro Eintrag abschaltbares
+  Sicherheitsnetz für längere Abwesenheiten. Ist das Flag gesetzt, überspringt
+  `expire_stale_mutes()` den Eintrag (`mute_is_permanent()`) — die
+  Stummschaltung läuft dann NIE von selbst aus. Bewusst **reine NAS-Logik**:
+  Die Firmware kennt weiterhin nur `muted`/`mutevol`, `api/keys.php` liefert
+  das Flag NICHT aus, und es gibt **keine** Firmware-Änderung dafür. Deshalb
+  bumpt `keys_set_mute_permanent` (Admin+CSRF) die `keys_version` nur, wenn
+  sich dabei auch `muted` ändert — sonst löst es einen sinnlosen Key-Sync aus.
+  Einschalten setzt immer zugleich `muted=true` (kein Zustand „permanent, aber
+  laut"). Beenden geht über `keys_set_mute_permanent`, `keys_mute` (Laut) und
+  `api/mute.php?state=off` — alle drei löschen das Flag, weil „laut" immer die
+  sichere Richtung ist. Der öffentliche Kurzbefehl-Link kann es bewusst **nur
+  beenden, nie setzen**. `keys_list` liefert `mute_permanent` mit und lässt
+  `mute_until` dann weg (es gibt keine Endzeit); das Dashboard zeigt einen
+  eigenen roten Badge. Der Cron-Wächter zählt dauerhaft Stumme getrennt und
+  erinnert für sie nur 1×/Woche (`permanent_mute_reminded_at`) statt 1×/Tag —
+  eine bewusste Dauereinstellung darf nicht täglich pingen.
 - **Command-Protokoll** ist Plain Text (`ok=1`, `nonce=...`, `id=...`,
   `type=...`). Der ESP32 schickt pro Poll eine Nonce, die das NAS spiegeln muss.
   Das NAS vergibt monotone IDs, markiert einen gepollten Befehl sofort persistent

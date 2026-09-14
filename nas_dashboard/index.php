@@ -210,6 +210,13 @@ $readonly = $authed && dashboard_role() !== 'admin';
           <strong>Stumm-Lautstärke</strong> (0&nbsp;=&nbsp;lautlos). Umschalten per Knopf oder
           persönlichem Kurzbefehl-Link („Kurzbefehl-Links“ am Eintrag). Nach 12&nbsp;Std schaltet
           die Box automatisch wieder laut.</p>
+        <p><strong>„Dauerhaft stumm“</strong> schaltet genau diese automatische Rückschaltung
+          für einen Empfänger ab – für längere Abwesenheiten (Schichtdienst, Krankheit, Urlaub).
+          Die Stummschaltung gilt dann, bis sie jemand von Hand beendet: hier über
+          „Dauer beenden“, über „Laut schalten“ oder über den eigenen Laut-Kurzbefehl.
+          Der Alarm bleibt auch dann <strong>sichtbar</strong> auf dem Sperrbildschirm –
+          niemand fällt aus der Alarmierung heraus. Einmal pro Woche erinnert der Wächter
+          daran, wer dauerhaft stumm ist.</p>
       </details>
       <p class="hint" data-keys-msg aria-live="polite"></p>
     </section>

@@ -159,11 +159,13 @@ if ($action === 'keys_list') {
             'muted' => !empty($entry['muted']),
             'muted_at' => (int)($entry['muted_at'] ?? 0),
             'mute_volume' => mute_volume_of($entry),
+            'mute_permanent' => mute_is_permanent($entry),
         ];
         // Wann schaltet das Sicherheitsnetz automatisch wieder laut? So kann
         // das Dashboard "Stumm bis ~HH:MM" zeigen, statt dass die Rückschaltung
-        // die Betroffenen später überrascht.
-        if ($item['muted'] && $item['muted_at'] > 0 && $maxMute > 0) {
+        // die Betroffenen später überrascht. Bei "dauerhaft stumm" gibt es
+        // bewusst KEINE Endzeit - dort zeigt das Dashboard das auch so an.
+        if ($item['muted'] && !$item['mute_permanent'] && $item['muted_at'] > 0 && $maxMute > 0) {
             $item['mute_until'] = $item['muted_at'] + $maxMute;
         }
         // Der Geheim-Link-Token geht NUR an den Admin (er verteilt die
@@ -235,6 +237,11 @@ if ($action === 'log_view') {
                 $item['by'] = (string)($entry['by'] ?? '');
                 $item['label'] = (string)($entry['label'] ?? '');
                 $item['volume'] = (int)($entry['volume'] ?? 0);
+                break;
+            case 'key_mute_permanent':
+                $item['by'] = (string)($entry['by'] ?? '');
+                $item['label'] = (string)($entry['label'] ?? '');
+                $item['permanent'] = !empty($entry['permanent']);
                 break;
             case 'nas_alarm':
             case 'false_alarm':
@@ -457,8 +464,15 @@ if ($action === 'keys_mute') {
             return ['ok' => true, 'changed' => false,
                 'message' => $wantMuted ? 'Empfänger ist bereits stumm.' : 'Empfänger ist bereits laut.'];
         }
+        $wasPermanent = mute_is_permanent($entry);
         $state['keys'][$idx]['muted'] = $wantMuted;
         $state['keys'][$idx]['muted_at'] = $wantMuted ? time() : 0;
+        // Laut schalten beendet IMMER auch eine dauerhafte Stummschaltung -
+        // sonst bliebe ein unsichtbares Flag hängen, das beim nächsten
+        // Stummschalten überraschend wieder das Sicherheitsnetz aushebelt.
+        if (!$wantMuted) {
+            $state['keys'][$idx]['mute_permanent'] = false;
+        }
         $state['version'] = (int)($state['version'] ?? 0) + 1;
         if (!backup_then_write($config, 'alarm_keys.json', $state)) {
             return ['ok' => false, 'message' => 'Liste konnte nicht gespeichert werden.'];
@@ -466,7 +480,9 @@ if ($action === 'keys_mute') {
         return ['ok' => true, 'changed' => true, 'entry' => $state['keys'][$idx], 'version' => (int)$state['version'],
             'message' => $wantMuted
                 ? 'Empfänger stummgeschaltet (Arbeitsmodus): Alarme kommen dort nur mit der eingestellten Stumm-Lautstärke an. Der ESP32 übernimmt das beim nächsten Poll.'
-                : 'Empfänger wieder laut geschaltet. Der ESP32 übernimmt das beim nächsten Poll.'];
+                : ($wasPermanent
+                    ? 'Empfänger wieder laut geschaltet – die dauerhafte Stummschaltung ist damit beendet. Der ESP32 übernimmt das beim nächsten Poll.'
+                    : 'Empfänger wieder laut geschaltet. Der ESP32 übernimmt das beim nächsten Poll.')];
     });
 
     // Log erst NACH dem Lock. Bewusst KEIN Bestätigungs-Push mehr an den
@@ -480,6 +496,105 @@ if ($action === 'keys_mute') {
             'source' => 'dashboard',
             'label' => (string)($entry['label'] ?? ''),
             'key' => mask_bark_key((string)($entry['key'] ?? '')),
+            'version' => (int)($result['version'] ?? 0),
+        ]);
+        unset($result['entry']);   // Klartext-Key nicht an den Browser geben
+    }
+
+    json_response($result);
+}
+
+// DAUERHAFT STUMM (mute_permanent): Schaltet für EINEN Empfänger das
+// Sicherheitsnetz ab - seine Stummschaltung läuft dann nicht mehr nach
+// mute_max_seconds (Standard 12 Std) automatisch aus, sondern gilt, bis
+// jemand sie von Hand beendet. Gedacht für längere Abwesenheiten
+// (Schichtdienst, Krankheit, Urlaub), bei denen der Kollege zwar in der
+// Liste bleiben soll, aber dauerhaft keinen Ton bekommt.
+// Der Alarm selbst kommt weiterhin als Critical Alert an (sichtbar, mit der
+// eingestellten Stumm-Lautstärke) - niemand fällt aus der Alarmierung raus.
+// Einschalten setzt den Empfänger gleich mit stumm, damit kein Zustand
+// entsteht, in dem das Flag gesetzt, der Empfänger aber laut ist.
+// Bewusst NUR hier (Dashboard + Admin + CSRF) einschaltbar, nicht über den
+// öffentlichen Kurzbefehl-Link - der kann eine Dauer-Stummschaltung nur
+// beenden, nie beginnen.
+if ($action === 'keys_set_mute_permanent') {
+    require_csrf();
+    require_dashboard_admin();
+    $id = (int)($_POST['id'] ?? 0);
+    $wantPermanent = (string)($_POST['permanent'] ?? '') === '1';
+
+    // Abgelaufene Stummschaltungen zuerst beenden (nimmt selbst den keys-Lock).
+    expire_stale_mutes($config);
+
+    $result = with_lock($config, 'keys', function () use ($config, $id, $wantPermanent): array {
+        $path = data_path($config, 'alarm_keys.json');
+        $state = read_json_file($path, alarm_keys_default());
+        $idx = -1;
+        foreach (($state['keys'] ?? []) as $i => $entry) {
+            if ((int)($entry['id'] ?? 0) === $id) {
+                $idx = $i;
+                break;
+            }
+        }
+        if ($idx < 0) {
+            return ['ok' => false, 'message' => 'Empfänger nicht gefunden.'];
+        }
+        $entry = $state['keys'][$idx];
+        $wasMuted = !empty($entry['muted']);
+        if (mute_is_permanent($entry) === $wantPermanent) {
+            return ['ok' => true, 'changed' => false,
+                'message' => $wantPermanent
+                    ? 'Empfänger ist bereits dauerhaft stumm.'
+                    : 'Empfänger ist bereits zeitlich begrenzt stumm bzw. laut.'];
+        }
+
+        $state['keys'][$idx]['mute_permanent'] = $wantPermanent;
+        if ($wantPermanent) {
+            // Dauerhaft stumm heißt auch: ab jetzt stumm.
+            $state['keys'][$idx]['muted'] = true;
+            $state['keys'][$idx]['muted_at'] = $wasMuted
+                ? (int)($entry['muted_at'] ?? time())   // bestehende Stummzeit behalten
+                : time();
+        } elseif ($wasMuted) {
+            // Zurück auf "zeitlich begrenzt": Die 12 Std neu starten lassen,
+            // statt den Empfänger wegen eines alten muted_at beim nächsten
+            // expire_stale_mutes sofort wieder laut zu schalten.
+            $state['keys'][$idx]['muted_at'] = time();
+        }
+
+        // Version nur erhöhen, wenn sich am Stumm-Zustand für den ESP32
+        // wirklich etwas ändert: mute_permanent selbst ist reine NAS-Logik
+        // (das Sicherheitsnetz läuft auf dem NAS), die Firmware kennt nur
+        // muted/mutevol. Ein unnötiger Bump würde nur einen Key-Sync auslösen.
+        $espChanged = ($wasMuted !== !empty($state['keys'][$idx]['muted']));
+        if ($espChanged) {
+            $state['version'] = (int)($state['version'] ?? 0) + 1;
+        }
+        if (!backup_then_write($config, 'alarm_keys.json', $state)) {
+            return ['ok' => false, 'message' => 'Liste konnte nicht gespeichert werden.'];
+        }
+        return ['ok' => true, 'changed' => true, 'entry' => $state['keys'][$idx],
+            'version' => (int)($state['version'] ?? 0),
+            'message' => $wantPermanent
+                ? 'Empfänger ist jetzt DAUERHAFT stumm: Die automatische Rückschaltung nach '
+                  . max(1, (int)round(mute_max_seconds($config) / 3600))
+                  . ' Std greift hier nicht mehr. Alarme kommen weiterhin sichtbar an (Stumm-Lautstärke), aber ohne vollen Ton – bis du das hier wieder beendest.'
+                : 'Dauerhafte Stummschaltung beendet. Der Empfänger bleibt vorerst stumm, wird aber wie üblich nach '
+                  . max(1, (int)round(mute_max_seconds($config) / 3600))
+                  . ' Std automatisch wieder laut geschaltet.'];
+    });
+
+    // Log erst NACH dem Lock (wie bei den anderen Schaltern); kein Push an
+    // den Betroffenen - sichtbar bleibt es am Badge und im Verlauf.
+    if (!empty($result['changed'])) {
+        $entry = $result['entry'];
+        append_command_log($config, [
+            'event' => 'key_mute_permanent',
+            'by' => (string)($_SESSION['user'] ?? 'dashboard'),
+            'source' => 'dashboard',
+            'label' => (string)($entry['label'] ?? ''),
+            'key' => mask_bark_key((string)($entry['key'] ?? '')),
+            'permanent' => $wantPermanent,
             'version' => (int)($result['version'] ?? 0),
         ]);
         unset($result['entry']);   // Klartext-Key nicht an den Browser geben

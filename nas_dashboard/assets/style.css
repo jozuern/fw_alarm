@@ -917,6 +917,16 @@ details.keys-more .keys-links {
   cursor: help;
 }
 
+/* Dauerhaft stumm: bewusst kräftiger als die normale (ablaufende)
+   Stummschaltung. Kein Fehler, aber der Zustand, bei dem jemand auf
+   unbestimmte Zeit keinen Ton bekommt - der soll beim Überfliegen der
+   Liste sofort ins Auge springen. */
+.badge-muted.badge-permanent {
+  background: var(--crit-bg);
+  border-color: var(--crit-line);
+  color: var(--crit-text);
+}
+
 .keys-row.muted strong,
 .keys-row.muted code {
   color: var(--faint);
