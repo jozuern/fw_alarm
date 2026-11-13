@@ -20,7 +20,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
     $user = (string)($_POST['user'] ?? '');
     $pass = (string)($_POST['password'] ?? '');
 
-    if (login_throttle_blocked($config)) {
+    // Login-POST von einer FREMDEN Seite (Login-CSRF)? Sonst könnte jede
+    // Webseite den Browser des Admins Fehlversuche absenden lassen und so
+    // seine IP aussperren - genau dann, wenn er den REAL ALARM braucht.
+    // Ablehnen, BEVOR irgendetwas gezählt wird.
+    // Maßgeblich ist allein der Browser-Header Sec-Fetch-Site: Er sagt
+    // eindeutig, ob das Formular von einer fremden Seite kam. BEWUSST kein
+    // Vergleich von Origin und Host: Hinter einem Proxy/Portal, der den
+    // Host-Header umschreibt, würde der JEDEN Login ablehnen - und ohne Login
+    // gibt es keinen manuellen REAL ALARM. Fehlt der Header (sehr alte
+    // Browser, Aufruf per http://), wird der Login nicht blockiert.
+    $crossSite = (string)($_SERVER['HTTP_SEC_FETCH_SITE'] ?? '') === 'cross-site';
+
+    // Versuch VOR der Passwortprüfung atomar zählen (Prüfen + Zählen in einem
+    // Schritt): Parallele Requests bekommen so nicht mehr Versuche als erlaubt.
+    // Ein Erfolg setzt den Zähler unten wieder zurück.
+    $attempt = $crossSite ? ['blocked' => false, 'count' => 0] : login_throttle_attempt($config);
+    if ($crossSite) {
+        http_response_code(403);
+        $error = 'Anmeldung nur direkt über diese Seite möglich.';
+    } elseif ($attempt['blocked']) {
         http_response_code(429);
         $error = 'Zu viele Fehlversuche von dieser Adresse - bitte spaeter erneut versuchen.';
     } else {
@@ -56,7 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
             header('Location: index.php');
             exit;
         }
-        $failCount = login_throttle_record_failure($config);
+        $failCount = (int)$attempt['count'];
         // Genau beim Erreichen der Sperrschwelle EINMAL den Owner leise per
         // Bark informieren (nur wenn bark_key_status in config.php gesetzt
         // ist): Bei einer internetoffenen Seite will man wissen, wenn jemand
@@ -88,6 +107,11 @@ $readonly = $authed && dashboard_role() !== 'admin';
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="csrf" content="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
   <meta name="role" content="<?= $readonly ? 'readonly' : 'admin' ?>">
+  <?php // Öffentliche Basis-URL für die Kurzbefehl-Links (config.php
+        // 'public_base_url'). Leer = app.js nimmt die aktuelle Adresse - wer das
+        // Dashboard über die LAN-IP öffnet, bekäme sonst Links, die unterwegs
+        // nicht funktionieren. ?>
+  <meta name="public-base" content="<?= htmlspecialchars((string)($config['public_base_url'] ?? ''), ENT_QUOTES, 'UTF-8') ?>">
   <title>BOSS-925 Alarm-Wächter</title>
   <?php // Passend zum dunklen "Leitstand"-Design färbt sich auch die
         // Browser-Leiste (Safari/Chrome auf dem Handy) dunkel ein. ?>
@@ -193,12 +217,12 @@ $readonly = $authed && dashboard_role() !== 'admin';
       <div data-keys-list class="keys-list">Wird geladen…</div>
       <?php if (!$readonly): ?>
         <form data-keys-add class="keys-add">
-          <input name="label" placeholder="Name (z. B. Josh)" required maxlength="40">
+          <input name="label" placeholder="Name (z. B. Josh)" aria-label="Name des Empfängers" required maxlength="40">
           <?php // title erklärt bei ungültiger Eingabe das erwartete Format
                 // (der Browser hängt ihn an seine Validierungs-Meldung an);
                 // autocapitalize/spellcheck aus, weil iPhones den Key sonst
                 // beim Eintippen groß schreiben oder "korrigieren". ?>
-          <input name="key" placeholder="Bark-Key" required pattern="[A-Za-z0-9_-]{5,64}"
+          <input name="key" placeholder="Bark-Key" aria-label="Bark-Key des Empfängers" required pattern="[A-Za-z0-9_-]{5,64}"
                  title="5–64 Zeichen: Buchstaben, Ziffern, Unter- und Bindestrich (steht in der Bark-App unter dem QR-Code)"
                  autocomplete="off" autocapitalize="none" spellcheck="false">
           <button type="submit">Hinzufügen</button>

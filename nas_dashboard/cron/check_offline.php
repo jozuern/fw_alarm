@@ -25,9 +25,28 @@ if (PHP_SAPI !== 'cli') {
     require_machine_auth($config);
 }
 
+// Überfällige Stummschaltungen beenden - IMMER, auch ohne Status-Key: Das
+// Sicherheitsnetz darf nicht davon abhängen, ob der Owner Meldungen bekommt.
+// (Nimmt den 'keys'-Lock; die Info-Pushs an die Betroffenen laufen am Ende.)
+expire_stale_mutes($config);
+
+// Läuft der Wächter als root: Dateien, die das Dashboard an Ort und Stelle
+// beschreibt (Verlauf, Lock-Dateien, Sicherungen), an den Besitzer des
+// data_dir übergeben - auch solche, die ein früherer Lauf als root angelegt
+// hat. fix_owner() tut nur etwas, wenn der Ordner einem Nicht-root-Benutzer
+// gehört, und fasst die Rechte-Bits nie an (siehe dort).
+foreach (inplace_data_files($config) as $inplaceFile) {
+    fix_owner($inplaceFile);
+}
+
 $statusKey = trim((string)($config['bark_key_status'] ?? ''));
 if ($statusKey === '') {
-    text_response("DISABLED (bark_key_status fehlt in config.php)\n");
+    text_response("DISABLED (bark_key_status fehlt in config.php; Stumm-Ablauf lief trotzdem)\n");
+}
+if (!function_exists('curl_init')) {
+    // Ohne cURL kann der Wächter weder melden noch den Selbsttest machen -
+    // das CLI-PHP der DSM-Aufgabe ist oft ein anderes als das der Web Station.
+    text_response("NO_CURL (PHP-CLI ohne curl-Erweiterung - in der DSM-Aufgabe /usr/local/bin/php83 verwenden)\n");
 }
 
 $latest = read_json_file(data_path($config, 'latest_status.json'), []);
@@ -57,6 +76,15 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
     $state['last_run_at'] = time();
     $out = [];
 
+    // Jede Meldung über diesen Helfer: Er merkt sich, ob Bark zuletzt
+    // ANGENOMMEN hat. Sonst zeigte das Dashboard "Wächter läuft", obwohl
+    // keine einzige Meldung ankommt (falscher Status-Key, Bark-4xx ...).
+    $notify = function (string $title, string $body) use ($config, $statusKey, &$state): bool {
+        $ok = bark_send_status($config, $statusKey, $title, $body);
+        $state[$ok ? 'last_send_ok_at' : 'last_send_failed_at'] = time();
+        return $ok;
+    };
+
     // ==== 0) Kann das Dashboard selbst noch schreiben? ======================
     // Dieser Wächter läuft als root - fehlende Schreibrechte des Web-Benutzers
     // sieht er selbst nie. Deshalb fragt er api/health.php, das als 'http'
@@ -68,7 +96,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
     if ($web['ok']) {
         if ($webNotifiedAt > 0) {
             $downMins = max(1, (int)round((time() - (int)($state['web_fail_since'] ?? time())) / 60));
-            $ok = bark_send_status($config, $statusKey, 'NAS-Dashboard wieder OK',
+            $ok = $notify('NAS-Dashboard wieder OK',
                 date('[d.m.Y H:i] ') . "Der Datenordner ist wieder beschreibbar (Stoerung ca. {$downMins} min).");
             if ($ok) {
                 append_command_log($config, ['event' => 'nas_web_recovered', 'minutes' => $downMins]);
@@ -90,10 +118,18 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
         }
         if ($webFailCount >= 2 && ($webNotifiedAt === 0 || time() - $webNotifiedAt > 86400)) {
             // Bark-Texte bewusst ASCII (keine Umlaute).
-            $ok = bark_send_status($config, $statusKey, 'NAS-Dashboard DEFEKT',
-                date('[d.m.Y H:i] ') . $web['detail'] . '. Login und Status-Pushs der Box scheitern! '
-                . 'Meist fehlt der Gruppe http das Schreibrecht: DSM > File Station > web_packages > '
-                . 'fw_alarm_data > Eigenschaften > Berechtigung > http Lesen+Schreiben. '
+            // Ist nur EINE bestehende Datei betroffen (step=perm), stimmt die
+            // große Aussage "Login und Status-Pushs scheitern" nicht - dann
+            // genau sagen, was klemmt.
+            $impact = ($web['step'] ?? '') === 'perm'
+                ? '. Verlauf, Empfaenger-Aenderungen oder Stummschalten koennen dadurch scheitern. '
+                    . 'Die Datei im Datenordner (fw_alarm_data) dem Web-Benutzer http zuordnen '
+                    . 'bzw. ihm Lesen+Schreiben geben. '
+                : '. Login und Status-Pushs der Box scheitern! '
+                    . 'Meist fehlt der Gruppe http das Schreibrecht: DSM > File Station > web_packages > '
+                    . 'fw_alarm_data > Eigenschaften > Berechtigung > http Lesen+Schreiben. ';
+            $ok = $notify('NAS-Dashboard DEFEKT',
+                date('[d.m.Y H:i] ') . $web['detail'] . $impact
                 . 'Bark-Alarme der Box laufen davon unabhaengig weiter.');
             if ($ok) {
                 if ($webNotifiedAt === 0) {
@@ -121,14 +157,16 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
             // Scheitert gleichzeitig der Selbsttest, kann die Box ihre Pushs
             // gar nicht ablegen - dann NICHT zur Box schicken (Oktober 2026:
             // die Box lief, das NAS war kaputt, die Meldung führte in die Irre).
-            $body = $web['ok']
+            // Nur wenn die Störung die Status-Pushs wirklich blockiert - eine
+            // einzelne fremde Verlaufsdatei macht die Box nicht "offline".
+            $body = empty($web['blocks_pushes'])
                 ? "Kein Status vom ESP32 seit {$mins} min. "
                     . 'Strom/WLAN/Box pruefen! Der Relaisalarm wuerde gerade NICHT ausgeloest. '
                     . '(Manueller REAL ALARM ueber das Dashboard geht weiterhin.)'
                 : "Kein Status vom ESP32 seit {$mins} min - Ursache ist aber vermutlich das NAS, "
                     . 'nicht die Box: ' . $web['detail'] . '. '
                     . 'Kommen die taeglichen Bark-Heartbeats der Box noch an, laeuft sie normal.';
-            $ok = bark_send_status($config, $statusKey, 'Alarm-Box OFFLINE', date('[d.m.Y H:i] ') . $body);
+            $ok = $notify('Alarm-Box OFFLINE', date('[d.m.Y H:i] ') . $body);
             if ($ok) {
                 $state['offline_notified'] = true;
                 $state['offline_since'] = time() - $age;
@@ -140,7 +178,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
             $out[] = $ok ? 'NOTIFIED_OFFLINE' : 'SEND_FAILED';
         } elseif (!$offline && $notified) {
             $downMins = max(1, (int)round((time() - (int)($state['offline_since'] ?? time())) / 60));
-            $ok = bark_send_status($config, $statusKey, 'Alarm-Box wieder ONLINE',
+            $ok = $notify('Alarm-Box wieder ONLINE',
                 date('[d.m.Y H:i] ') . "ESP32 meldet sich wieder (Ausfall ca. {$downMins} min).");
             if ($ok) {
                 $state['offline_notified'] = false;
@@ -161,11 +199,18 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
     if (!empty($demo['enabled'])) {
         $since = (int)($demo['changed_at'] ?? 0);
         $remindAfter = (int)($config['demo_reminder_after_seconds'] ?? 14400);   // 4 h
+        // Die Erinnerung gehört zur jeweiligen Demo-Sitzung: Wurde der Modus
+        // seit der letzten Erinnerung neu eingeschaltet (auch innerhalb von 15
+        // min aus und wieder an), zählt die neue Sitzung von vorn.
+        if ((int)($state['demo_reminded_for'] ?? 0) !== $since) {
+            $state['demo_reminded_at'] = 0;
+            $state['demo_reminded_for'] = $since;
+        }
         $lastReminded = (int)($state['demo_reminded_at'] ?? 0);
         if ($since > 0 && time() - $since > $remindAfter && time() - $lastReminded > 86400) {
             $hours = max(1, (int)round((time() - $since) / 3600));
             $label = (string)($demo['label'] ?? 'Test-Empfaenger');
-            $ok = bark_send_status($config, $statusKey, 'Demo-Modus noch aktiv!',
+            $ok = $notify('Demo-Modus noch aktiv!',
                 date('[d.m.Y H:i] ') . "Der Demo-Modus laeuft seit ca. {$hours} Std - "
                 . "ALLE Alarme gehen nur an '{$label}'. Im Dashboard zurueck auf LIVE schalten!");
             if ($ok) {
@@ -179,12 +224,11 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
         $state['demo_reminded_at'] = 0;   // wieder LIVE: Erinnerung zurücksetzen
     }
 
-    // ==== 3) Arbeitsmodus: überfällige Stummschaltungen + Erinnerung ========
-    // expire_stale_mutes schaltet zu lange stumme Empfänger automatisch laut
-    // (nimmt den 'keys'-Lock - anderer Lock als 'watchdog', kein Konflikt).
-    // Solange danach noch jemand stumm ist, den Owner max. 1x pro Tag leise
-    // erinnern - stumme Empfänger bekommen echte Alarme nur OHNE Ton.
-    expire_stale_mutes($config);
+    // ==== 3) Arbeitsmodus: Erinnerung an Stummschaltungen ===================
+    // Überfällige Stummschaltungen hat expire_stale_mutes() schon ganz oben
+    // (vor dem Lock) beendet. Solange danach noch jemand stumm ist, den Owner
+    // max. 1x pro Tag leise erinnern - stumme Empfänger bekommen echte Alarme
+    // nur OHNE Ton. Namen werden in bark_send_status() auf ASCII umgesetzt.
     $mutedLabels = [];
     $permanentLabels = [];
     foreach ((load_alarm_keys($config)['keys'] ?? []) as $entry) {
@@ -203,7 +247,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
     if (count($mutedLabels) > 0) {
         $lastReminded = (int)($state['mute_reminded_at'] ?? 0);
         if (time() - $lastReminded > 86400) {
-            $ok = bark_send_status($config, $statusKey, 'Empfaenger stummgeschaltet',
+            $ok = $notify('Empfaenger stummgeschaltet',
                 date('[d.m.Y H:i] ') . count($mutedLabels) . ' Empfaenger im Arbeitsmodus (Alarme ohne Ton): '
                 . implode(', ', $mutedLabels) . '.');
             if ($ok) {
@@ -223,7 +267,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
     if (count($permanentLabels) > 0) {
         $lastReminded = (int)($state['permanent_mute_reminded_at'] ?? 0);
         if (time() - $lastReminded > 604800) {
-            $ok = bark_send_status($config, $statusKey, 'Dauerhaft stummgeschaltet',
+            $ok = $notify('Dauerhaft stummgeschaltet',
                 date('[d.m.Y H:i] ') . count($permanentLabels)
                 . ' Empfaenger sind DAUERHAFT stumm (Alarme kommen dort ohne Ton an, '
                 . 'die automatische Rueckschaltung ist fuer sie abgeschaltet): '
@@ -239,7 +283,12 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
         $state['permanent_mute_reminded_at'] = 0;   // keiner mehr dauerhaft stumm
     }
 
-    write_json_file($path, $state);
+    // Zustand konnte nicht gespeichert werden (z.B. volle Platte)? Melden -
+    // sonst blieben Zähler wie web_fail_count ewig bei 1 ("DEFEKT" käme nie),
+    // und OFFLINE würde alle 15 min erneut gemeldet.
+    if (!write_json_file($path, $state)) {
+        $out[] = 'STATE_WRITE_FAILED (watchdog_state.json nicht speicherbar)';
+    }
     return implode(' | ', $out) . "\n";
 });
 

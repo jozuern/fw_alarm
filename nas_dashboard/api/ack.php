@@ -13,7 +13,13 @@ $ok = with_lock($config, 'command', function () use ($config, $id, $result, $mes
     $path = data_path($config, 'command_state.json');
     $state = read_json_file($path, command_state_default());
     $current = $state['current'] ?? null;
-    if (is_array($current) && (int)($current['id'] ?? 0) === $id) {
+    // Nur ein AUSGELIEFERTER Befehl kann quittiert werden (bzw. eine erneut
+    // geschickte ACK für einen schon quittierten). Ein pending/cancelled/
+    // expired-Befehl mit zufällig gleicher ID (z.B. nach Verlust von
+    // command_state.json) darf nicht fälschlich als "ausgeführt" erscheinen.
+    $currentState = is_array($current) ? (string)($current['state'] ?? '') : '';
+    if (is_array($current) && (int)($current['id'] ?? 0) === $id
+        && in_array($currentState, ['delivered', 'acked'], true)) {
         $current['state'] = 'acked';
         $current['acked_at'] = time();
         $current['ack_result'] = $result;

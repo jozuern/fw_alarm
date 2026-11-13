@@ -44,17 +44,70 @@ function load_config(): array
 
 function data_dir(array $config): string
 {
-    $dir = (string)$config['data_dir'];
+    $dir = rtrim((string)($config['data_dir'] ?? ''), '/');
+    // Nur absolute Pfade: Ein relativer Pfad würde je nach Skript (Dashboard,
+    // api/, cron/) in einem ANDEREN Ordner landen - der ESP32-Status wäre im
+    // Dashboard unsichtbar. Ein leerer Pfad ließe den root-Cron nach / schreiben.
+    if ($dir === '' || $dir[0] !== '/') {
+        error_log('fw_alarm: data_dir in config.php fehlt oder ist kein absoluter Pfad.');
+        http_response_code(500);
+        exit('Konfiguration fehlerhaft: data_dir muss ein absoluter Pfad sein.');
+    }
     if (!is_dir($dir)) {
         mkdir($dir, 0750, true);
+        fix_owner($dir, dirname($dir));   // Vorbild ist der ELTERN-Ordner
     }
     // Falls Nginx-Verzeichnislisting (autoindex) aktiv sein sollte, verhindert
     // diese Datei, dass jemand die Namen der Laufzeitdateien aufzählen kann.
     $guard = $dir . '/index.php';
     if (!is_file($guard)) {
         @file_put_contents($guard, "<?php http_response_code(404); exit;\n");
+        fix_owner($guard, $dir);
     }
     return $dir;
+}
+
+// Der Offline-Wächter (cron/) läuft als root. Legt er eine Datei im data_dir
+// NEU an (Log nach der Rotation, *.bak, Lock-Datei), gehörte sie sonst root.
+// Gehört der data_dir dem Web-Benutzer selbst (klassische Unix-Rechte), könnte
+// der sie danach nicht mehr beschreiben (Log-Einträge verschwänden still,
+// Lock-Dateien führten zu HTTP 500). Deshalb übernimmt eine als root angelegte
+// Datei Besitzer und Gruppe des Ordners.
+// BEWUSST zurückhaltend - die Funktion darf Zugriff nie WEGNEHMEN:
+// - Die Rechte-Bits (chmod) bleiben unangetastet. Auf Synology kommt der
+//   Zugriff von 'http' meist über File-Station-Berechtigungen (ACL) oder über
+//   die "andere"-Bits; ein chmod könnte beides aushebeln.
+// - Gehört der Ordner root, wird der Besitzer nicht geändert (dann regeln
+//   ohnehin ACLs den Zugriff, und alles bleibt wie vom System angelegt).
+function fix_owner(string $path, ?string $dir = null): void
+{
+    if (!function_exists('posix_geteuid') || posix_geteuid() !== 0 || !file_exists($path)) {
+        return;
+    }
+    $ref = $dir ?? dirname($path);
+    $uid = @fileowner($ref);
+    $gid = @filegroup($ref);
+    if ($uid === false || $uid === 0) {
+        return;
+    }
+    if (@fileowner($path) !== $uid) {
+        @chown($path, $uid);
+    }
+    if ($gid !== false && @filegroup($path) !== $gid) {
+        @chgrp($path, $gid);
+    }
+}
+
+// Laufzeitdateien, die der Web-Benutzer AN ORT UND STELLE beschreibt (anhängen,
+// überschreiben, Lock öffnen). Alle anderen ersetzt er per rename() - dafür
+// zählt allein das Schreibrecht auf den Ordner. 'watchdog.lock' fehlt bewusst:
+// Den nimmt nur der Cron-Wächter.
+function inplace_data_files(array $config): array
+{
+    $names = ['commands.log', 'alarm_keys.json.bak', 'demo_mode.json.bak',
+        'keys.lock', 'command.lock', 'status.lock', 'log.lock',
+        'login_throttle.lock', 'mute_throttle.lock', 'health.lock'];
+    return array_map(static fn(string $name): string => data_path($config, $name), $names);
 }
 
 // Laufzeitdateien bekommen die Endung .php (siehe DATA_FILE_GUARD oben).
@@ -63,13 +116,21 @@ function data_path(array $config, string $name): string
     return data_dir($config) . '/' . $name . '.php';
 }
 
-function read_json_file(string $path, array $default): array
+// Liest eine Laufzeit-JSON-Datei. $status meldet zusätzlich, WARUM ggf. der
+// Default kam: 'ok', 'missing' (Datei gibt es nicht) oder 'corrupt' (leer,
+// unlesbar oder kein gültiges JSON). Das Unterscheiden ist wichtig: Eine
+// kaputte Empfängerliste darf NICHT still wie eine leere behandelt werden.
+function read_json_file(string $path, array $default, ?string &$status = null): array
 {
+    $status = 'ok';
     if (!is_file($path)) {
+        $status = 'missing';
         return $default;
     }
-    $raw = file_get_contents($path);
+    $raw = @file_get_contents($path);
     if ($raw === false || $raw === '') {
+        $status = 'corrupt';
+        error_log('fw_alarm: Laufzeitdatei leer/unlesbar: ' . basename($path));
         return $default;
     }
     // Guard-Zeile (erste Zeile) überspringen.
@@ -78,23 +139,42 @@ function read_json_file(string $path, array $default): array
         $raw = $nl === false ? '' : substr($raw, $nl + 1);
     }
     $data = json_decode($raw, true);
-    return is_array($data) ? $data : $default;
+    if (!is_array($data)) {
+        $status = 'corrupt';
+        error_log('fw_alarm: Laufzeitdatei kein gültiges JSON: ' . basename($path));
+        return $default;
+    }
+    return $data;
 }
 
-// Schreibt atomar (tmp + rename). Gibt false zurück, wenn irgendetwas
+// Schreibt atomar (tmp + fsync + rename). Gibt false zurück, wenn irgendetwas
 // fehlschlägt - die Aufrufer melden das als HTTP 500 an den ESP32/Browser,
-// statt einen Erfolg vorzutäuschen.
+// statt einen Erfolg vorzutäuschen. Die Temp-Datei endet ebenfalls auf .php
+// (Guard greift auch für eine liegengebliebene Leiche) und hat einen
+// zufälligen Namen (kein Konflikt mit einer fremden, z.B. root-eigenen Leiche).
 function write_json_file(string $path, array $data): bool
 {
-    $tmp = $path . '.tmp';
-    $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     if ($json === false) {
         return false;
     }
-    $written = @file_put_contents($tmp, DATA_FILE_GUARD . $json, LOCK_EX);
-    if ($written === false) {
+    $base = str_ends_with($path, '.php') ? substr($path, 0, -4) : $path;
+    $tmp = $base . '.tmp-' . bin2hex(random_bytes(4)) . '.php';
+    $payload = DATA_FILE_GUARD . $json;
+    $handle = @fopen($tmp, 'xb');
+    if ($handle === false) {
         return false;
     }
+    $ok = @fwrite($handle, $payload) === strlen($payload) && @fflush($handle);
+    if ($ok && function_exists('fsync')) {
+        $ok = @fsync($handle);
+    }
+    @fclose($handle);
+    if (!$ok) {
+        @unlink($tmp);
+        return false;
+    }
+    fix_owner($tmp);
     if (!@rename($tmp, $path)) {
         @unlink($tmp);
         return false;
@@ -105,33 +185,62 @@ function write_json_file(string $path, array $data): bool
 // Wie write_json_file, hält aber vorher die letzte Version als *.bak-Datei
 // fest (ebenfalls .php-guarded). Gedacht für die Empfängerliste/Demo-Zustand:
 // Die Liste ist die EINE Quelle für beide Alarmwege - geht die Datei kaputt,
-// lässt sich der letzte Stand von Hand zurückholen (Datei umbenennen).
+// greift load_alarm_keys() automatisch auf die *.bak zurück. Gesichert wird
+// nur ein LESBARER Stand - sonst würde eine kaputte Datei die letzte gute
+// Sicherung überschreiben.
 function backup_then_write(array $config, string $name, array $data): bool
 {
     $path = data_path($config, $name);
     if (is_file($path)) {
-        @copy($path, data_path($config, $name . '.bak'));
+        read_json_file($path, [], $status);
+        if ($status === 'ok') {
+            $bak = data_path($config, $name . '.bak');
+            if (@copy($path, $bak)) {
+                fix_owner($bak);
+            }
+        }
     }
     return write_json_file($path, $data);
 }
 
-function with_lock(array $config, string $name, callable $callback)
+// Fehlermeldung, wenn eine Lock-Datei nicht zu öffnen ist (meist fehlendes
+// Schreibrecht der Gruppe http auf den data_dir).
+const LOCK_FAILED_MESSAGE = 'Fehler: Datenordner nicht beschreibbar (Berechtigungen der Gruppe http prüfen).';
+
+function open_lock(array $config, string $name)
 {
     $lockPath = data_path($config, $name . '.lock');
+    $existed = is_file($lockPath);
     $handle = @fopen($lockPath, 'c');
     if ($handle === false) {
         // Häufigste Ursache (Störung 10-11/2026): Ein Web-Station-/DSM-Update
         // hat der Gruppe 'http' das Schreibrecht auf den data_dir entzogen.
-        // Früher stand hier nur "Fehler." - das sagte niemandem etwas. Den
-        // Pfad gibt es nur im PHP-Fehlerlog, nicht im Browser (Struktur-Leak).
+        // Den Pfad gibt es nur im PHP-Fehlerlog, nicht im Browser (Struktur-Leak).
         error_log('fw_alarm: Lock-Datei nicht beschreibbar: ' . $lockPath);
+        return false;
+    }
+    if (!$existed) {
+        fix_owner($lockPath);
+    }
+    flock($handle, LOCK_EX);
+    return $handle;
+}
+
+function with_lock(array $config, string $name, callable $callback)
+{
+    $handle = open_lock($config, $name);
+    if ($handle === false) {
         http_response_code(500);
+        // Dashboard-API (JSON-Aufrufer) bekommt JSON - sonst sähe der Browser
+        // nur eine unlesbare Antwort und zeigte "NAS nicht erreichbar".
+        if (defined('FW_ALARM_JSON_API')) {
+            json_response(['ok' => false, 'code' => 'storage', 'message' => LOCK_FAILED_MESSAGE]);
+        }
         if (!headers_sent()) {
             header('Content-Type: text/plain; charset=utf-8');
         }
-        exit('Fehler: Datenordner nicht beschreibbar (Berechtigungen der Gruppe http prüfen).');
+        exit(LOCK_FAILED_MESSAGE);
     }
-    flock($handle, LOCK_EX);
     try {
         return $callback();
     } finally {
@@ -140,13 +249,72 @@ function with_lock(array $config, string $name, callable $callback)
     }
 }
 
+// Wie with_lock, aber NICHT fatal: Lässt sich der Lock nicht öffnen, kommt
+// $onFail zurück statt eines exit(). Für alles, was nur "best effort" ist und
+// einen wichtigeren Pfad nicht mitreißen darf - vor allem den manuellen
+// REAL ALARM und den Login (Störung 10/2026: kein Schreibrecht -> früher
+// brachen beide mit HTTP 500 ab, obwohl sie gar nicht schreiben müssen).
+function with_lock_soft(array $config, string $name, callable $callback, $onFail = null)
+{
+    $handle = open_lock($config, $name);
+    if ($handle === false) {
+        return $onFail;
+    }
+    try {
+        return $callback();
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+// Arbeit NACH der Antwort erledigen (z.B. Bark-Info-Pushs, bis ~20 s): Der
+// Aufrufer (ESP32 mit 4-s-Timeout, Browser, manueller Alarm) wartet so nicht
+// darauf. fastcgi_finish_request() schließt die Verbindung zum Client, das
+// Skript läuft danach weiter. In der CLI (Cron) laufen die Jobs am Ende.
+function defer_after_response(callable $job): void
+{
+    static $jobs = null;
+    if ($jobs === null) {
+        $jobs = [];
+        register_shutdown_function(static function () use (&$jobs): void {
+            if (PHP_SAPI !== 'cli' && function_exists('fastcgi_finish_request')) {
+                @fastcgi_finish_request();
+            }
+            ignore_user_abort(true);
+            // while statt foreach: Jobs, die ein Job selbst noch anmeldet,
+            // laufen so ebenfalls.
+            while (($deferred = array_shift($jobs)) !== null) {
+                try {
+                    $deferred();
+                } catch (Throwable $e) {
+                    error_log('fw_alarm: Nachlauf-Job fehlgeschlagen: ' . $e->getMessage());
+                }
+            }
+        });
+    }
+    $jobs[] = $job;
+}
+
 // Selbsttest für den data_dir: Kann DIESER PHP-Prozess dort Lock-Dateien
 // öffnen und Dateien schreiben, zurücklesen und löschen? Gedacht für
 // api/health.php - also für den echten Web-Benutzer (http). Der Cron-Wächter
 // läuft als root und würde einen Rechteverlust selbst nie bemerken.
-// Liefert ['ok' => bool, 'step' => 'ok'|'lock'|'write'|'read'|'delete'].
+// Liefert ['ok' => bool, 'step' => 'ok'|'lock'|'write'|'read'|'delete'|'perm'].
+// 'perm' (dann zusätzlich 'file' => Dateiname): Eine BESTEHENDE Datei, die das
+// Dashboard an Ort und Stelle beschreiben muss (Verlauf, Lock, *.bak - siehe
+// inplace_data_files()), ist für diesen Benutzer nicht beschreibbar, z.B. weil
+// der root-Cron sie angelegt hat. Das Anlegen neuer Dateien allein sagt
+// darüber nichts. Geprüft werden NUR diese Dateien: Alles andere ersetzt das
+// Dashboard per rename() - ein fremder Besitzer wäre dort kein Fehler.
 function data_dir_write_check(array $config): array
 {
+    foreach (inplace_data_files($config) as $file) {
+        if (is_file($file) && !is_writable($file)) {
+            error_log('fw_alarm: Laufzeitdatei nicht beschreibbar: ' . basename($file));
+            return ['ok' => false, 'step' => 'perm', 'file' => basename($file)];
+        }
+    }
     $handle = @fopen(data_path($config, 'health.lock'), 'c');
     if ($handle === false) {
         return ['ok' => false, 'step' => 'lock'];
@@ -195,23 +363,35 @@ function web_health_check(array $config): array
     $err = curl_error($ch);
     curl_close($ch);
 
+    // 'blocks_pushes': Können wegen dieser Störung auch die Status-Pushs der
+    // Box nicht gespeichert werden? Davon hängt ab, ob eine "Box OFFLINE"-
+    // Meldung das NAS als Ursache nennen darf.
     if ($body === false) {
-        return ['ok' => false, 'detail' => 'Web Station nicht erreichbar (' . $err . ')'];
+        return ['ok' => false, 'blocks_pushes' => true,
+            'detail' => 'Web Station nicht erreichbar (' . $err . ')'];
     }
     if ($http === 200 && preg_match('/^ok=1$/m', (string)$body)) {
-        return ['ok' => true, 'detail' => 'ok'];
+        return ['ok' => true, 'blocks_pushes' => false, 'detail' => 'ok'];
     }
     if (preg_match('/^step=(\w+)$/m', (string)$body, $m)) {
+        if ($m[1] === 'perm') {
+            // Nur EINE Datei ist betroffen - der Ordner selbst ist beschreibbar.
+            $file = preg_match('/^file=([\w.\-]+)$/m', (string)$body, $fm) ? $fm[1] : '?';
+            return ['ok' => false, 'step' => 'perm', 'file' => $file,
+                'blocks_pushes' => str_starts_with($file, 'status.lock'),
+                'detail' => 'Laufzeitdatei ' . $file . ' ist fuer den Web-Benutzer nicht beschreibbar'];
+        }
         $steps = [
             'lock' => 'Lock-Datei',
             'write' => 'Schreiben',
             'read' => 'Zuruecklesen',
             'delete' => 'Loeschen',
         ];
-        return ['ok' => false, 'detail' => 'Datenordner nicht beschreibbar (Schritt: '
-            . ($steps[$m[1]] ?? $m[1]) . ', HTTP ' . $http . ')'];
+        return ['ok' => false, 'step' => $m[1], 'blocks_pushes' => true,
+            'detail' => 'Datenordner nicht beschreibbar (Schritt: '
+                . ($steps[$m[1]] ?? $m[1]) . ', HTTP ' . $http . ')'];
     }
-    return ['ok' => false, 'detail' => 'Selbsttest lieferte HTTP ' . $http];
+    return ['ok' => false, 'blocks_pushes' => true, 'detail' => 'Selbsttest lieferte HTTP ' . $http];
 }
 
 // Maschinen-Token NUR per POST akzeptieren: GET-Parameter landen sonst im
@@ -219,21 +399,42 @@ function web_health_check(array $config): array
 function require_machine_auth(array $config): void
 {
     $token = (string)($_POST['token'] ?? '');
-    $expected = (string)($config['machine_token_sha256'] ?? '');
+    // Hash tolerant vergleichen: Manche Tools (z.B. PowerShell Get-FileHash)
+    // geben ihn in GROSSBUCHSTABEN aus, beim Kopieren rutschen Leerzeichen mit.
+    $expected = strtolower(trim((string)($config['machine_token_sha256'] ?? '')));
     if ($token === '' || $expected === '' || !hash_equals($expected, hash('sha256', $token))) {
         http_response_code(403);
         exit('FORBIDDEN');
     }
 }
 
-// ======================= LOGIN-BREMSE (pro IP) ==============================
+// ======================= BREMSE PRO ABSENDER ================================
 // sleep(1) allein lässt sich mit vielen parallelen Verbindungen aushebeln.
-// Deshalb zusätzlich: Nach zu vielen Fehlversuchen wird die IP für ein
-// Zeitfenster gesperrt. Ein erfolgreicher Login setzt den Zähler zurück.
+// Deshalb zusätzlich: Nach zu vielen Versuchen wird der Absender für ein
+// Zeitfenster gesperrt. Genutzt für den Login (jeder Versuch zählt, Erfolg
+// setzt zurück) und für api/mute.php (nur unbekannte Tokens zählen).
+// Alle Lock-Zugriffe sind NICHT fatal: Fehlt das Schreibrecht auf den
+// data_dir, wird nur nicht gebremst - Login und Alarm bleiben erreichbar.
 
 function login_client_ip(): string
 {
     return (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+}
+
+// Schlüssel, unter dem ein Absender gezählt wird: IPv4 einzeln, IPv6 als
+// ganzes /64 - ein Angreifer bekommt sonst pro Adresse seines Präfixes ein
+// neues Budget. IPv4-mapped IPv6 (::ffff:a.b.c.d) zählt wie die IPv4.
+function client_throttle_key(): string
+{
+    $ip = login_client_ip();
+    $bin = @inet_pton($ip);
+    if ($bin !== false && strlen($bin) === 16) {
+        if (substr($bin, 0, 12) === str_repeat("\0", 10) . "\xff\xff") {
+            return (string)inet_ntop(substr($bin, 12));
+        }
+        return inet_ntop(substr($bin, 0, 8) . str_repeat("\0", 8)) . '/64';
+    }
+    return $ip;
 }
 
 function login_throttle_limits(array $config): array
@@ -244,51 +445,71 @@ function login_throttle_limits(array $config): array
     ];
 }
 
-// true = diese IP hat ihr Fehlversuch-Budget im aktuellen Fenster aufgebraucht.
-function login_throttle_blocked(array $config): bool
+// Hat dieser Absender sein Budget im aktuellen Fenster aufgebraucht? (Nur
+// lesend, ohne Lock - für den schnellen Vorab-Check.)
+function throttle_blocked(array $config, string $bucket, int $max, int $window): bool
 {
-    [$max, $window] = login_throttle_limits($config);
-    $entry = read_json_file(data_path($config, 'login_throttle.json'), [])[login_client_ip()] ?? null;
-    if (!is_array($entry)) {
-        return false;
-    }
-    if (time() - (int)($entry['first_at'] ?? 0) > $window) {
+    $entry = read_json_file(data_path($config, $bucket . '_throttle.json'), [])[client_throttle_key()] ?? null;
+    if (!is_array($entry) || time() - (int)($entry['first_at'] ?? 0) > $window) {
         return false;
     }
     return (int)($entry['count'] ?? 0) >= $max;
 }
 
-// Gibt den neuen Fehlversuchs-Zählerstand der IP zurück - der Aufrufer kann
-// so genau beim Erreichen der Sperrschwelle einmalig den Owner benachrichtigen.
-function login_throttle_record_failure(array $config): int
+// Zählt einen Versuch des Absenders - atomar, d.h. Prüfen und Zählen in EINEM
+// Schritt unter dem Lock (N parallele Requests bekommen so nicht N Versuche).
+// Liefert ['blocked' => bool, 'count' => int]. Bei 'blocked' wird nicht
+// weitergezählt.
+function throttle_hit(array $config, string $bucket, int $max, int $window): array
 {
-    [, $window] = login_throttle_limits($config);
-    return (int)with_lock($config, 'login', function () use ($config, $window): int {
-        $path = data_path($config, 'login_throttle.json');
+    return with_lock_soft($config, $bucket . '_throttle', function () use ($config, $bucket, $max, $window): array {
+        $path = data_path($config, $bucket . '_throttle.json');
         $all = read_json_file($path, []);
         $now = time();
-        foreach ($all as $ip => $entry) {   // abgelaufene Fenster aufräumen
-            if ($now - (int)($entry['first_at'] ?? 0) > $window) {
-                unset($all[$ip]);
+        foreach ($all as $who => $entry) {   // abgelaufene Fenster aufräumen
+            if (!is_array($entry) || $now - (int)($entry['first_at'] ?? 0) > $window) {
+                unset($all[$who]);
             }
         }
-        $ip = login_client_ip();
-        $entry = is_array($all[$ip] ?? null) ? $all[$ip] : ['count' => 0, 'first_at' => $now];
-        $entry['count'] = (int)($entry['count'] ?? 0) + 1;
-        $all[$ip] = $entry;
+        $who = client_throttle_key();
+        $entry = is_array($all[$who] ?? null) ? $all[$who] : ['count' => 0, 'first_at' => $now];
+        if ((int)$entry['count'] >= $max) {
+            return ['blocked' => true, 'count' => (int)$entry['count']];
+        }
+        $entry['count'] = (int)$entry['count'] + 1;
+        $all[$who] = $entry;
         write_json_file($path, $all);
-        return (int)$entry['count'];
+        return ['blocked' => false, 'count' => (int)$entry['count']];
+    }, ['blocked' => false, 'count' => 0]);
+}
+
+function throttle_clear(array $config, string $bucket): void
+{
+    $path = data_path($config, $bucket . '_throttle.json');
+    // Billiger Vorab-Check ohne Lock: Meist gibt es gar keinen Eintrag - dann
+    // muss ein erfolgreicher Login auch nichts schreiben (und scheitert nicht
+    // an fehlendem Schreibrecht).
+    if (!isset(read_json_file($path, [])[client_throttle_key()])) {
+        return;
+    }
+    with_lock_soft($config, $bucket . '_throttle', function () use ($path): void {
+        $all = read_json_file($path, []);
+        unset($all[client_throttle_key()]);
+        write_json_file($path, $all);
     });
+}
+
+// Login: Versuch VOR der Passwortprüfung reservieren. Liefert
+// ['blocked' => bool, 'count' => int].
+function login_throttle_attempt(array $config): array
+{
+    [$max, $window] = login_throttle_limits($config);
+    return throttle_hit($config, 'login', $max, $window);
 }
 
 function login_throttle_clear(array $config): void
 {
-    with_lock($config, 'login', function () use ($config): void {
-        $path = data_path($config, 'login_throttle.json');
-        $all = read_json_file($path, []);
-        unset($all[login_client_ip()]);
-        write_json_file($path, $all);
-    });
+    throttle_clear($config, 'login');
 }
 
 function start_dashboard_session(): void
@@ -334,11 +555,13 @@ function require_dashboard_auth(): void
 }
 
 // Rolle der angemeldeten Person: 'admin' (voller Zugriff) oder 'readonly'
-// (nur ansehen). Sessions von vor dieser Funktion stammen immer vom
-// Admin-Login, deshalb ist 'admin' der Fallback.
+// (nur ansehen). Fehlt die Rolle, gilt die SICHERE Richtung 'readonly'
+// (fail-closed): Der Login setzt sie immer, und Sitzungen von vor der
+// Rollen-Funktion sind längst über das 12-h-Idle-Timeout abgelaufen.
 function dashboard_role(): string
 {
-    return (string)($_SESSION['role'] ?? 'admin');
+    $role = (string)($_SESSION['role'] ?? '');
+    return $role === 'admin' ? 'admin' : 'readonly';
 }
 
 // Auslösende/ändernde Aktionen sind dem Admin vorbehalten. Der Lese-Benutzer
@@ -348,7 +571,8 @@ function require_dashboard_admin(): void
 {
     if (dashboard_role() !== 'admin') {
         http_response_code(403);
-        json_response(['ok' => false, 'message' => 'Nur Lesezugriff: Dieser Benutzer darf nichts ausloesen oder aendern.']);
+        json_response(['ok' => false, 'code' => 'readonly',
+            'message' => 'Nur Lesezugriff: Dieser Benutzer darf nichts auslösen oder ändern.']);
     }
 }
 
@@ -365,14 +589,19 @@ function require_csrf(): void
     $sent = (string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? $_POST['csrf'] ?? '');
     if ($sent === '' || empty($_SESSION['csrf']) || !hash_equals((string)$_SESSION['csrf'], $sent)) {
         http_response_code(403);
-        json_response(['ok' => false]);
+        json_response(['ok' => false, 'code' => 'csrf',
+            'message' => 'Sicherheits-Token veraltet – Seite neu laden. Aktion wurde NICHT ausgeführt.']);
     }
 }
 
 function json_response(array $payload): void
 {
-    header('Content-Type: application/json; charset=utf-8');
-    echo json_encode($payload, JSON_UNESCAPED_SLASHES);
+    if (!headers_sent()) {
+        header('Content-Type: application/json; charset=utf-8');
+    }
+    // INVALID_UTF8_SUBSTITUTE: Ein kaputtes Byte (z.B. ein abgeschnittenes
+    // Umlaut-Zeichen) darf nie die GANZE Antwort leer machen.
+    echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     exit;
 }
 
@@ -441,43 +670,77 @@ function expire_stale_pending(array $config, array &$state, bool $persist): bool
 function append_command_log(array $config, array $entry): void
 {
     $entry['log_at'] = time();
-    $path = data_path($config, 'commands.log');
-    // Rotation: sonst füllt das Log über Jahre die Platte, und volle Platte
-    // heißt: Status-/Befehlsdateien lassen sich nicht mehr schreiben.
-    if (is_file($path) && (int)@filesize($path) > 5 * 1024 * 1024) {
-        $old = data_path($config, 'commands.log.1');
-        @unlink($old);
-        @rename($path, $old);
+    $line = json_encode($entry, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . PHP_EOL;
+    // Rotation + Anhängen unter EINEM Lock: Sonst konnte ein paralleler
+    // Prozess die gerade rotierte Datei wieder löschen (5 MB Verlauf weg).
+    // Nicht fatal - ein fehlender Verlaufseintrag darf nie einen Alarm- oder
+    // Statuspfad abbrechen.
+    $written = with_lock_soft($config, 'log', function () use ($config, $line): bool {
+        $path = data_path($config, 'commands.log');
+        // Rotation: sonst füllt das Log über Jahre die Platte, und volle Platte
+        // heißt: Status-/Befehlsdateien lassen sich nicht mehr schreiben.
+        if (is_file($path) && (int)@filesize($path) > 5 * 1024 * 1024) {
+            $old = data_path($config, 'commands.log.1');
+            @unlink($old);
+            @rename($path, $old);
+        }
+        $isNew = !is_file($path);
+        $ok = @file_put_contents($path, ($isNew ? DATA_FILE_GUARD : '') . $line, FILE_APPEND | LOCK_EX) !== false;
+        if ($isNew) {
+            fix_owner($path);   // vom root-Cron angelegt? -> http muss weiter anhängen können
+        }
+        return $ok;
+    }, false);
+    if (!$written) {
+        error_log('fw_alarm: Verlaufseintrag konnte nicht geschrieben werden: ' . (string)($entry['event'] ?? '?'));
     }
-    $prefix = is_file($path) ? '' : DATA_FILE_GUARD;
-    @file_put_contents(
-        $path,
-        $prefix . json_encode($entry, JSON_UNESCAPED_SLASHES) . PHP_EOL,
-        FILE_APPEND | LOCK_EX
-    );
 }
 
 // Liest die letzten Einträge aus commands.log für das Verlaufs-Panel.
-// Bewusst nur das Datei-Ende (Tail), damit auch eine 5-MB-Logdatei das
-// Dashboard nicht ausbremst. Neueste Einträge zuerst.
+// Liest das Datei-Ende rückwärts in Blöcken, bis genug Einträge da sind
+// (auch große nas_alarm-Zeilen), und nimmt bei Bedarf die rotierte Datei
+// commands.log.1 dazu. Neueste Einträge zuerst.
 function read_command_log_tail(array $config, int $limit = 25): array
 {
-    $path = data_path($config, 'commands.log');
-    if (!is_file($path)) {
+    $entries = [];
+    foreach (['commands.log', 'commands.log.1'] as $name) {
+        $need = $limit - count($entries);
+        if ($need <= 0) {
+            break;
+        }
+        $entries = array_merge($entries, read_log_file_tail(data_path($config, $name), $need));
+    }
+    return $entries;
+}
+
+// Neueste zuerst; höchstens $limit Einträge, höchstens 1 MB gelesen.
+function read_log_file_tail(string $path, int $limit): array
+{
+    if ($limit <= 0 || !is_file($path)) {
         return [];
     }
-    $size = (int)@filesize($path);
-    $chunk = 64 * 1024;
     $handle = @fopen($path, 'rb');
     if ($handle === false) {
         return [];
     }
-    $offset = max(0, $size - $chunk);
-    fseek($handle, $offset);
-    $raw = (string)stream_get_contents($handle);
+    $size = (int)@filesize($path);
+    $chunk = 64 * 1024;
+    $maxRead = 1024 * 1024;
+    $offset = $size;
+    $data = '';
+    // Rückwärts blockweise lesen, bis genug vollständige Zeilen beisammen sind.
+    while ($offset > 0 && $size - $offset < $maxRead) {
+        $read = min($chunk, $offset);
+        $offset -= $read;
+        fseek($handle, $offset);
+        $data = (string)fread($handle, $read) . $data;
+        if (substr_count($data, "\n") > $limit + 1) {
+            break;
+        }
+    }
     fclose($handle);
 
-    $lines = explode("\n", $raw);
+    $lines = explode("\n", $data);
     if ($offset > 0) {
         array_shift($lines);   // erste Zeile ist evtl. angeschnitten
     }
@@ -487,9 +750,9 @@ function read_command_log_tail(array $config, int $limit = 25): array
         if ($line === '' || str_starts_with($line, '<?php')) {
             continue;   // Guard-Zeile überspringen
         }
-        $data = json_decode($line, true);
-        if (is_array($data)) {
-            $entries[] = $data;
+        $decoded = json_decode($line, true);
+        if (is_array($decoded)) {
+            $entries[] = $decoded;
         }
     }
     return array_reverse(array_slice($entries, -$limit));
@@ -501,14 +764,117 @@ function read_command_log_tail(array $config, int $limit = 25): array
 // Abweichung die Liste über api/keys.php (persistiert sie dann im NVS-Flash).
 // Der NAS-Direktalarm nutzt DIESELBE Liste -> eine Quelle für beide Alarmwege.
 
+// Obergrenze der Empfängerliste - identisch zu MAX_ALARM_KEYS in der Firmware.
+const MAX_ALARM_KEYS = 10;
+
+// Meldung, wenn die Empfängerliste UND ihre Sicherung unlesbar sind.
+const ALARM_KEYS_CORRUPT_MESSAGE = 'Empfängerliste beschädigt (alarm_keys.json und .bak unlesbar) – '
+    . 'nichts geändert. Bitte die Dateien im data_dir prüfen.';
+
 function alarm_keys_default(): array
 {
     return ['next_id' => 1, 'version' => 0, 'keys' => []];
 }
 
+// Liest die Empfängerliste. Ist alarm_keys.json kaputt, wird automatisch die
+// letzte gute Sicherung (*.bak) genommen. null = BEIDE unbrauchbar - Schreiber
+// müssen dann abbrechen, statt eine leere Liste "neu anzufangen" (das würde
+// die Version zurücksetzen und die gute Sicherung überschreiben).
+function read_alarm_keys_state(array $config): ?array
+{
+    $state = read_json_file(data_path($config, 'alarm_keys.json'), alarm_keys_default(), $status);
+    if ($status !== 'corrupt') {
+        return $state;
+    }
+    $bak = read_json_file(data_path($config, 'alarm_keys.json.bak'), alarm_keys_default(), $bakStatus);
+    if ($bakStatus === 'ok') {
+        error_log('fw_alarm: alarm_keys.json unlesbar - nutze alarm_keys.json.bak');
+        return $bak;
+    }
+    error_log('fw_alarm: alarm_keys.json UND .bak unlesbar');
+    return null;
+}
+
+// Für Leser (Alarm, Anzeige): im Notfall lieber eine leere Liste (-> Fallback
+// aus config.php) als ein Abbruch.
 function load_alarm_keys(array $config): array
 {
-    return read_json_file(data_path($config, 'alarm_keys.json'), alarm_keys_default());
+    return read_alarm_keys_state($config) ?? alarm_keys_default();
+}
+
+// Erhöht die Listen-Version - und zwar über ALLES hinaus, was je vergeben
+// wurde (Hochwassermarke in einer eigenen Datei). Wird die Liste aus einer
+// .bak zurückgeholt, läuft die Version so nie rückwärts auf eine Nummer, die
+// der ESP32 schon mit ANDEREM Inhalt kennt (er würde dann nie neu holen).
+// Muss unter dem 'keys'-Lock aufgerufen werden.
+function bump_keys_version(array $config, array &$state): int
+{
+    $hwPath = data_path($config, 'alarm_keys_version.json');
+    $hw = (int)(read_json_file($hwPath, [])['high_water'] ?? 0);
+    $next = max((int)($state['version'] ?? 0), $hw) + 1;
+    $state['version'] = $next;
+    write_json_file($hwPath, ['high_water' => $next]);
+    return $next;
+}
+
+// Position eines Eintrags (per id) in der Liste, -1 = nicht gefunden.
+function find_key_index(array $state, int $id): int
+{
+    foreach (($state['keys'] ?? []) as $i => $entry) {
+        if (is_array($entry) && (int)($entry['id'] ?? 0) === $id) {
+            return (int)$i;
+        }
+    }
+    return -1;
+}
+
+// Lesen-Ändern-Schreiben der Empfängerliste unter dem 'keys'-Lock - das eine
+// Muster für alle Schreiber (Dashboard, Kurzbefehl-Link). $mutate bekommt den
+// Zustand per Referenz und liefert das Ergebnis-Array. Setzt es 'write' =>
+// true, wird gespeichert (mit 'bump' => true unter neuer Listen-Version, die
+// dann als 'version' im Ergebnis steht). Ist die Liste samt Sicherung
+// unlesbar, wird NICHTS geschrieben.
+function mutate_alarm_keys(array $config, callable $mutate): array
+{
+    return with_lock($config, 'keys', function () use ($config, $mutate): array {
+        $state = read_alarm_keys_state($config);
+        if ($state === null) {
+            return ['ok' => false, 'message' => ALARM_KEYS_CORRUPT_MESSAGE];
+        }
+        $result = $mutate($state);
+        $write = !empty($result['write']);
+        $bump = !empty($result['bump']);
+        unset($result['write'], $result['bump']);
+        if (!$write) {
+            return $result;
+        }
+        $result['version'] = $bump ? bump_keys_version($config, $state) : (int)($state['version'] ?? 0);
+        if (!backup_then_write($config, 'alarm_keys.json', $state)) {
+            return ['ok' => false, 'message' => 'Liste konnte nicht gespeichert werden.', 'write_failed' => true];
+        }
+        return $result;
+    });
+}
+
+// Darf ein DEMO-ALARM über den ESP32 laufen? Nur im Demo-Modus, und nur wenn
+// der letzte Status-Push des ESP32 (a) die aktuelle Listen-Version bestätigt,
+// (b) genau EINEN Empfänger meldet (= die Demo-Liste - schützt auch vor einem
+// halb geschriebenen Moduswechsel) und (c) frisch ist. Sonst könnte der
+// Test-Alarm noch an die volle Liste gehen. null = erlaubt, sonst der Grund.
+function demo_alarm_block_reason(array $config): ?string
+{
+    if (!demo_mode_enabled($config)) {
+        return 'ALARM über den ESP32 geht nur im Demo-Modus. Im LIVE-Betrieb den REAL ALARM (direkt vom NAS) benutzen.';
+    }
+    $latest = read_json_file(data_path($config, 'latest_status.json'), []);
+    $espVersion = (int)($latest['keys_version'] ?? -1);
+    $nasVersion = (int)(load_alarm_keys($config)['version'] ?? 0);
+    $age = time() - (int)($latest['seen_at'] ?? 0);
+    if ($espVersion !== $nasVersion || (int)($latest['keys_count'] ?? 0) !== 1
+        || $age > (int)($config['offline_after_seconds'] ?? 180)) {
+        return 'Der ESP32 hat die Demo-Liste noch nicht übernommen oder ist offline - warten, bis das Demo-Banner die Übernahme bestätigt.';
+    }
+    return null;
 }
 
 // Bark-Keys sind kurze alphanumerische Tokens.
@@ -543,10 +909,15 @@ function demo_mode_enabled(array $config): bool
 }
 
 // Kompakte Demo-Info für das Dashboard (Key nur maskiert - Keys sind Geheimnisse).
+// 'enabled' sagt, wohin Alarme WIRKLICH gehen: wie demo_mode_enabled() nur
+// bei gesetztem Flag UND plausiblem Demo-Key. Bei einem unplausiblen Key
+// alarmiert effective_alarm_entries() die volle Liste - dann darf das
+// Dashboard nicht "Demo" anzeigen (und Browser und Server müssen sich über
+// den Modus einig sein, siehe expect_demo in dashboard_api.php).
 function demo_mode_info(array $config): array
 {
     $demo = load_demo_mode($config);
-    $enabled = !empty($demo['enabled']);
+    $enabled = !empty($demo['enabled']) && valid_bark_key(trim((string)($demo['key'] ?? '')));
     return [
         'enabled' => $enabled,
         'label' => $enabled ? (string)($demo['label'] ?? '') : '',
@@ -565,22 +936,39 @@ function demo_mode_info(array $config): array
 // muted = Arbeitsmodus: Der Alarm geht trotzdem als Critical Alert raus, aber
 // mit der eingestellten Stumm-Lautstärke (mute_volume, Standard 0 = lautlos) -
 // der Empfänger SIEHT ihn also weiterhin.
-function effective_alarm_entries(array $config): array
+//
+// Bereinigt wie die Firmware: nur gültige Keys, keine Duplikate, höchstens
+// MAX_ALARM_KEYS - sonst würde der ESP32 die Liste verwerfen, während das NAS
+// sie benutzt (beide Wege alarmierten verschiedene Empfänger).
+// Überfällige Stummschaltungen gelten hier schon als LAUT (mute_is_stale), auch
+// wenn expire_stale_mutes() sie noch nicht weggeschrieben hat: Die Alarmierung
+// hängt so nicht am Schreibrecht auf den data_dir.
+// $keysState/$demo optional übergeben, damit ein Aufrufer (api/keys.php) Liste,
+// Version und Demo-Zustand aus EINEM Lesevorgang ausliefern kann.
+function effective_alarm_entries(array $config, ?array $keysState = null, ?array $demo = null): array
 {
     // label läuft mit, damit das Dashboard im Sende-Ergebnis NAMEN zeigen kann
     // ("Josh FEHLER" statt "abc... FEHLER") - unter Stress zählt, WER fehlt.
     $infoByKey = [];
-    foreach ((load_alarm_keys($config)['keys'] ?? []) as $entry) {
-        $key = trim((string)($entry['key'] ?? ''));
-        if ($key !== '') {
-            $infoByKey[$key] = [
-                'muted' => !empty($entry['muted']),
-                'mute_volume' => mute_volume_of($entry),
-                'label' => (string)($entry['label'] ?? ''),
-            ];
+    foreach ((($keysState ?? load_alarm_keys($config))['keys'] ?? []) as $entry) {
+        if (!is_array($entry)) {
+            continue;
         }
+        $key = trim((string)($entry['key'] ?? ''));
+        if (!valid_bark_key($key) || isset($infoByKey[$key])) {
+            continue;
+        }
+        if (count($infoByKey) >= MAX_ALARM_KEYS) {
+            error_log('fw_alarm: Empfängerliste hat mehr als ' . MAX_ALARM_KEYS . ' Einträge - Rest ignoriert');
+            break;
+        }
+        $infoByKey[$key] = [
+            'muted' => !empty($entry['muted']) && !mute_is_stale($config, $entry),
+            'mute_volume' => mute_volume_of($entry),
+            'label' => (string)($entry['label'] ?? ''),
+        ];
     }
-    $demo = load_demo_mode($config);
+    $demo = $demo ?? load_demo_mode($config);
     if (!empty($demo['enabled'])) {
         $key = trim((string)($demo['key'] ?? ''));
         if (valid_bark_key($key)) {
@@ -599,10 +987,24 @@ function effective_alarm_entries(array $config): array
     return $entries;
 }
 
-// Nur die Key-Strings (für Aufrufer, die das Stumm-Flag nicht brauchen).
-function effective_alarm_keys(array $config): array
+// Empfänger für einen NAS-Direktversand (Alarm/Entwarnung): die effektive
+// Liste, sonst die Not-Liste aus config.php. Liefert zusätzlich, ob der
+// Fallback griff und ob der Demo-Modus aktiv ist - für die Meldung im Dashboard.
+function alarm_recipients(array $config): array
 {
-    return array_column(effective_alarm_entries($config), 'key');
+    $entries = effective_alarm_entries($config);
+    $usedFallback = false;
+    if (count($entries) === 0) {
+        $fallback = $config['bark_keys_alarm'] ?? [];
+        foreach ((is_array($fallback) ? $fallback : []) as $key) {
+            $key = trim((string)$key);
+            if (valid_bark_key($key) && count($entries) < MAX_ALARM_KEYS) {
+                $entries[] = ['key' => $key, 'muted' => false, 'mute_volume' => 0, 'label' => ''];
+            }
+        }
+        $usedFallback = count($entries) > 0;
+    }
+    return ['entries' => $entries, 'used_fallback' => $usedFallback, 'demo' => demo_mode_enabled($config)];
 }
 
 // ========================= ARBEITSMODUS (STUMM) =============================
@@ -647,6 +1049,23 @@ function mute_volume_of(array $entry): int
     return max(0, min(10, (int)($entry['mute_volume'] ?? 0)));
 }
 
+// Ist die Stummschaltung dieses Eintrags überfällig (länger als
+// mute_max_seconds, nicht dauerhaft)? EINE Definition für alle: die
+// Leseseite (effective_alarm_entries -> Alarm/ESP32-Sync) und das
+// Aufräumen (expire_stale_mutes).
+function mute_is_stale(array $config, array $entry): bool
+{
+    if (empty($entry['muted']) || mute_is_permanent($entry)) {
+        return false;
+    }
+    $maxAge = mute_max_seconds($config);
+    if ($maxAge <= 0) {
+        return false;
+    }
+    $since = (int)($entry['muted_at'] ?? 0);
+    return $since <= 0 || time() - $since > $maxAge;
+}
+
 // ==================== GEHEIM-LINK-TOKEN (KURZBEFEHL) ========================
 // Jeder Empfänger bekommt einen zufälligen Token für seinen persönlichen
 // Stummschalt-Link (api/mute.php?t=...). Bewusst ein EIGENER Token statt des
@@ -672,15 +1091,20 @@ function valid_mute_token(string $token): bool
 // 'keys'-Lock heraus aufrufen (flock würde sich selbst blockieren).
 function ensure_mute_tokens(array $config): void
 {
-    $needsToken = static function (array $entry): bool {
-        return !valid_mute_token((string)($entry['mute_token'] ?? ''));
+    // Ohne Typ-Angabe am Parameter: Ein kaputter Listeneintrag (kein Array,
+    // z.B. nach einer Handänderung) darf hier keinen TypeError auslösen.
+    $needsToken = static function ($entry): bool {
+        return is_array($entry) && !valid_mute_token((string)($entry['mute_token'] ?? ''));
     };
     // Billiger Vorab-Check ohne Lock: Meist haben längst alle einen Token.
     if (count(array_filter(load_alarm_keys($config)['keys'] ?? [], $needsToken)) === 0) {
         return;
     }
-    with_lock($config, 'keys', function () use ($config, $needsToken): void {
-        $state = read_json_file(data_path($config, 'alarm_keys.json'), alarm_keys_default());
+    with_lock_soft($config, 'keys', function () use ($config, $needsToken): void {
+        $state = read_alarm_keys_state($config);
+        if ($state === null) {
+            return;   // Liste kaputt: nichts überschreiben
+        }
         $changed = false;
         foreach (($state['keys'] ?? []) as $i => $entry) {
             if ($needsToken($entry)) {
@@ -694,39 +1118,43 @@ function ensure_mute_tokens(array $config): void
     });
 }
 
-// Schaltet zu lange stummgeschaltete Empfänger automatisch wieder laut.
-// Wird von api/mute.php, api/keys.php, keys_list (Dashboard) und dem
-// Cron-Wächter aufgerufen, damit das Netz auch ohne DSM-Aufgabe greift.
+// Schaltet zu lange stummgeschaltete Empfänger automatisch wieder laut und
+// erhöht dabei die Listen-Version (-> der ESP32 holt den Stand beim nächsten
+// Poll). Läuft in api/poll.php (damit das Netz den Relaisweg auch OHNE
+// Cron-Wächter erreicht), api/mute.php, api/keys.php, keys_list, nach dem
+// NAS-Direktalarm und im Cron-Wächter. Die Leseseite rechnet überfällige
+// Stummschaltungen ohnehin schon als laut (mute_is_stale) - dies hier ist das
+// Wegschreiben plus Benachrichtigung.
+// $soft = true: fehlendes Schreibrecht ist kein Abbruch (best effort).
+// Die Info-Pushs an die Betroffenen laufen NACH der Antwort
+// (defer_after_response) - sie dürfen weder den ESP32 (4-s-Timeout) noch einen
+// Alarm aufhalten. Gibt die laut geschalteten Einträge zurück.
 // ACHTUNG: nimmt selbst den 'keys'-Lock - NIE aus einem bereits gehaltenen
 // 'keys'-Lock heraus aufrufen (flock würde sich selbst blockieren).
-function expire_stale_mutes(array $config): void
+function expire_stale_mutes(array $config, bool $soft = false): array
 {
-    $maxAge = mute_max_seconds($config);
-    if ($maxAge <= 0) {
-        return;
+    if (mute_max_seconds($config) <= 0) {
+        return [];
     }
+    // Dauerhaft stumm (bewusst im Dashboard gesetzt) ist nie "überfällig" -
+    // das regelt mute_is_stale(). Nur ein Mensch beendet das wieder.
+    // Ohne Typ-Angabe am Parameter: Diese Funktion läuft bei JEDEM Poll des
+    // ESP32 - ein kaputter Listeneintrag (kein Array) darf sie nicht mit einem
+    // TypeError abbrechen (der Poll antwortete sonst dauerhaft mit HTTP 500).
+    $isStale = static fn($entry): bool => is_array($entry) && mute_is_stale($config, $entry);
     // Billiger Vorab-Check ohne Lock: Meist ist gar nichts abgelaufen.
-    $isStale = function (array $entry) use ($maxAge): bool {
-        if (empty($entry['muted'])) {
-            return false;
-        }
-        // Dauerhaft stumm (bewusst im Dashboard gesetzt): Das Sicherheitsnetz
-        // greift hier absichtlich NICHT - nur ein Mensch beendet das wieder.
-        if (mute_is_permanent($entry)) {
-            return false;
-        }
-        $since = (int)($entry['muted_at'] ?? 0);
-        return $since <= 0 || time() - $since > $maxAge;
-    };
     if (count(array_filter(load_alarm_keys($config)['keys'] ?? [], $isStale)) === 0) {
-        return;
+        return [];
     }
 
-    $result = with_lock($config, 'keys', function () use ($config, $isStale): array {
-        $state = read_json_file(data_path($config, 'alarm_keys.json'), alarm_keys_default());
+    $work = function () use ($config, $isStale): array {
+        $state = read_alarm_keys_state($config);
+        if ($state === null) {
+            return ['expired' => [], 'version' => 0];
+        }
         $expired = [];
         foreach (($state['keys'] ?? []) as $i => $entry) {
-            if (!$isStale($entry)) {
+            if (!is_array($entry) || !$isStale($entry)) {
                 continue;
             }
             $state['keys'][$i]['muted'] = false;
@@ -736,15 +1164,17 @@ function expire_stale_mutes(array $config): void
         if (count($expired) === 0) {
             return ['expired' => [], 'version' => 0];
         }
-        $state['version'] = (int)($state['version'] ?? 0) + 1;
+        $version = bump_keys_version($config, $state);
         if (!backup_then_write($config, 'alarm_keys.json', $state)) {
             return ['expired' => [], 'version' => 0];
         }
-        return ['expired' => $expired, 'version' => (int)$state['version']];
-    });
+        return ['expired' => $expired, 'version' => $version];
+    };
+    $result = $soft
+        ? with_lock_soft($config, 'keys', $work, ['expired' => [], 'version' => 0])
+        : with_lock($config, 'keys', $work);
 
-    // Log + Info-Push erst NACH dem Lock: Bark-HTTP (bis zu ~20 s) darf die
-    // Empfängerliste nicht für den ESP32-Sync blockieren.
+    // Log erst NACH dem Lock; Info-Push erst nach der Antwort.
     foreach ($result['expired'] as $entry) {
         append_command_log($config, [
             'event' => 'key_unmuted',
@@ -754,12 +1184,20 @@ function expire_stale_mutes(array $config): void
             'key' => mask_bark_key((string)($entry['key'] ?? '')),
             'version' => $result['version'],
         ]);
-        // Leise Info an den Betroffenen selbst (ASCII, siehe bark_send_status).
-        bark_send_status($config, (string)($entry['key'] ?? ''), 'Alarmton wieder LAUT',
-            date('[d.m.Y H:i] ') . 'Stummschaltung automatisch beendet (war laenger als '
-            . max(1, (int)round(mute_max_seconds($config) / 3600)) . ' Std aktiv). '
-            . 'Alarme kommen wieder als Critical Alert mit Ton.');
     }
+    if (count($result['expired']) > 0) {
+        $expiredEntries = $result['expired'];
+        defer_after_response(static function () use ($config, $expiredEntries): void {
+            foreach ($expiredEntries as $entry) {
+                // Leise Info an den Betroffenen selbst (ASCII, siehe bark_send_status).
+                bark_send_status($config, (string)($entry['key'] ?? ''), 'Alarmton wieder LAUT',
+                    date('[d.m.Y H:i] ') . 'Stummschaltung automatisch beendet (war laenger als '
+                    . max(1, (int)round(mute_max_seconds($config) / 3600)) . ' Std aktiv). '
+                    . 'Alarme kommen wieder als Critical Alert mit Ton.');
+            }
+        });
+    }
+    return $result['expired'];
 }
 
 // ============================ BARK-DIREKTVERSAND ============================
@@ -773,99 +1211,138 @@ function mask_bark_key(string $key): string
     return substr($key, 0, 4) . '...';
 }
 
+// Bark stellt in der Notification keine Umlaute korrekt dar. Feste Texte sind
+// deshalb ohnehin ASCII - diese Funktion sichert zusätzlich die STATUS-
+// Meldungen ab, die Nutzereingaben enthalten (z.B. Empfänger-Namen in den
+// Wächter-Meldungen). Bewusst NICHT für den konfigurierten Alarm-Titel/-Text:
+// Die gehen unverändert raus, wie in config.php eingetragen.
+// Feste Ersetzungstabelle statt iconv (dessen Ergebnis hängt vom System ab und
+// erzeugt Artefakte wie "e für ë); Zeilenumbrüche bleiben erhalten, übrige
+// Nicht-ASCII-Zeichen werden zu "?" statt spurlos zu verschwinden.
+function bark_ascii(string $text): string
+{
+    $text = strtr($text, [
+        'ä' => 'ae', 'ö' => 'oe', 'ü' => 'ue', 'Ä' => 'Ae', 'Ö' => 'Oe', 'Ü' => 'Ue', 'ß' => 'ss',
+        'à' => 'a', 'á' => 'a', 'â' => 'a', 'ã' => 'a', 'å' => 'a', 'æ' => 'ae', 'ç' => 'c',
+        'è' => 'e', 'é' => 'e', 'ê' => 'e', 'ë' => 'e', 'ì' => 'i', 'í' => 'i', 'î' => 'i', 'ï' => 'i',
+        'ñ' => 'n', 'ò' => 'o', 'ó' => 'o', 'ô' => 'o', 'õ' => 'o', 'ø' => 'o',
+        'ù' => 'u', 'ú' => 'u', 'û' => 'u', 'ý' => 'y', 'ÿ' => 'y',
+        'À' => 'A', 'Á' => 'A', 'Â' => 'A', 'Ã' => 'A', 'Å' => 'A', 'Æ' => 'Ae', 'Ç' => 'C',
+        'È' => 'E', 'É' => 'E', 'Ê' => 'E', 'Ë' => 'E', 'Ì' => 'I', 'Í' => 'I', 'Î' => 'I', 'Ï' => 'I',
+        'Ñ' => 'N', 'Ò' => 'O', 'Ó' => 'O', 'Ô' => 'O', 'Õ' => 'O', 'Ø' => 'O',
+        'Ù' => 'U', 'Ú' => 'U', 'Û' => 'U', 'Ý' => 'Y',
+        'š' => 's', 'Š' => 'S', 'ž' => 'z', 'Ž' => 'Z', 'č' => 'c', 'Č' => 'C', 'ć' => 'c', 'Ć' => 'C',
+        'ł' => 'l', 'Ł' => 'L', 'ń' => 'n', 'ś' => 's', 'ź' => 'z', 'ż' => 'z', 'ę' => 'e', 'ą' => 'a',
+        'ğ' => 'g', 'ş' => 's', 'ı' => 'i', 'İ' => 'I',
+        '–' => '-', '—' => '-', '„' => '"', '“' => '"', '”' => '"', '‘' => "'", '’' => "'", '…' => '...',
+        "\r\n" => "\n", "\r" => "\n", "\t" => ' ',
+    ]);
+    // Jedes verbliebene Nicht-ASCII-ZEICHEN (nicht Byte) wird zu einem "?".
+    $clean = preg_replace('/[^\x0A\x20-\x7E]/u', '?', $text);
+    if ($clean === null) {
+        // Ungültiges UTF-8: byteweise säubern.
+        $clean = (string)preg_replace('/[^\x0A\x20-\x7E]+/', '?', $text);
+    }
+    return $clean;
+}
+
+// Sendet Bark-Nachrichten an mehrere Keys PARALLEL (curl_multi), pro Key
+// isoliert, mit Wiederholung wie in der Firmware: HTTP 4xx wird nicht
+// wiederholt (Key falsch), alles andere bis zu $tries Mal - in Runden, jeweils
+// nur für die noch offenen Keys. Ein toter Key blockiert die anderen nicht,
+// und der letzte Empfänger wartet nicht mehr auf die Timeouts aller
+// vorherigen (früher seriell: bei gestörtem Bark und 10 Keys bis ~5 min).
+// $jobs: Liste von ['key' => string, 'fields' => array].
+// Ergebnis pro Job (gleiche Reihenfolge): ['ok' => bool, 'http' => int].
+function bark_post_many(array $config, array $jobs, int $tries): array
+{
+    $jobs = array_values($jobs);
+    $results = array_fill(0, count($jobs), ['ok' => false, 'http' => 0]);
+    if (count($jobs) === 0 || !function_exists('curl_multi_init')) {
+        return $results;
+    }
+    $host = rtrim((string)($config['bark_host'] ?? 'https://api.day.app'), '/');
+    $open = array_keys($jobs);
+    for ($attempt = 1; $attempt <= max(1, $tries) && count($open) > 0; $attempt++) {
+        if ($attempt > 1) {
+            usleep(500000);
+        }
+        $multi = curl_multi_init();
+        $handles = [];
+        foreach ($open as $i) {
+            $ch = curl_init($host . '/' . rawurlencode((string)$jobs[$i]['key']));
+            curl_setopt_array($ch, [
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => http_build_query($jobs[$i]['fields']),
+                CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT => 10,
+            ]);
+            curl_multi_add_handle($multi, $ch);
+            $handles[$i] = $ch;
+        }
+        do {
+            $status = curl_multi_exec($multi, $running);
+            if ($running > 0 && curl_multi_select($multi, 1.0) === -1) {
+                usleep(10000);   // select() nicht verfügbar: kurz warten statt Dauerschleife
+            }
+        } while ($running > 0 && $status === CURLM_OK);
+
+        $stillOpen = [];
+        foreach ($handles as $i => $ch) {
+            $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+            curl_multi_remove_handle($multi, $ch);
+            curl_close($ch);
+            $results[$i] = ['ok' => $code === 200, 'http' => $code];
+            if ($code !== 200 && !($code >= 400 && $code < 500)) {
+                $stillOpen[] = $i;   // 4xx: Key falsch, Wiederholen zwecklos
+            }
+        }
+        curl_multi_close($multi);
+        $open = $stillOpen;
+    }
+    return $results;
+}
+
 // Leise Statusmeldung (level=passive) an EINEN Bark-Key - das Gegenstück zu
-// sendStatus() in der Firmware. Genutzt vom Offline-Wächter (cron/) und der
-// Login-Sperren-Meldung. Titel/Body müssen ASCII sein (ae/ue/oe, keine
-// Umlaute - Bark stellt sie nicht korrekt dar). Knappe Timeouts, damit z.B.
+// sendStatus() in der Firmware. Genutzt vom Offline-Wächter (cron/), der
+// Login-Sperren-Meldung und der automatischen Laut-Rückschaltung. Texte werden
+// per bark_ascii() abgesichert. Knappe Timeouts, max. 2 Versuche, damit z.B.
 // der Login-Pfad nie lange an Bark hängt.
-// $level: 'passive' (still) oder 'active' (normale Mitteilung mit Banner/Ton
-// nach iPhone-Einstellung) - die Entwarnung nutzt 'active'.
-function bark_send_status(array $config, string $key, string $title, string $body, string $level = 'passive'): bool
+function bark_send_status(array $config, string $key, string $title, string $body): bool
 {
     if (!function_exists('curl_init') || !valid_bark_key($key)) {
         return false;
     }
-    $host = rtrim((string)($config['bark_host'] ?? 'https://api.day.app'), '/');
-    $form = http_build_query([
-        'title' => $title,
-        'body'  => $body,
-        'level' => $level,
-    ]);
-    for ($attempt = 1; $attempt <= 2; $attempt++) {
-        $ch = curl_init($host . '/' . rawurlencode($key));
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $form,
-            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => 5,
-            CURLOPT_TIMEOUT => 10,
-        ]);
-        curl_exec($ch);
-        $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        curl_close($ch);
-        if ($code === 200) {
-            return true;
-        }
-        if ($code >= 400 && $code < 500) {
-            return false;   // Client-Fehler: Wiederholen zwecklos.
-        }
-        if ($attempt < 2) {
-            usleep(500000);
-        }
-    }
-    return false;
+    $fields = ['title' => bark_ascii($title), 'body' => bark_ascii($body), 'level' => 'passive'];
+    return bark_post_many($config, [['key' => $key, 'fields' => $fields]], 2)[0]['ok'];
 }
 
-// Sendet einen Critical Alert an EINEN Bark-Key, mit Wiederholung wie in der
-// Firmware: HTTP 4xx wird nicht wiederholt (Key falsch), alles andere schon.
+// Bark-Felder des REAL ALARM für EINEN Empfänger - wie in der Firmware.
 // muted = Arbeitsmodus: gleicher Critical Alert, aber mit der eingestellten
 // Stumm-Lautstärke (muteVolume, 0 = lautlos; durchbricht trotzdem
 // Stummschalter/Fokus) und ohne call=1 (Ton-Wiederholung).
-function bark_send_alarm_one(array $config, string $key, string $body, bool $muted = false, int $muteVolume = 0): array
+function bark_alarm_fields(array $config, string $body, bool $muted, int $muteVolume): array
 {
-    $host = rtrim((string)($config['bark_host'] ?? 'https://api.day.app'), '/');
-    $tries = max(1, (int)($config['bark_max_tries'] ?? 3));
-    $form = http_build_query([
+    $fields = [
         'title'  => (string)($config['bark_alarm_title'] ?? 'FEUERWEHR-ALARM'),
         'body'   => $body,
         'sound'  => (string)($config['bark_alarm_sound'] ?? 'alarm_fw'),
         'level'  => 'critical',
-        'volume' => $muted ? max(0, min(10, $muteVolume)) : (int)($config['bark_alarm_volume'] ?? 10),
-    ]);
-    if (!$muted && !empty($config['bark_alarm_call'])) {
-        $form .= '&call=1';
+        'volume' => $muted
+            ? max(0, min(10, $muteVolume))
+            : max(0, min(10, (int)($config['bark_alarm_volume'] ?? 10))),
+    ];
+    // Fehlt der Eintrag in config.php, gilt die laute Richtung (call=1) - wie
+    // bei allen anderen Alarm-Defaults.
+    if (!$muted && ($config['bark_alarm_call'] ?? true)) {
+        $fields['call'] = 1;
     }
-
-    $httpCode = 0;
-    for ($attempt = 1; $attempt <= $tries; $attempt++) {
-        $ch = curl_init($host . '/' . rawurlencode($key));
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $form,
-            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => 5,
-            CURLOPT_TIMEOUT => 10,
-        ]);
-        curl_exec($ch);
-        $httpCode = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        curl_close($ch);
-
-        if ($httpCode === 200) {
-            return ['key' => mask_bark_key($key), 'ok' => true, 'http' => 200, 'muted' => $muted];
-        }
-        if ($httpCode >= 400 && $httpCode < 500) {
-            break;  // Client-Fehler: Wiederholen zwecklos, Key prüfen.
-        }
-        if ($attempt < $tries) {
-            usleep(500000);
-        }
-    }
-    return ['key' => mask_bark_key($key), 'ok' => false, 'http' => $httpCode, 'muted' => $muted];
+    return $fields;
 }
 
-// ENTWARNUNG (Fehlalarm) an EINEN Bark-Key: ebenfalls ein CRITICAL ALERT, denn
+// ENTWARNUNG (Fehlalarm) an EINEN Empfänger: ebenfalls ein CRITICAL ALERT, denn
 // wer gerade zum Einsatz aufbricht, muss die Entwarnung genauso sicher
 // mitbekommen wie den Alarm - auch durch Stummschalter und Fokus hindurch.
 // Unterschied zum Alarm: ein kurzer, normaler Ton (bark_false_alarm_sound,
@@ -873,50 +1350,70 @@ function bark_send_alarm_one(array $config, string $key, string $body, bool $mut
 // klingeln, nicht dauerhaft schrillen.
 // muted = Arbeitsmodus: gleiche Regel wie beim Alarm - wer den Alarm leise
 // bekommen hat, bekommt auch die Entwarnung leise.
-function bark_send_false_alarm_one(array $config, string $key, string $title, string $body, bool $muted = false, int $muteVolume = 0): array
+function bark_false_alarm_fields(array $config, string $title, string $body, bool $muted, int $muteVolume): array
 {
-    if (!function_exists('curl_init') || !valid_bark_key($key)) {
-        return ['key' => mask_bark_key($key), 'ok' => false, 'http' => 0, 'muted' => $muted];
-    }
-    $host = rtrim((string)($config['bark_host'] ?? 'https://api.day.app'), '/');
-    $tries = max(1, (int)($config['bark_max_tries'] ?? 3));
     // Lautstärke standardmäßig wie beim Alarm - die Entwarnung soll ja jeden
     // erreichen; bark_false_alarm_volume kann das bei Bedarf absenken.
     $volume = (int)($config['bark_false_alarm_volume'] ?? ($config['bark_alarm_volume'] ?? 10));
-    $form = http_build_query([
+    return [
         'title'  => $title,
         'body'   => $body,
         'sound'  => (string)($config['bark_false_alarm_sound'] ?? 'glass'),
         'level'  => 'critical',
         'volume' => $muted ? max(0, min(10, $muteVolume)) : max(0, min(10, $volume)),
-    ]);
+    ];
+}
 
-    $httpCode = 0;
-    for ($attempt = 1; $attempt <= $tries; $attempt++) {
-        $ch = curl_init($host . '/' . rawurlencode($key));
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $form,
-            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => 5,
-            CURLOPT_TIMEOUT => 10,
-        ]);
-        curl_exec($ch);
-        $httpCode = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        curl_close($ch);
+// Gemeinsamer Ablauf für REAL ALARM und ENTWARNUNG: Empfänger bestimmen
+// (effektive Liste, sonst Not-Liste aus config.php), alle PARALLEL senden,
+// Ergebnis pro Empfänger. $fieldsFor($entry) liefert die Bark-Felder.
+// Läuft auch weiter, wenn der Browser die Verbindung trennt (Timeout im
+// Proxy/Nginx) - ein halb verschickter Alarm wäre das Schlimmste.
+function bark_broadcast(array $config, callable $fieldsFor): array
+{
+    ignore_user_abort(true);
+    @set_time_limit(120);
 
-        if ($httpCode === 200) {
-            return ['key' => mask_bark_key($key), 'ok' => true, 'http' => 200, 'muted' => $muted];
-        }
-        if ($httpCode >= 400 && $httpCode < 500) {
-            break;  // Client-Fehler: Wiederholen zwecklos, Key prüfen.
-        }
-        if ($attempt < $tries) {
-            usleep(500000);
-        }
+    $recipients = alarm_recipients($config);
+    $entries = $recipients['entries'];
+    $jobs = [];
+    foreach ($entries as $entry) {
+        $jobs[] = ['key' => (string)$entry['key'], 'fields' => $fieldsFor($entry)];
     }
-    return ['key' => mask_bark_key($key), 'ok' => false, 'http' => $httpCode, 'muted' => $muted];
+    $sent = bark_post_many($config, $jobs, max(1, (int)($config['bark_max_tries'] ?? 3)));
+
+    $results = [];
+    $okCount = 0;
+    $mutedCount = 0;
+    foreach ($entries as $i => $entry) {
+        $muted = !empty($entry['muted']);
+        if ($muted) {
+            $mutedCount++;
+        }
+        if ($sent[$i]['ok']) {
+            $okCount++;
+        }
+        $results[] = [
+            'key' => mask_bark_key((string)$entry['key']),
+            'ok' => $sent[$i]['ok'],
+            'http' => $sent[$i]['http'],
+            'muted' => $muted,
+            'label' => (string)($entry['label'] ?? ''),
+        ];
+    }
+    // Überfällige Stummschaltungen wurden beim Senden schon als laut
+    // behandelt (mute_is_stale) - jetzt, NACH dem Versand, auch wegschreiben.
+    // Nicht fatal: fehlendes Schreibrecht darf das Ergebnis nicht verschlucken.
+    expire_stale_mutes($config, true);
+
+    return [
+        'count' => count($entries),
+        'ok_count' => $okCount,
+        'muted_count' => $mutedCount,
+        'used_fallback' => $recipients['used_fallback'],
+        'demo' => $recipients['demo'],
+        'results' => $results,
+    ];
 }
 
 // ENTWARNUNG (Fehlalarm): CRITICAL ALERT mit kurzem, normalem Ton an alle
@@ -929,124 +1426,57 @@ function bark_send_false_alarm_all(array $config): array
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'message' => 'PHP-cURL fehlt. In Web Station im PHP-Profil die Erweiterung "curl" aktivieren.', 'results' => []];
     }
-    // Wie beim Alarm: abgelaufene Stummschaltungen zuerst beenden, damit die
-    // Entwarnung nicht wegen einer vergessenen Stummschaltung leise ankommt.
-    expire_stale_mutes($config);
-
-    $demoActive = demo_mode_enabled($config);
-    $entries = effective_alarm_entries($config);
-    if (count($entries) === 0) {
-        // Gleicher Fallback wie beim Alarm: Not-Liste aus config.php.
-        $fallback = $config['bark_keys_alarm'] ?? [];
-        if (!is_array($fallback)) {
-            $fallback = [];
-        }
-        foreach (array_filter(array_map('trim', array_map('strval', $fallback))) as $key) {
-            $entries[] = ['key' => $key];
-        }
-    }
-    if (count($entries) === 0) {
-        return ['ok' => false, 'message' => 'Keine Empfänger: Liste im Dashboard pflegen (Panel "Alarm-Empfänger").', 'results' => []];
-    }
-
-    @set_time_limit(30 + count($entries) * 25);
-
     // Bark-Texte bewusst ASCII (ae/ue/oe).
     $title = 'ENTWARNUNG - Fehlalarm';
     $body = date('[d.m.Y H:i] ') . 'Der letzte Alarm war ein FEHLALARM - kein Einsatz.';
+    $sent = bark_broadcast($config, static fn(array $entry): array => bark_false_alarm_fields(
+        $config, $title, $body, !empty($entry['muted']), (int)($entry['mute_volume'] ?? 0)));
 
-    $results = [];
-    $okCount = 0;
-    $mutedCount = 0;
-    foreach ($entries as $entry) {
-        $muted = !empty($entry['muted']);
-        if ($muted) {
-            $mutedCount++;
-        }
-        $result = bark_send_false_alarm_one($config, (string)$entry['key'], $title, $body, $muted,
-            (int)($entry['mute_volume'] ?? 0));
-        $result['label'] = (string)($entry['label'] ?? '');
-        if ($result['ok']) {
-            $okCount++;
-        }
-        $results[] = $result;
+    if ($sent['count'] === 0) {
+        return ['ok' => false, 'message' => 'Keine Empfänger: Liste im Dashboard pflegen (Panel "Alarm-Empfänger").', 'results' => []];
     }
     return [
-        'ok' => $okCount === count($entries),
+        'ok' => $sent['ok_count'] === $sent['count'],
         // Diese Zusammenfassung geht nur an Dashboard und Verlauf (nie an
         // Bark) - darf deshalb, anders als $title/$body, echte Umlaute haben.
-        'message' => ($demoActive ? 'DEMO-MODUS: Entwarnung nur an den Test-Empfänger. ' : '')
-            . sprintf('Entwarnung an %d/%d Empfänger zugestellt.', $okCount, count($entries))
-            . ($mutedCount > 0 ? sprintf(' %d davon stumm (Arbeitsmodus, leise/lautlos).', $mutedCount) : ''),
-        'results' => $results,
+        'message' => ($sent['demo'] ? 'DEMO-MODUS: Entwarnung nur an den Test-Empfänger. ' : '')
+            . sprintf('Entwarnung an %d/%d Empfänger zugestellt.', $sent['ok_count'], $sent['count'])
+            . ($sent['muted_count'] > 0 ? sprintf(' %d davon stumm (Arbeitsmodus, leise/lautlos).', $sent['muted_count']) : '')
+            . ($sent['used_fallback'] ? ' ACHTUNG: Fallback-Liste aus config.php verwendet, die Dashboard-Liste ist leer!' : ''),
+        'results' => $sent['results'],
     ];
 }
 
-// Alarmiert alle konfigurierten Keys, pro Key isoliert - ein toter Key
+// Alarmiert alle Empfänger, pro Key isoliert und parallel - ein toter Key
 // blockiert die anderen nicht. Gibt pro Key ein Ergebnis zurück.
+// Führend ist die im Dashboard gepflegte Liste (im Demo-Modus nur der
+// Demo-Key); die statische Liste aus config.php dient nur noch als Fallback,
+// solange keine gepflegt ist.
 function bark_send_alarm_all(array $config): array
 {
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'message' => 'PHP-cURL fehlt. In Web Station im PHP-Profil die Erweiterung "curl" aktivieren.', 'results' => []];
     }
-    // Abgelaufene Stummschaltungen zuerst beenden: Ein Alarm soll nie wegen
-    // einer vergessenen (überfälligen) Stummschaltung leise ankommen.
-    expire_stale_mutes($config);
-
-    // Führend ist die im Dashboard gepflegte Liste (im Demo-Modus nur der
-    // Demo-Key); die statische Liste aus config.php dient nur noch als
-    // Fallback, solange noch keine gepflegt ist.
-    $demoActive = demo_mode_enabled($config);
-    $entries = effective_alarm_entries($config);
-    $usedFallback = false;
-    if (count($entries) === 0) {
-        $fallback = $config['bark_keys_alarm'] ?? [];
-        if (!is_array($fallback)) {
-            $fallback = [];
-        }
-        foreach (array_filter(array_map('trim', array_map('strval', $fallback))) as $key) {
-            $entries[] = ['key' => $key, 'muted' => false];
-        }
-        $usedFallback = count($entries) > 0;
-    }
-    if (count($entries) === 0) {
-        return ['ok' => false, 'message' => 'Keine Alarm-Empfänger: Liste im Dashboard pflegen (Panel "Alarm-Empfänger").', 'results' => []];
-    }
-
-    // Genug Laufzeit für viele Keys mit Wiederholungen (Standardlimit: 30 s).
-    @set_time_limit(30 + count($entries) * 35);
-
     // Zeitstempel wie in der Firmware; Bark-Texte bewusst ASCII (ae/ue/oe).
     // Bewusst KEIN Demo-Zusatz im Text: Ein Demo-Alarm soll exakt so aussehen
     // und klingen wie ein echter - er geht nur an weniger Empfänger.
     $body = date('[d.m.Y H:i] ')
         . (string)($config['bark_alarm_body'] ?? 'Manuelle Alarmierung ueber das NAS-Dashboard!');
+    $sent = bark_broadcast($config, static fn(array $entry): array => bark_alarm_fields(
+        $config, $body, !empty($entry['muted']), (int)($entry['mute_volume'] ?? 0)));
 
-    $results = [];
-    $okCount = 0;
-    $mutedCount = 0;
-    foreach ($entries as $entry) {
-        $muted = !empty($entry['muted']);
-        if ($muted) {
-            $mutedCount++;
-        }
-        $result = bark_send_alarm_one($config, (string)$entry['key'], $body, $muted,
-            (int)($entry['mute_volume'] ?? 0));
-        $result['label'] = (string)($entry['label'] ?? '');
-        if ($result['ok']) {
-            $okCount++;
-        }
-        $results[] = $result;
+    if ($sent['count'] === 0) {
+        return ['ok' => false, 'message' => 'Keine Alarm-Empfänger: Liste im Dashboard pflegen (Panel "Alarm-Empfänger").', 'results' => []];
     }
     return [
-        'ok' => $okCount === count($entries),
+        'ok' => $sent['ok_count'] === $sent['count'],
         // Deutlich machen, wenn die statische Fallback-Liste zum Einsatz kam -
         // sonst glaubt man, die (leere) Dashboard-Liste sei maßgeblich gewesen.
         // Geht nur an Dashboard/Verlauf (nie an Bark) - echte Umlaute erlaubt.
-        'message' => ($demoActive ? 'DEMO-MODUS: nur Test-Empfänger alarmiert. ' : '')
-            . sprintf('%d/%d Empfänger erreicht.', $okCount, count($entries))
-            . ($mutedCount > 0 ? sprintf(' %d davon stumm (Arbeitsmodus, leise/lautlos).', $mutedCount) : '')
-            . ($usedFallback ? ' ACHTUNG: Fallback-Liste aus config.php verwendet, die Dashboard-Liste ist leer!' : ''),
-        'results' => $results,
+        'message' => ($sent['demo'] ? 'DEMO-MODUS: nur Test-Empfänger alarmiert. ' : '')
+            . sprintf('%d/%d Empfänger erreicht.', $sent['ok_count'], $sent['count'])
+            . ($sent['muted_count'] > 0 ? sprintf(' %d davon stumm (Arbeitsmodus, leise/lautlos).', $sent['muted_count']) : '')
+            . ($sent['used_fallback'] ? ' ACHTUNG: Fallback-Liste aus config.php verwendet, die Dashboard-Liste ist leer!' : ''),
+        'results' => $sent['results'],
     ];
 }

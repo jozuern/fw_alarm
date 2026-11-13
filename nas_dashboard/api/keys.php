@@ -11,12 +11,19 @@ require_machine_auth($config);
 
 $nonce = preg_replace('/[^a-zA-Z0-9_-]/', '', substr((string)($_POST['nonce'] ?? ''), 0, 80));
 
-// Überfällige Stummschaltungen vor der Auslieferung beenden: Der ESP32 soll
-// nie einen veralteten Stumm-Zustand übernehmen (bumpt ggf. die Version).
-expire_stale_mutes($config);
+// Überfällige Stummschaltungen vor der Auslieferung wegschreiben (bumpt ggf.
+// die Version). Die Info-Pushs an die Betroffenen laufen erst NACH der
+// Antwort - früher liefen sie davor und der ESP32 brach nach seinem
+// 4-s-Timeout ab. Nicht fatal: Auch ohne Schreibrecht bekommt der ESP32 die
+// Liste (überfällige Stummschaltungen rechnet effective_alarm_entries
+// ohnehin schon als laut).
+expire_stale_mutes($config, true);
 
+// Liste, Version und Demo-Zustand EINMAL lesen und daraus die Antwort bauen -
+// so passen Version und Inhalt garantiert zusammen.
 $state = load_alarm_keys($config);
-$entries = effective_alarm_entries($config);
+$demo = load_demo_mode($config);
+$entries = effective_alarm_entries($config, $state, $demo);
 
 // Pro Empfänger zusätzlich das Stumm-Flag (Arbeitsmodus) und die
 // Stumm-Lautstärke: Der ESP32 sendet an stumme Keys den Critical Alert mit
@@ -24,6 +31,8 @@ $entries = effective_alarm_entries($config);
 // muted-/mutevol-Zeilen und alarmiert weiter laut bzw. (mit muted-Support,
 // ohne mutevol) lautlos - beides sichere Fehlermodi. Die Geheim-Link-Tokens
 // werden hier bewusst NICHT ausgeliefert, der ESP32 braucht sie nicht.
+// effective_alarm_entries() liefert nur gültige Keys, höchstens
+// MAX_ALARM_KEYS - genau das, was die Firmware akzeptiert.
 $out = "ok=1\nnonce={$nonce}\nversion=" . (int)($state['version'] ?? 0)
      . "\ncount=" . count($entries) . "\n";
 foreach ($entries as $i => $entry) {

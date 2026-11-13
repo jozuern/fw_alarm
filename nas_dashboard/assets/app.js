@@ -3,6 +3,9 @@
   // Nur-Lese-Benutzer: Knöpfe fehlen dann im HTML; hier zusätzlich nichts
   // rendern, was Änderungen auslösen würde (der Server blockt ohnehin).
   const readOnly = (document.querySelector('meta[name="role"]')?.content || 'admin') !== 'admin';
+  // Öffentliche Basis-Adresse für die Kurzbefehl-Links (aus config.php, über
+  // index.php). Leer = aus der aktuellen Adresse ableiten.
+  const publicBase = (document.querySelector('meta[name="public-base"]')?.content || '').trim();
   const stateEl = document.querySelector('[data-state]');
   const fieldsEl = document.querySelector('[data-fields]');
   const commandEl = document.querySelector('[data-command]');
@@ -63,6 +66,20 @@
 
   const PAGE_TITLE = document.title;
 
+  // Zeitlimits je Anfrageart: Ohne Limit hält eine hängende Anfrage den
+  // In-Flight-Guard ewig fest, und der Hero bliebe grün "Einsatzbereit".
+  // REAL ALARM/ENTWARNUNG senden serverseitig an alle Empfänger (meist
+  // ~35 s, schlimmstenfalls ~60 s) - deshalb dort großzügig.
+  const TIMEOUT_POLL_MS = 10000;
+  const TIMEOUT_POST_MS = 20000;
+  const TIMEOUT_ALARM_MS = 120000;
+  // So lange darf die letzte erfolgreiche Status-Abfrage höchstens her sein,
+  // bevor der Hero auf "Status veraltet" (gelb) wechselt.
+  const STALE_AFTER_MS = 15000;
+  // Alle Zeitangaben in der Zeitzone der Wache - egal, wie die Uhr des
+  // anzeigenden Geräts eingestellt ist.
+  const TZ = 'Europe/Berlin';
+
   // Große Statuslampe im Held-Bereich + Mini-Lampe in der Kopfzeile in einem
   // Rutsch setzen. cls: 'ok' (grün), 'stale' (gelb = Aussage unsicher),
   // 'crit' (rot, ruhig) oder 'alarm' (rot, blinkend - Alarm läuft gerade).
@@ -93,13 +110,19 @@
 
   function formatTime(epoch) {
     if (!epoch) return 'nie';
-    return new Date(epoch * 1000).toLocaleString('de-DE');
+    return new Date(epoch * 1000).toLocaleString('de-DE', { timeZone: TZ });
   }
 
   // Nur die Uhrzeit (HH:MM) - für "Stumm bis ~18:30". Das Datum wäre hier
   // Rauschen, die Stummschaltung endet spätestens nach wenigen Stunden.
   function fmtClock(epoch) {
-    return new Date(epoch * 1000).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+    return new Date(epoch * 1000).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', timeZone: TZ });
+  }
+
+  // Uhrzeit mit Sekunden aus einem Browser-Zeitstempel (ms) - für "zuletzt
+  // erfolgreich abgerufen um 14:03:22".
+  function fmtClockMs(ms) {
+    return new Date(ms).toLocaleTimeString('de-DE', { timeZone: TZ });
   }
 
   // Relative Zeit für junge Ereignisse ("vor 5 min"); ältere bekommen das
@@ -133,18 +156,34 @@
     })[char]);
   }
 
-  // Merker für renderDemo(): Das 5-s-Polling darf den Demo-Knopf nicht
-  // wieder aktivieren, während noch eine Aktion läuft (Doppelklick-Schutz).
-  let actionBusy = false;
+  // Laufende Aktionen als ZÄHLER statt als Ja/Nein: Laufen zwei Aktionen
+  // überlappend (z.B. Stummschalten während eines REAL ALARM), darf das
+  // Ende der kürzeren die Knöpfe nicht wieder freigeben, solange die längere
+  // noch läuft. Auch renderDemo() fragt den Zähler ab (Doppelklick-Schutz).
+  let busyCount = 0;
+  // Eigene Sperre für die Alarm-Knöpfe: Solange eine Alarm-/Entwarnungs-
+  // Anfrage läuft, bleiben REAL ALARM, ENTWARNUNG und DEMO-ALARM gesperrt -
+  // unabhängig davon, was andere Aktionen am Zähler machen.
+  let alarmInFlight = false;
 
-  function setBusy(busy) {
-    actionBusy = busy;
+  function applyBusy() {
+    const busy = busyCount > 0;
     // keysAddBtn ist mit dabei, damit ein Doppelklick auf "Hinzufügen" nicht
     // zwei Anfragen abschickt (die zweite endet sonst in einer verwirrenden
     // "bereits eingetragen"-Meldung).
-    [testBtn, alarmBtn, espAlarmBtn, falseAlarmBtn, cancelBtn, demoToggleBtn, keysAddBtn].forEach((btn) => {
+    [testBtn, cancelBtn, keysAddBtn].forEach((btn) => {
       if (btn) btn.disabled = busy;
     });
+    // Den Demo-Knopf erst freigeben, wenn der Demo-Zustand bekannt ist.
+    if (demoToggleBtn) demoToggleBtn.disabled = busy || !demoInfo;
+    [alarmBtn, espAlarmBtn, falseAlarmBtn].forEach((btn) => {
+      if (btn) btn.disabled = busy || alarmInFlight;
+    });
+  }
+
+  function setBusy(busy) {
+    busyCount = Math.max(0, busyCount + (busy ? 1 : -1));
+    applyBusy();
   }
 
   // Flag-Werte kommen vom ESP32 als '0'/'1'-Strings.
@@ -153,10 +192,29 @@
   // innerHTML nur ersetzen, wenn sich wirklich etwas geändert hat: Sonst
   // klappt alle 5 s ein gerade geöffneter Tooltip zu, Fokus und Textauswahl
   // gehen verloren, und die Seite flackert unnötig.
+  // Auch bei einer ECHTEN Änderung (RSSI/Laufzeit ändern sich ständig) bleibt
+  // der Bedienzustand erhalten: Geöffnete ?-Sprechblasen, aufgeklappte
+  // <details> und der Tastatur-Fokus werden über das stabile data-fkey-
+  // Attribut gemerkt und im neuen Baum wiederhergestellt.
   function setHtml(el, html) {
     if (!el || el.__lastHtml === html) return;
+    const keysOf = (selector) => Array.from(el.querySelectorAll(selector), (n) => n.dataset.fkey);
+    const openTips = keysOf('.help.tip-open[data-fkey]');
+    const openDetails = keysOf('details[open][data-fkey]');
+    const active = document.activeElement;
+    const focusKey = active && active !== el && el.contains(active) && active.dataset
+      ? (active.dataset.fkey || null) : null;
     el.__lastHtml = html;
     el.innerHTML = html;
+    const find = (key) => el.querySelector(`[data-fkey="${CSS.escape(key)}"]`);
+    openTips.forEach((key) => { const help = find(key); if (help) setTipOpen(help, true); });
+    // <details> VOR dem Fokus öffnen: In einem zugeklappten <details> lässt
+    // sich nichts fokussieren (z.B. die Kurzbefehl-Link-Chips).
+    openDetails.forEach((key) => { const d = find(key); if (d) d.open = true; });
+    if (focusKey) {
+      const target = find(focusKey);
+      if (target) target.focus({ preventScroll: true });
+    }
   }
 
   // ==== Statusfelder: Formatierung + Erklärungen ============================
@@ -211,6 +269,19 @@
     return `${Math.round(bytes / 1024)} kB frei`;
   }
 
+  // Warnschwellen für den Speicher: insgesamt frei bzw. größter freier Block
+  // (ein zerstückelter Heap lässt TLS-Verbindungen scheitern, obwohl in Summe
+  // noch genug frei ist).
+  const HEAP_WARN = 50000;
+  const MAX_ALLOC_WARN = 30000;
+  const lowBytes = (v, limit) => { const b = parseInt(v, 10); return !isNaN(b) && b < limit; };
+
+  // Woher kam der letzte Alarm? (Feld alarm_source neuerer Firmware)
+  const ALARM_SOURCES = {
+    relay: 'Melder-Relais',
+    remote: 'DEMO-Alarm über ESP32 (Dashboard-Befehl)'
+  };
+
   // Alles, was die Box meldet, wird angezeigt - aber VERDICHTET: Die 22
   // Rohwerte des Status-Pushs werden zu 12 verständlichen Zeilen in drei
   // Gruppen zusammengefasst (z.B. Signalstärke + IP = eine WLAN-Zeile).
@@ -247,8 +318,12 @@
       },
       cls: (s) => flagged(s.alarm_pending) ? 'crit' : '' },
     { group: 'Alarmkette', label: 'Letzter Alarm',
-      tip: 'Zeitpunkt und Text des letzten ausgelösten Alarms (aus Sicht des ESP32, seit dem letzten Neustart). "nie" heißt: kein Alarm seit dem letzten Einschalten.',
-      value: (s) => show(s.last_alarm) },
+      tip: 'Zeitpunkt und Text des letzten ausgelösten Alarms (aus Sicht des ESP32, seit dem letzten Neustart) und – bei neuerer Firmware – woher er kam: Melder-Relais oder DEMO-Alarm per Dashboard-Befehl. "nie" heißt: kein Alarm seit dem letzten Einschalten.',
+      value: (s) => {
+        const text = show(s.last_alarm);
+        if (na(s.alarm_source) || na(s.last_alarm) || s.last_alarm === 'nie') return text;
+        return `${text} · ${ALARM_SOURCES[s.alarm_source] || String(s.alarm_source)}`;
+      } },
     { group: 'Verbindung & Abgleich', label: 'WLAN',
       tip: 'Empfangsstärke des ESP32 im WLAN des Magazins und seine aktuelle Adresse. Näher an 0 dBm ist besser: ab ca. -67 gut, unter ca. -80 unzuverlässig – dann Box oder Router umstellen. Ohne WLAN kann die Box weder Bark-Alarme senden noch das NAS erreichen.',
       value: (s) => {
@@ -294,9 +369,9 @@
         : (flagged(s.ack_pending) ? 'offen – wird nachgereicht' : 'keine offen'),
       cls: (s) => flagged(s.ack_pending) ? 'warn' : '' },
     { group: 'Box & Wartung', label: 'Box / Firmware',
-      tip: 'Name der Box (device_id aus config.h) und der Kompilier-Zeitpunkt der laufenden Firmware – so sieht man, ob wirklich der neueste Stand läuft.',
+      tip: 'Name der Box (device_id aus config.h), der Kompilier-Zeitpunkt der laufenden Firmware und – bei neuerer Firmware – die Version des Arduino-ESP32-Cores. So sieht man, ob wirklich der neueste Stand läuft.',
       value: (s) => (na(s.device_id) && na(s.fw_build)) ? 'n/a'
-        : `${show(s.device_id)} · ${show(s.fw_build)}` },
+        : `${show(s.device_id)} · ${show(s.fw_build)}${na(s.core) ? '' : ` · Core ${s.core}`}` },
     { group: 'Box & Wartung', liveWhenOffline: true,
       label: (ctx) => ctx.offline ? 'Offline seit' : 'Läuft seit',
       tip: (ctx) => ctx.offline
@@ -311,9 +386,13 @@
       value: (s) => na(s.reset_reason) ? 'n/a' : (RESET_REASONS[s.reset_reason] || String(s.reset_reason)),
       cls: (s) => RESET_WARN.includes(String(s.reset_reason)) ? 'warn' : '' },
     { group: 'Box & Wartung', label: 'Freier Speicher',
-      tip: 'Freier Arbeitsspeicher (Heap) des ESP32. Normal sind grob 150–250 kB. Sinkt der Wert über Tage stetig, deutet das auf ein Speicherleck hin; unter ~50 kB wird es kritisch.',
-      value: (s) => na(s.free_heap) ? 'n/a' : fmtHeap(s.free_heap),
-      cls: (s) => { const b = parseInt(s.free_heap, 10); return !isNaN(b) && b < 50000 ? 'warn' : ''; } },
+      tip: 'Freier Arbeitsspeicher (Heap) des ESP32. Normal sind grob 150–250 kB. Sinkt der Wert über Tage stetig, deutet das auf ein Speicherleck hin; unter ~50 kB wird es kritisch. "Größter Block" (neuere Firmware) ist das größte zusammenhängende freie Stück – unter ~30 kB können HTTPS-Verbindungen scheitern, obwohl in Summe noch genug frei ist.',
+      value: (s) => {
+        if (na(s.free_heap)) return 'n/a';
+        const maxAlloc = parseInt(s.max_alloc_heap, 10);
+        return fmtHeap(s.free_heap) + (isNaN(maxAlloc) ? '' : ` · größter Block ${Math.round(maxAlloc / 1024)} kB`);
+      },
+      cls: (s) => (lowBytes(s.free_heap, HEAP_WARN) || lowBytes(s.max_alloc_heap, MAX_ALLOC_WARN)) ? 'warn' : '' },
     // NAS-seitig, nicht Box-seitig: Der Wächter (DSM-Aufgabe) muss auch dann
     // laufen, wenn die Box offline ist - deshalb liveWhenOffline.
     { group: 'Box & Wartung', label: 'Offline-Wächter (NAS)', liveWhenOffline: true,
@@ -322,7 +401,10 @@
       cls: (s, ctx) => ctx.watchdog && ctx.watchdog.warn ? 'warn' : '' }
   ];
 
-  function renderFields(status, offline, seenAge, watchdog) {
+  // nasNote: gesetzt, wenn das NAS selbst gerade keine aktuellen Daten
+  // liefert (nicht erreichbar/Störung/veraltet) - dann ist ALLES nur der
+  // letzte bekannte Stand, auch "Offline seit" und der Wächter.
+  function renderFields(status, offline, seenAge, watchdog, nasNote) {
     const ctx = { offline, seenAge, watchdog };
     // Zeilen nach Gruppen bündeln; jede Gruppe wird eine eigene Spalte.
     const groups = [];
@@ -339,21 +421,26 @@
       // Offline gilt: Alle Box-Werte sind nur der letzte bekannte Stand und
       // werden gedimmt - außer den Zeilen, die weiterhin aktuell sind
       // ("Offline seit" und der NAS-seitige Wächter).
-      const liveCls = offline && row.liveWhenOffline ? ' tele-current' : '';
+      const liveCls = offline && !nasNote && row.liveWhenOffline ? ' tele-current' : '';
       // Der Erklärtext ist ein ECHTES Element (nicht CSS-::after): Nur so
       // liest ein Screenreader ihn über aria-describedby auch wirklich vor.
+      // Die tipId hängt nur an der (festen) Position in ROWS und dient
+      // zugleich als data-fkey, damit setHtml() offene Blase/Fokus erhält.
       const tipId = `tip-${groups.length}-${current.rows.length}`;
       current.rows.push(`<div class="tele-row${cls ? ' tele-' + cls : ''}${liveCls}">
-        <span class="tele-label">${escapeHtml(label)} <span class="help" tabindex="0" role="button" aria-expanded="false" aria-label="Erklärung zu „${escapeHtml(label)}“" aria-describedby="${tipId}"><span aria-hidden="true">?</span><span class="tip-bubble" id="${tipId}" role="tooltip">${escapeHtml(tip)}</span></span></span>
+        <span class="tele-label">${escapeHtml(label)} <span class="help" data-fkey="${tipId}" tabindex="0" role="button" aria-expanded="false" aria-label="Erklärung zu „${escapeHtml(label)}“" aria-describedby="${tipId}"><span aria-hidden="true">?</span><span class="tip-bubble" id="${tipId}" role="tooltip">${escapeHtml(tip)}</span></span></span>
         <span class="tele-value">${escapeHtml(value)}</span>
       </div>`);
     });
     // Stale-Hinweis: Wer nur dieses Panel scannt, soll veraltete Werte nicht
     // für live halten (der Hero sagt "Box offline", aber der steht weiter oben).
-    fieldsEl.classList.toggle('is-stale', !!offline);
-    const staleNote = offline
-      ? `<p class="stale-note">Box offline – die gedimmten Werte sind der letzte bekannte Stand${status.seen_at ? ' von ' + escapeHtml(formatTime(status.seen_at)) : ' (die Box hat sich noch nie gemeldet)'}.</p>`
-      : '';
+    fieldsEl.classList.toggle('is-stale', !!offline || !!nasNote);
+    let staleNote = '';
+    if (nasNote) {
+      staleNote = `<p class="stale-note">${escapeHtml(nasNote)}</p>`;
+    } else if (offline) {
+      staleNote = `<p class="stale-note">Box offline – die gedimmten Werte sind der letzte bekannte Stand${status.seen_at ? ' von ' + escapeHtml(formatTime(status.seen_at)) : ' (die Box hat sich noch nie gemeldet)'}.</p>`;
+    }
     setHtml(fieldsEl, staleNote + groups.map((g) =>
       `<section class="tele-group"><h3>${escapeHtml(g.name)}</h3>${g.rows.join('')}</section>`).join(''));
   }
@@ -385,6 +472,11 @@
       text += ` – ${fmtAckResult(command.ack_result)}`;
       if (command.ack_message) text += ` (${fmtAckMessage(command.ack_message)})`;
     }
+    // Vom NAS selbst verworfen (Sicherung beim Ausliefern): den Grund zeigen,
+    // sonst käme ein Demo-Alarm kommentarlos nie an.
+    if (command.state === 'cancelled' && command.cancel_reason) {
+      text += ` – ${command.cancel_reason}`;
+    }
     commandEl.textContent = text;
     commandEl.classList.add('command-active');
     if (cancelBtn) cancelBtn.hidden = command.state !== 'pending';
@@ -410,6 +502,13 @@
     if (age > 2100) {
       return { warn: true, text: `seit ${fmtUptime(age)} nicht gelaufen – DSM-Aufgabe prüfen!` };
     }
+    // Läuft, aber sein letzter Bark-Versand ist gescheitert (und seitdem kam
+    // kein erfolgreicher): Dann würde er eine Offline-Box gar nicht melden.
+    const sendOk = Number(info.last_send_ok_at) || 0;
+    const sendFailed = Number(info.last_send_failed_at) || 0;
+    if (sendFailed > sendOk) {
+      return { warn: true, text: `läuft, kann aber nicht melden (Bark-Versand fehlgeschlagen ${fmtRelTime(sendFailed, serverTime)}) – Status-Key/cURL prüfen` };
+    }
     return { warn: false, text: `läuft (zuletzt ${age < 60 ? 'gerade eben' : 'vor ' + fmtUptime(age)})` };
   }
 
@@ -425,7 +524,10 @@
   // vergleicht das Banner die Listen-Version des ESP32 mit der des NAS und
   // sagt klar, ob man schon gefahrlos testen kann.
 
-  function renderDemo(status, offline) {
+  // syncUnknown: Das NAS liefert gerade keine aktuellen Daten - dann lässt
+  // sich NICHT sagen, ob der ESP32 die Demo-Liste übernommen hat (eine alte
+  // "übernommen"-Aussage stehen zu lassen, wäre gefährlich).
+  function renderDemo(status, offline, syncUnknown) {
     if (!demoBannerEl) return;
     const espVersion = status.keys_version;
     const synced = !offline && espVersion !== undefined && nasKeysVersion !== null
@@ -433,7 +535,9 @@
 
     if (demoInfo && demoInfo.enabled) {
       let syncText;
-      if (offline) {
+      if (syncUnknown) {
+        syncText = 'Sync-Status unbekannt – keine aktuelle Antwort vom NAS. Nicht davon ausgehen, dass gefahrlos getestet werden kann!';
+      } else if (offline) {
         syncText = 'Achtung: Der ESP32 ist OFFLINE – ein Relaisalarm würde noch mit der ALTEN Liste senden!';
       } else if (synced) {
         syncText = 'Der ESP32 hat die Demo-Liste übernommen – du kannst jetzt gefahrlos testen.';
@@ -457,7 +561,7 @@
       }
     }
     if (demoToggleBtn && demoInfo) {
-      demoToggleBtn.disabled = actionBusy;
+      demoToggleBtn.disabled = busyCount > 0;
       demoToggleBtn.textContent = demoInfo.enabled
         ? 'Demo-Modus beenden (zurück zu LIVE)'
         : 'Demo-Modus einschalten';
@@ -485,14 +589,45 @@
     }
   }
 
+  // Erwartung für expect_demo: '0' = LIVE, sonst die key_id des Demo-
+  // Empfängers. Unbekannter Zustand (noch nichts geladen) zählt als LIVE -
+  // genau das sagt dann auch die Bestätigungsfrage.
+  const expectDemoOf = (info) => (info && info.enabled ? String(info.key_id) : '0');
+
+  // EINZIGE Stelle, an der demoInfo neu gesetzt wird: Wechselt der Modus
+  // (LIVE <-> Demo oder anderer Test-Empfänger), während eine Alarm-
+  // Bestätigung offen ist, passt deren Frage nicht mehr -> entschärfen.
+  function updateDemoInfo(next) {
+    if (!next) return;
+    demoInfo = next;
+    if (armedExpect !== null && expectDemoOf(demoInfo) !== armedExpect) {
+      disarm();
+      if (alarmResultEl) {
+        alarmResultEl.hidden = false;
+        alarmResultEl.classList.remove('result-fail');
+        alarmResultEl.classList.add('result-warn');
+        alarmResultEl.textContent = 'Der Demo-/LIVE-Modus hat sich gerade geändert – Bestätigung zurückgesetzt. Bitte Lage prüfen und bei Bedarf neu auslösen.';
+      }
+    }
+  }
+
+  // HTTP 409 mode_changed: Der Server hat NICHTS gesendet, weil sein Modus
+  // nicht zur Bestätigungsfrage passte. Seinen aktuellen Stand übernehmen
+  // und das Banner sofort neu zeichnen (kein automatischer Neuversuch!).
+  function applyModeChanged(err) {
+    if (!err || err.kind !== 'mode_changed' || !err.data || !err.data.demo) return;
+    updateDemoInfo(err.data.demo);
+    renderDemo(lastStatus || {}, lastOffline, !!statusProblem);
+  }
+
   async function performDemoSet(fields) {
     setBusy(true);
     try {
       const data = await post(fields);
       if (demoMsgEl) demoMsgEl.textContent = data.message || 'Fehler.';
-      if (data.ok && data.demo) demoInfo = data.demo;
+      if (data.ok && data.demo) updateDemoInfo(data.demo);
     } catch (err) {
-      if (demoMsgEl) demoMsgEl.textContent = 'Anfrage fehlgeschlagen.';
+      if (demoMsgEl) demoMsgEl.textContent = errorText(err);
     } finally {
       setBusy(false);
       refresh();
@@ -524,67 +659,284 @@
       () => performDemoSet({ action: 'demo_set', enabled: '1', id }));
   }
 
-  // "Läuft noch"-Guards: Antwortet das NAS mal langsamer als das
-  // Poll-Intervall, sollen sich die Anfragen nicht stapeln.
-  let refreshBusy = false;
-  let keysBusy = false;
-  let logBusy = false;
+  // ==== Zentrale Anfrage-Funktion ===========================================
+  // ALLE Anfragen ans NAS laufen über api(): mit Zeitlimit und mit einer
+  // klaren Fehlerart, damit die Oberfläche unterscheiden kann zwischen
+  //   'network'/'timeout' -> NAS nicht erreichbar (Antwort kam nie an),
+  //   'http'              -> NAS antwortet, aber mit Fehler (z.B. HTTP 500),
+  //   'auth'              -> Sitzung abgelaufen (401, lädt zur Anmeldung),
+  //   'csrf'/'readonly'   -> Aktion serverseitig abgelehnt (403),
+  //   'mode_changed'      -> Demo-/LIVE-Modus passt nicht zur Bestätigung (409).
 
-  async function refresh() {
-    if (refreshBusy) return;
-    refreshBusy = true;
+  class ApiError extends Error {
+    constructor(kind, message, status, data) {
+      super(message || '');
+      this.kind = kind;
+      this.status = status || 0;
+      this.data = data || null;
+    }
+  }
+
+  // Zeitlimit-Signal: AbortSignal.timeout(), wo vorhanden; ältere Browser
+  // (z.B. iOS < 16) bekommen dasselbe über AbortController + setTimeout.
+  function timeoutSignal(ms) {
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      return { signal: AbortSignal.timeout(ms), cancel: () => {} };
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    return { signal: ctrl.signal, cancel: () => clearTimeout(timer) };
+  }
+
+  // Abbruch durch das Zeitlimit (TimeoutError bzw. AbortError beim
+  // Fallback) - wir brechen sonst nie selbst ab, also ist das eindeutig.
+  const isAbort = (err) => !!err && (err.name === 'TimeoutError' || err.name === 'AbortError');
+
+  // Nicht-JSON-Fehlerseiten (text/plain-500, HTML vom Webserver) lesbar
+  // kürzen. Landet ausschließlich per textContent im DOM.
+  function shortText(text) {
+    const plain = String(text || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    return plain.length > 200 ? plain.slice(0, 200) + '…' : plain;
+  }
+
+  async function api(url, opts, timeoutMs) {
+    const t = timeoutSignal(timeoutMs);
     try {
-      const res = await fetch('dashboard_api.php?action=status', { credentials: 'same-origin' });
-      if (res.status === 401) { handleAuthLoss(); return; }
-      const data = await res.json();
-      if (!data.ok) return;
+      let res;
+      try {
+        res = await fetch(url, Object.assign({ credentials: 'same-origin' }, opts, { signal: t.signal }));
+      } catch (err) {
+        throw new ApiError(isAbort(err) ? 'timeout' : 'network', '', 0, null);
+      }
+      let text = '';
+      try {
+        text = await res.text();
+      } catch (err) {
+        // Kopfzeilen kamen an, der Inhalt nicht: Das NAS HAT die Anfrage
+        // also bekommen - für Alarme heißt das "Antwort unklar".
+        throw new ApiError(isAbort(err) ? 'timeout' : 'network', '', res.status, null);
+      }
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+      const json = data && typeof data === 'object' ? data : null;
+      const code = json && typeof json.code === 'string' ? json.code : '';
+      const message = json && typeof json.message === 'string' ? json.message : '';
+
+      if (res.status === 401) {
+        handleAuthLoss();
+        throw new ApiError('auth', 'Sitzung abgelaufen – bitte neu anmelden.', 401, json);
+      }
+      if (res.status === 409 && code === 'mode_changed') {
+        throw new ApiError('mode_changed', message, 409, json);
+      }
+      if (res.status === 403) {
+        // Ältere Server-Stände schicken bei CSRF-Fehlern nur {ok:false}
+        // (ohne code/message) und bei Lesezugriff nur eine message.
+        if (code === 'readonly' || (!code && message)) {
+          throw new ApiError('readonly', message, 403, json);
+        }
+        if (code === 'csrf' || !code) {
+          throw new ApiError('csrf', message, 403, json);
+        }
+      }
+      if (!res.ok) {
+        throw new ApiError('http', message || (json ? '' : shortText(text)), res.status, json);
+      }
+      if (!json) {
+        throw new ApiError('http', 'Antwort des NAS ist kein gültiges JSON' + (text ? `: ${shortText(text)}` : '.'), res.status, null);
+      }
+      return json;
+    } finally {
+      t.cancel();
+    }
+  }
+
+  // Einheitliche Fehlermeldung für einfache Aktionen (Empfängerliste, Demo,
+  // TEST, Abbrechen). REAL ALARM/ENTWARNUNG haben eigene, schärfere Texte.
+  function errorText(err) {
+    if (!(err instanceof ApiError)) return 'Anfrage fehlgeschlagen.';
+    switch (err.kind) {
+      case 'auth':
+        return 'Sitzung abgelaufen – die Anmeldeseite wird geladen…';
+      case 'csrf':
+        return 'Sicherheits-Token veraltet – Seite neu laden. Aktion wurde NICHT ausgeführt.';
+      case 'readonly':
+        return err.message || 'Nur Lesezugriff – Aktion wurde NICHT ausgeführt.';
+      case 'mode_changed':
+        return err.message || 'Der Demo-/LIVE-Modus hat sich geändert – Aktion wurde NICHT ausgeführt.';
+      case 'timeout':
+        return 'Keine Antwort vom NAS (Zeitüberschreitung) – ob die Aktion ausgeführt wurde, ist unklar. Bitte Anzeige/Verlauf prüfen.';
+      case 'network':
+        return 'NAS nicht erreichbar – Verbindung prüfen.';
+      default:
+        return `Fehler${err.status ? ` (HTTP ${err.status})` : ''}${err.message ? `: ${err.message}` : '.'}`;
+    }
+  }
+
+  // ==== Polling mit "Läuft noch"-Guard ======================================
+  // Antwortet das NAS mal langsamer als das Poll-Intervall, sollen sich die
+  // Anfragen nicht stapeln. Zwei Arten von Aufrufen:
+  //   poller()       - AUSDRÜCKLICH angefordert (z.B. direkt nach einer
+  //                    Aktion): Läuft gerade eine Abfrage, folgt EINMAL eine
+  //                    weitere hinterher, statt verloren zu gehen - sonst
+  //                    zeigte die Seite bis zum nächsten Intervall den alten
+  //                    Stand.
+  //   poller.tick()  - vom Intervall-Timer: Läuft gerade eine Abfrage, wird
+  //                    der Takt einfach ausgelassen. Sonst würde ein NAS, das
+  //                    langsamer antwortet als das Intervall, pausenlos
+  //                    Abfrage an Abfrage bekommen - genau dann, wenn es
+  //                    ohnehin überlastet ist.
+  function makePoller(fn) {
+    let busy = false;
+    let rerun = false;
+    const start = async (fromTimer) => {
+      if (busy) {
+        if (!fromTimer) rerun = true;
+        return;
+      }
+      busy = true;
+      try {
+        await fn();
+      } finally {
+        busy = false;
+        const again = rerun && !authLost;
+        rerun = false;
+        if (again) start(false);
+      }
+    };
+    const run = () => start(false);
+    run.tick = () => start(true);
+    return run;
+  }
+
+  // Letzter erfolgreich abgerufener Stand - für die Anzeige "veraltet".
+  let lastOkAt = 0;            // Browser-Zeit (ms) der letzten erfolgreichen Status-Abfrage
+  let statusProblem = null;    // null = letzte Abfrage OK, sonst der Fehler
+  let problemRenderKey = null; // welche Störungs-Anzeige zuletzt aufgebaut wurde
+  let lastStatus = null;
+  let lastOffline = false;
+  let lastSeenAge = NaN;
+  let lastWd = null;
+
+  const refresh = makePoller(async () => {
+    try {
+      const data = await api('dashboard_api.php?action=status', {}, TIMEOUT_POLL_MS);
+      if (!data.ok) throw new ApiError('http', data.message || 'Unerwartete Antwort vom NAS.', 200, data);
       const status = data.status || {};
-      demoInfo = data.demo || demoInfo;
+      updateDemoInfo(data.demo);
       nasKeysVersion = data.nas_keys_version ?? nasKeysVersion;
+      statusProblem = null;
+      problemRenderKey = null;
+      lastOkAt = Date.now();
       // Ampel-Logik der Statuslampe: ein laufender Alarm (Zustellung noch
       // offen) übersteuert das grüne "Einsatzbereit" - der wichtigste
       // Zustand gewinnt. Offline schlägt alles.
       const alarmActive = !data.offline && flagged(status.alarm_pending);
+      // Klemmender Kontakt: Die Box ist zwar online, kann aber keinen NEUEN
+      // Alarm erkennen (wartet auf Kontakt-Öffnung) - das ist NICHT
+      // einsatzbereit. Maßgeblich ist allein stuck_warned: Das setzt die Box
+      // erst, wenn der Kontakt UNGEWÖHNLICH lange zu bleibt (30 min). Direkt
+      // nach jedem Alarm ist "Kontakt zu + wartet auf Öffnung" dagegen der
+      // Normalzustand (bis der Melder quittiert ist) - das darf nicht als
+      // Störung erscheinen. Ein reiner Cooldown bleibt ebenfalls grün.
+      const stuck = !data.offline && flagged(status.stuck_warned);
       if (data.offline) setState('Box offline', 'crit');
       else if (alarmActive) setState('Alarm aktiv', 'alarm');
+      else if (stuck) setState('Kontakt klemmt – keine neuen Alarme erkennbar', 'stale');
       else setState('Einsatzbereit', 'ok');
       // Status auch im Tab-Titel: so sieht man ohne Tab-Wechsel, ob alles läuft.
-      document.title = (alarmActive ? '\u{1F6A8} ' : data.offline ? '\u{1F534} ' : '\u{1F7E2} ') + PAGE_TITLE;
+      document.title = (alarmActive ? '\u{1F6A8} ' : data.offline ? '\u{1F534} ' : stuck ? '⚠️ ' : '\u{1F7E2} ') + PAGE_TITLE;
       // seen_age_seconds ist null, wenn sich die Box noch NIE gemeldet hat
       // (Number(null) wäre 0 und würde "Offline seit 0 Min" anzeigen).
       const seenAge = data.seen_age_seconds == null ? NaN : Number(data.seen_age_seconds);
       const ageText = fmtAgeShort(seenAge);
       updatedEl.textContent = `Letzter Status: ${formatTime(status.seen_at)}${ageText ? ` (${ageText})` : ''}`;
       const wdState = watchdogState(data.watchdog, Number(data.server_time));
-      renderFields(status, !!data.offline, seenAge, wdState);
+      lastStatus = status;
+      lastOffline = !!data.offline;
+      lastSeenAge = seenAge;
+      lastWd = wdState;
+      renderFields(status, !!data.offline, seenAge, wdState, null);
       renderCommand(data.command, Number(data.server_time));
       renderWatchdog(wdState);
-      renderDemo(status, !!data.offline);
+      renderDemo(status, !!data.offline, false);
     } catch (err) {
-      // Hier ist das NAS selbst nicht erreichbar (oder die Antwort kaputt) -
-      // das ist NICHT dasselbe wie "ESP32 offline", deshalb eigener Zustand.
-      setState('NAS nicht erreichbar', 'stale');
-      document.title = '⚠️ ' + PAGE_TITLE;
-      updatedEl.textContent = 'Keine Verbindung zum NAS – angezeigte Werte können veraltet sein.';
-    } finally {
-      refreshBusy = false;
+      if (err instanceof ApiError && err.kind === 'auth') return;   // handleAuthLoss() übernimmt
+      statusProblem = err || new ApiError('http', '', 0, null);
+      showStatusProblem();
     }
+  });
+
+  // Das NAS liefert gerade keine aktuellen Daten: NICHT dasselbe wie "ESP32
+  // offline", deshalb eigene (gelbe) Zustände:
+  //   - Netzwerk/Zeitlimit -> "NAS nicht erreichbar"
+  //   - HTTP-Fehler        -> "NAS-Störung" + Server-Meldung
+  //   - nur zu lange her   -> "Status veraltet" (z.B. Tab lag im Hintergrund)
+  // In allen Fällen werden die Statuswerte gedimmt und das Demo-Banner sagt
+  // "Sync-Status unbekannt" statt einer alten Entwarnung.
+  function showStatusProblem() {
+    if (authLost) return;
+    const err = statusProblem;
+    let word;
+    let text;
+    if (!err) {
+      word = 'Status veraltet';
+      text = 'Keine aktuelle Antwort vom NAS';
+    } else if (err.kind === 'timeout' && alarmInFlight) {
+      // Während ein Alarm-Versand läuft, kann das NAS Status-Abfragen
+      // derselben Sitzung zurückstellen - das ist kein Ausfall.
+      word = 'NAS beschäftigt';
+      text = 'Keine Status-Antwort, solange der Alarm-Versand läuft';
+    } else if (err.kind === 'network' || err.kind === 'timeout') {
+      word = 'NAS nicht erreichbar';
+      text = err.kind === 'timeout' ? 'Keine Antwort vom NAS (Zeitüberschreitung)' : 'Keine Verbindung zum NAS';
+    } else if (err instanceof ApiError) {
+      word = 'NAS-Störung';
+      text = `Das NAS meldet einen Fehler${err.status ? ` (HTTP ${err.status})` : ''}${err.message ? `: ${err.message}` : ''}`;
+    } else {
+      word = 'NAS-Störung';
+      text = 'Die Antwort des NAS konnte nicht ausgewertet werden';
+    }
+    // Nur diese eine Zeile läuft im Sekundentakt mit (Altersangabe).
+    const ageText = lastOkAt ? fmtAgeShort((Date.now() - lastOkAt) / 1000) : null;
+    updatedEl.textContent = `${text} – angezeigte Werte können veraltet sein${ageText ? ` (letzter erfolgreicher Abruf ${ageText})` : ''}.`;
+    // Alles Übrige (Lampe, gedimmte Felder, Demo-Banner) ändert sich NICHT
+    // jede Sekunde - nur neu aufbauen, wenn sich an der Lage etwas geändert
+    // hat. Sonst würde der Ticker während einer Störung das ganze
+    // Statuspanel sekündlich neu zusammensetzen.
+    const renderKey = [word, text, lastOkAt, nasKeysVersion,
+      demoInfo ? `${demoInfo.enabled}:${demoInfo.key_id}` : ''].join('|');
+    if (renderKey === problemRenderKey) return;
+    problemRenderKey = renderKey;
+    setState(word, 'stale');
+    document.title = '⚠️ ' + PAGE_TITLE;
+    const note = `Keine aktuellen Daten vom NAS – die gedimmten Werte sind der letzte bekannte Stand${lastOkAt ? ` (abgerufen um ${fmtClockMs(lastOkAt)} Uhr)` : ''}.`;
+    if (lastStatus) {
+      renderFields(lastStatus, lastOffline, lastSeenAge, lastWd, note);
+    } else {
+      fieldsEl.classList.add('is-stale');
+      setHtml(fieldsEl, `<p class="stale-note">${escapeHtml(note)}</p>`);
+    }
+    renderDemo(lastStatus || {}, lastOffline, true);
   }
 
-  async function post(fields) {
+  // Sekündlicher Ticker (nur bei sichtbarem Tab): Kam zu lange keine
+  // erfolgreiche Status-Antwort, darf der Hero nicht weiter grün
+  // "Einsatzbereit" zeigen. Bei einem bekannten Fehler hält er zusätzlich
+  // die Altersangabe ("letzter erfolgreicher Abruf vor 23 s") aktuell.
+  function tick() {
+    if (authLost) return;
+    if (statusProblem || (lastOkAt && Date.now() - lastOkAt > STALE_AFTER_MS)) showStatusProblem();
+  }
+
+  function post(fields, timeoutMs = TIMEOUT_POST_MS) {
     const form = new FormData();
     Object.entries(fields).forEach(([key, value]) => form.set(key, value));
-    const res = await fetch('dashboard_api.php', {
+    return api('dashboard_api.php', {
       method: 'POST',
-      credentials: 'same-origin',
       headers: { 'X-CSRF-Token': csrf },
       body: form
-    });
-    if (res.status === 401) {
-      handleAuthLoss();
-      throw new Error('Sitzung abgelaufen');
-    }
-    return res.json();
+    }, timeoutMs);
   }
 
   // Ergebnis inline statt per alert(): alert() blockiert die ganze Seite
@@ -599,7 +951,7 @@
       const data = await post({ action: 'enqueue', type: 'TEST' });
       showCommandMsg(data.message || (data.ok ? 'Befehl angelegt.' : 'Fehler.'));
     } catch (err) {
-      showCommandMsg('Anfrage fehlgeschlagen.');
+      showCommandMsg(errorText(err));
     } finally {
       setBusy(false);
       refresh();
@@ -611,14 +963,84 @@
   // den die Box beim nächsten Poll abholt und wie einen echten Relaisalarm
   // ausführt (startAlarm + Nachsende-Puffer). Der Server erlaubt das NUR im
   // Demo-Modus und nur, wenn der ESP32 die Demo-Liste schon übernommen hat.
-  async function enqueueEspAlarm() {
+  // expect_demo geht zusätzlich mit (der Server darf es prüfen, muss aber nicht).
+  async function enqueueEspAlarm(expectDemo) {
+    alarmInFlight = true;
     setBusy(true);
     try {
-      const data = await post({ action: 'enqueue', type: 'ALARM' });
+      const data = await post({ action: 'enqueue', type: 'ALARM', expect_demo: expectDemo });
       showCommandMsg(data.message || (data.ok ? 'Befehl angelegt.' : 'Fehler.'));
     } catch (err) {
-      showCommandMsg('Anfrage fehlgeschlagen.');
+      applyModeChanged(err);
+      showCommandMsg(errorText(err));
     } finally {
+      alarmInFlight = false;
+      setBusy(false);
+      refresh();
+      refreshLog();
+    }
+  }
+
+  // Grund eines fehlgeschlagenen Empfängers: http 0 heißt beim NAS-Versand
+  // "keine Verbindung zu Bark bzw. Zeitüberschreitung" - nicht "HTTP 0".
+  const failReason = (r) => (Number(r.http) === 0 ? 'keine Verbindung/Timeout' : `HTTP ${r.http}`);
+
+  // REAL ALARM und ENTWARNUNG gehen direkt vom NAS an Bark - parallel an
+  // alle Empfänger, meist ~35 s, schlimmstenfalls ~60 s. Währenddessen
+  // bleiben alle Alarm-Knöpfe gesperrt (alarmInFlight), und das Ergebnis
+  // erscheint pro Empfänger. Im Fehlerfall entscheidet die Fehlerart über
+  // die Aussage: "NICHT gesendet" nur dann, wenn das sicher ist - sonst
+  // "Antwort unklar", damit niemand blind ein zweites Mal alarmiert.
+  async function sendNasAlarm(action, expectDemo) {
+    if (!alarmResultEl) return;
+    const what = action === 'alarm' ? 'Alarm' : 'Entwarnung';
+    alarmInFlight = true;
+    setBusy(true);
+    alarmResultEl.hidden = false;
+    alarmResultEl.classList.remove('result-fail', 'result-warn');
+    alarmResultEl.textContent = `${what} wird gesendet… (kann bis zu einer Minute dauern – Seite nicht schließen)`;
+    try {
+      const data = await post({ action, expect_demo: expectDemo }, TIMEOUT_ALARM_MS);
+      // Namen statt maskierter Keys: Unter Stress zählt, WER fehlt.
+      const lines = (data.results || []).map((r) =>
+        `${r.label || r.key} ${r.ok ? 'OK' : `FEHLER (${failReason(r)})`}`);
+      alarmResultEl.textContent = `${data.message || (data.ok ? 'Gesendet.' : 'Fehler.')}` +
+        (lines.length ? ` [${lines.join(', ')}]` : '');
+      // Teil-/Totalausfall rot hervorheben - wer nicht erreicht wurde, muss
+      // anders (Telefon) benachrichtigt werden.
+      alarmResultEl.classList.toggle('result-fail', data.ok === false);
+    } catch (err) {
+      const kind = err instanceof ApiError ? err.kind : 'network';
+      let text;
+      let unclear = false;
+      if (kind === 'auth') {
+        text = `${what} NICHT gesendet – Sitzung abgelaufen, bitte neu anmelden.`;
+      } else if (kind === 'csrf') {
+        text = `${what} NICHT gesendet – Sicherheits-Token veraltet, Seite neu laden.`;
+      } else if (kind === 'readonly') {
+        text = `${what} NICHT gesendet – ${err.message || 'nur Lesezugriff'}`;
+      } else if (kind === 'mode_changed') {
+        applyModeChanged(err);
+        text = err.message || `${what} NICHT gesendet – der Demo-/LIVE-Modus hat sich geändert. Bitte Lage prüfen und neu auslösen.`;
+      } else if (kind === 'http' && err.status >= 400 && err.status < 500) {
+        // Vom Server abgelehnt, bevor etwas rausging.
+        text = `${what} NICHT gesendet – ${err.message || `HTTP ${err.status}`}`;
+      } else {
+        // Zeitlimit, abgerissene Verbindung, 5xx oder kaputte Antwort: Der
+        // Server kann bereits (teilweise) gesendet haben.
+        unclear = true;
+        let detail = 'Verbindung abgebrochen';
+        if (kind === 'timeout') detail = 'Zeitüberschreitung';
+        else if (kind === 'http') detail = `HTTP ${err.status}${err.message ? `: ${err.message}` : ''}`;
+        text = `Antwort unklar (${detail}) – ${what} wurde evtl. gesendet. Erst Verlauf prüfen, nicht sofort erneut auslösen!`;
+      }
+      alarmResultEl.textContent = text;
+      alarmResultEl.classList.add(unclear ? 'result-warn' : 'result-fail');
+      // Der Verlauf zeigt nach ein paar Sekunden, ob der Versand gestartet
+      // bzw. abgeschlossen wurde (nas_alarm_started / nas_alarm).
+      if (unclear) [5000, 40000].forEach((ms) => setTimeout(refreshLog, ms));
+    } finally {
+      alarmInFlight = false;
       setBusy(false);
       refresh();
       refreshLog();
@@ -627,24 +1049,10 @@
 
   // ENTWARNUNG (Fehlalarm): Critical Alert mit kurzem, normalem Ton an alle -
   // direkt vom NAS. Muss durchdringen, damit niemand umsonst losfährt.
-  async function sendFalseAlarm() {
-    setBusy(true);
-    alarmResultEl.hidden = false;
-    alarmResultEl.textContent = 'Entwarnung wird gesendet…';
-    try {
-      const data = await post({ action: 'false_alarm' });
-      // Namen statt maskierter Keys: Unter Stress zählt, WER fehlt.
-      const lines = (data.results || []).map((r) => `${r.label || r.key} ${r.ok ? 'OK' : 'FEHLER'}`);
-      alarmResultEl.textContent = `${data.message || 'Fehler.'}` +
-        (lines.length ? ` [${lines.join(', ')}]` : '');
-    } catch (err) {
-      alarmResultEl.textContent = 'Entwarnungs-Anfrage fehlgeschlagen – Verbindung zum NAS prüfen!';
-    } finally {
-      setBusy(false);
-      refresh();
-      refreshLog();
-    }
-  }
+  const sendFalseAlarm = (expectDemo) => sendNasAlarm('false_alarm', expectDemo);
+
+  // REAL ALARM: bewusst direkt vom NAS (auch bei toter ESP32-Kette).
+  const sendRealAlarm = (expectDemo) => sendNasAlarm('alarm', expectDemo);
 
   async function cancelCommand() {
     setBusy(true);
@@ -652,29 +1060,7 @@
       const data = await post({ action: 'cancel' });
       showCommandMsg(data.message || 'Fehler.');
     } catch (err) {
-      showCommandMsg('Anfrage fehlgeschlagen.');
-    } finally {
-      setBusy(false);
-      refresh();
-      refreshLog();
-    }
-  }
-
-  // REAL ALARM geht direkt vom NAS an Bark (dauert je Empfänger ein paar
-  // Sekunden, deshalb Buttons sperren und Ergebnis pro Empfänger anzeigen).
-  async function sendRealAlarm() {
-    setBusy(true);
-    alarmResultEl.hidden = false;
-    alarmResultEl.textContent = 'Alarm wird gesendet…';
-    try {
-      const data = await post({ action: 'alarm' });
-      // Namen statt maskierter Keys: Unter Stress zählt, WER fehlt.
-      const lines = (data.results || []).map((r) =>
-        `${r.label || r.key} ${r.ok ? 'OK' : 'FEHLER (HTTP ' + r.http + ')'}`);
-      alarmResultEl.textContent = `${data.message || 'Fehler.'}` +
-        (lines.length ? ` [${lines.join(', ')}]` : '');
-    } catch (err) {
-      alarmResultEl.textContent = 'Alarm-Anfrage fehlgeschlagen – Verbindung zum NAS prüfen!';
+      showCommandMsg(errorText(err));
     } finally {
       setBusy(false);
       refresh();
@@ -684,22 +1070,14 @@
 
   // ==== Empfängerliste (Bark-Keys) ==========================================
 
-  async function refreshKeys() {
-    if (keysBusy) return;
-    keysBusy = true;
+  const refreshKeys = makePoller(async () => {
     try {
-      const res = await fetch('dashboard_api.php?action=keys_list', { credentials: 'same-origin' });
-      if (res.status === 401) { handleAuthLoss(); return; }
-      const data = await res.json();
+      const data = await api('dashboard_api.php?action=keys_list', {}, TIMEOUT_POLL_MS);
       if (!data.ok) return;
-      demoInfo = data.demo || demoInfo;
+      updateDemoInfo(data.demo);
       nasKeysVersion = data.version ?? nasKeysVersion;
-      // Offene "Kurzbefehl-Links"-Aufklapper vor einem Neu-Rendern merken:
-      // setHtml() ersetzt bei echten Änderungen den ganzen Baum, und ein
-      // gerade geöffneter Aufklapper soll dabei nicht zuschnappen.
-      const openMore = new Set(Array.from(
-        keysListEl.querySelectorAll('details[data-keys-more][open]'),
-        (d) => d.dataset.keysMore));
+      // Offene "Kurzbefehl-Links"-Aufklapper, Fokus und Auswahl bleiben bei
+      // einem Neu-Rendern erhalten: setHtml() merkt sie sich über data-fkey.
       if (!data.keys.length) {
         setHtml(keysListEl, '<em>Noch keine Empfänger – der ESP32 nutzt seine config.h-Startliste.</em>');
       } else {
@@ -722,6 +1100,9 @@
           }
           let actions = '';
           if (!readOnly) {
+            // id kommt als Zahl vom Server - trotzdem escaped (Grundregel).
+            // data-fkey macht die Bedienelemente für setHtml() wiedererkennbar.
+            const id = escapeHtml(String(entry.id));
             const volOptions = Array.from({ length: 11 }, (_, v) =>
               `<option value="${v}"${v === vol ? ' selected' : ''}>${v === 0 ? '0 (lautlos)' : v}</option>`).join('');
             // Persönliche Kurzbefehl-Links (Geheim-Token, nur der Admin sieht
@@ -730,21 +1111,21 @@
             // pro Person gebraucht und sollen die Liste danach nicht länger
             // verbreitern (weniger Knöpfe pro Zeile = ruhigeres Bild).
             const linkRow = entry.mute_token
-              ? `<details class="keys-more" data-keys-more="${escapeHtml(String(entry.id))}">
-                   <summary>Kurzbefehl-Links</summary>
+              ? `<details class="keys-more" data-keys-more="${id}" data-fkey="more-${id}">
+                   <summary data-fkey="more-sum-${id}">Kurzbefehl-Links</summary>
                    <div class="keys-links">
-                     <button type="button" class="chip-link" title="Stumm-Link kopieren" data-key-link="${escapeHtml(entry.mute_token)}" data-key-link-state="on" data-key-label="${escapeHtml(entry.label)}">Stumm</button>
-                     <button type="button" class="chip-link" title="Laut-Link kopieren" data-key-link="${escapeHtml(entry.mute_token)}" data-key-link-state="off" data-key-label="${escapeHtml(entry.label)}">Laut</button>
+                     <button type="button" class="chip-link" title="Stumm-Link kopieren" data-fkey="link-on-${id}" data-key-link="${escapeHtml(entry.mute_token)}" data-key-link-state="on" data-key-label="${escapeHtml(entry.label)}">Stumm</button>
+                     <button type="button" class="chip-link" title="Laut-Link kopieren" data-fkey="link-off-${id}" data-key-link="${escapeHtml(entry.mute_token)}" data-key-link-state="off" data-key-label="${escapeHtml(entry.label)}">Laut</button>
                    </div>
                  </details>`
               : '';
             actions = `<div class="keys-actions">
                <label class="keys-volume">Stumm-Lautstärke
-                 <select data-key-volume="${entry.id}" data-key-label="${escapeHtml(entry.label)}">${volOptions}</select>
+                 <select data-fkey="vol-${id}" data-key-volume="${id}" data-key-label="${escapeHtml(entry.label)}">${volOptions}</select>
                </label>
-               <button type="button" data-key-mute="${entry.id}" data-key-muted="${entry.muted ? '1' : '0'}" data-key-label="${escapeHtml(entry.label)}">${entry.muted ? 'Laut schalten' : 'Stumm schalten'}</button>
-               <button type="button" data-key-permanent="${entry.id}" data-key-is-permanent="${permanent ? '1' : '0'}" data-key-label="${escapeHtml(entry.label)}" title="${permanent ? 'Dauer-Stummschaltung beenden: Der Empfänger bleibt zunächst stumm, wird aber wieder automatisch laut geschaltet.' : 'Dauerhaft stumm schalten: Die automatische Rückschaltung wird für diesen Empfänger abgeschaltet. Alarme kommen weiterhin sichtbar an, aber ohne vollen Ton.'}">${permanent ? 'Dauer beenden' : 'Dauerhaft stumm'}</button>
-               <button type="button" class="btn-delete" data-key-delete="${entry.id}" data-key-label="${escapeHtml(entry.label)}">Löschen</button>
+               <button type="button" data-fkey="mute-${id}" data-key-mute="${id}" data-key-muted="${entry.muted ? '1' : '0'}" data-key-label="${escapeHtml(entry.label)}">${entry.muted ? 'Laut schalten' : 'Stumm schalten'}</button>
+               <button type="button" data-fkey="perm-${id}" data-key-permanent="${id}" data-key-is-permanent="${permanent ? '1' : '0'}" data-key-label="${escapeHtml(entry.label)}" title="${permanent ? 'Dauer-Stummschaltung beenden: Der Empfänger bleibt zunächst stumm, wird aber wieder automatisch laut geschaltet.' : 'Dauerhaft stumm schalten: Die automatische Rückschaltung wird für diesen Empfänger abgeschaltet. Alarme kommen weiterhin sichtbar an, aber ohne vollen Ton.'}">${permanent ? 'Dauer beenden' : 'Dauerhaft stumm'}</button>
+               <button type="button" class="btn-delete" data-fkey="del-${id}" data-key-delete="${id}" data-key-label="${escapeHtml(entry.label)}">Löschen</button>
              </div>${linkRow}`;
           }
           return `<div class="keys-row${entry.muted ? ' muted' : ''}">
@@ -758,16 +1139,12 @@
         }).join('') +
           `<p class="hint">Listen-Version auf dem NAS: ${escapeHtml(data.version)} – der ESP32 zeigt seine übernommene Version oben in der Status-Zeile „Empfängerliste (Box)“.<br>
            „Kurzbefehl-Links“ kopieren den persönlichen Stumm-/Laut-Link der Person (für iPhone-Kurzbefehle, z.&nbsp;B. automatisch beim Betreten/Verlassen der Arbeit).</p>`);
-        openMore.forEach((id) => {
-          const details = keysListEl.querySelector(`details[data-keys-more="${CSS.escape(id)}"]`);
-          if (details) details.open = true;
-        });
       }
       // Dropdown für die Demo-Empfänger-Auswahl aus derselben Liste füllen.
       if (demoTargetEl) {
         const selected = demoTargetEl.value;
         const optionsHtml = data.keys.map((entry) =>
-          `<option value="${entry.id}">${escapeHtml(entry.label)} (${escapeHtml(entry.key_masked)})</option>`).join('');
+          `<option value="${escapeHtml(String(entry.id))}">${escapeHtml(entry.label)} (${escapeHtml(entry.key_masked)})</option>`).join('');
         setHtml(demoTargetEl, optionsHtml);
         if (selected && [...demoTargetEl.options].some((o) => o.value === selected)) {
           demoTargetEl.value = selected;
@@ -777,13 +1154,12 @@
       // Netz-Schluckauf: Die zuletzt bekannte Liste stehen lassen, statt sie
       // durch die Fehlerzeile zu ersetzen (das sah nach Datenverlust aus).
       // Nur wenn noch nie etwas geladen wurde, erscheint der Fehler direkt.
+      if (err instanceof ApiError && err.kind === 'auth') return;
       if (keysListEl.__lastHtml === undefined) {
         setHtml(keysListEl, '<em>Empfängerliste konnte nicht geladen werden – neuer Versuch läuft automatisch.</em>');
       }
-    } finally {
-      keysBusy = false;
     }
-  }
+  });
 
   // ==== Verlauf (letzte Ereignisse aus dem NAS-Protokoll) ===================
   // Anders als "Letzter Alarm" im Status überlebt dieser Verlauf einen
@@ -802,7 +1178,12 @@
       case 'expired':
         return { text: `${cmd} abgelaufen (ESP32 hat nicht gepollt)`, cls: 'log-warn' };
       case 'cancelled':
-        return { text: `${cmd} abgebrochen${who}`, cls: '' };
+        // Mit Grund (entry.message) hat die Sicherung im NAS den Befehl
+        // verworfen, z.B. weil der Demo-Modus inzwischen gewechselt hat.
+        return {
+          text: `${cmd} abgebrochen${who}${entry.message ? ` – ${entry.message}` : ''}`,
+          cls: entry.message ? 'log-warn' : ''
+        };
       case 'late_ack':
         return { text: `Verspätete Bestätigung zu Befehl #${entry.id}${entry.result ? `: ${fmtAckResult(entry.result)}` : ''}`, cls: 'log-warn' };
       case 'demo_enabled':
@@ -830,12 +1211,22 @@
           ? { text: `Empfänger "${entry.label}" DAUERHAFT stumm geschaltet (keine automatische Rückschaltung mehr)${src}`, cls: 'log-warn' }
           : { text: `Dauerhafte Stummschaltung für "${entry.label}" beendet (läuft wieder automatisch aus)${src}`, cls: '' };
       }
+      // *_started wird VOR dem Versand geschrieben: Steht danach kein
+      // Abschluss-Eintrag (nas_alarm/false_alarm) im Verlauf, ist der Versand
+      // abgebrochen - wichtig nach einer "Antwort unklar"-Meldung.
+      case 'nas_alarm_started':
+        return { text: `REAL ALARM gestartet${who}`, cls: 'log-alarm' };
+      case 'false_alarm_started':
+        return { text: `ENTWARNUNG gestartet${who}`, cls: 'log-warn' };
       case 'nas_alarm':
         return { text: `REAL ALARM direkt vom NAS: ${entry.message || ''}${who}`, cls: 'log-alarm' };
       case 'false_alarm':
         return { text: `ENTWARNUNG (Fehlalarm) gesendet: ${entry.message || ''}${who}`, cls: 'log-warn' };
       case 'relay_alarm':
-        return { text: `RELAISALARM über den ESP32 ausgelöst: ${entry.info || ''}`, cls: 'log-alarm' };
+        // source 'remote' = per Dashboard-Befehl ausgelöster DEMO-Alarm (kein Melder).
+        return entry.source === 'remote'
+          ? { text: `DEMO-Alarm über den ESP32 ausgelöst (Dashboard-Befehl): ${entry.info || ''}`, cls: 'log-warn' }
+          : { text: `RELAISALARM über den ESP32 ausgelöst: ${entry.info || ''}`, cls: 'log-alarm' };
       case 'box_offline':
         return { text: `ESP32 OFFLINE gemeldet (kein Status seit ${entry.minutes} min)`, cls: 'log-warn' };
       case 'box_recovered':
@@ -856,13 +1247,10 @@
   let logLimit = LOG_STEP;
   const logMoreBtn = document.querySelector('[data-log-more]');
 
-  async function refreshLog() {
-    if (!logEl || logBusy) return;
-    logBusy = true;
+  const refreshLog = makePoller(async () => {
+    if (!logEl) return;
     try {
-      const res = await fetch(`dashboard_api.php?action=log_view&limit=${logLimit}`, { credentials: 'same-origin' });
-      if (res.status === 401) { handleAuthLoss(); return; }
-      const data = await res.json();
+      const data = await api(`dashboard_api.php?action=log_view&limit=${logLimit}`, {}, TIMEOUT_POLL_MS);
       if (!data.ok) return;
       const entries = data.entries || [];
       // Knopf nur zeigen, wenn es voraussichtlich noch mehr gibt (die Seite
@@ -882,13 +1270,32 @@
         </li>`;
       }).join(''));
     } catch (err) {
+      if (err instanceof ApiError && err.kind === 'auth') return;
       // Wie bei der Empfängerliste: letzten bekannten Stand stehen lassen.
       if (logEl.__lastHtml === undefined) {
         setHtml(logEl, '<li class="log-plain"><em>Verlauf konnte nicht geladen werden – neuer Versuch läuft automatisch.</em></li>');
       }
-    } finally {
-      logBusy = false;
     }
+  });
+
+  // Basis-Adresse für die Kurzbefehl-Links: bevorzugt die öffentliche
+  // Adresse aus config.php (meta public-base) - wer das Dashboard intern
+  // über die NAS-IP öffnet, soll trotzdem einen Link bekommen, der auch
+  // unterwegs auf dem iPhone funktioniert. Immer GENAU ein "/" am Ende,
+  // egal ob die Konfiguration einen hat; ungültig/leer -> aktuelle Adresse.
+  function muteLinkBase() {
+    if (publicBase) {
+      try {
+        const base = new URL(publicBase, location.href);
+        base.pathname = base.pathname.replace(/\/*$/, '/');
+        base.search = '';
+        base.hash = '';
+        return base;
+      } catch (err) {
+        // ungültige Konfiguration -> Fallback unten
+      }
+    }
+    return new URL('./', location.href);
   }
 
   keysListEl?.addEventListener('click', async (event) => {
@@ -896,7 +1303,7 @@
     // kopieren - der Link schaltet den Eintrag stumm (state=on) bzw. laut.
     const linkBtn = event.target.closest('[data-key-link]');
     if (linkBtn) {
-      const url = new URL('api/mute.php', location.href);
+      const url = new URL('api/mute.php', muteLinkBase());
       url.searchParams.set('t', linkBtn.dataset.keyLink);
       url.searchParams.set('state', linkBtn.dataset.keyLinkState);
       const what = linkBtn.dataset.keyLinkState === 'on' ? 'Stumm' : 'Laut';
@@ -930,7 +1337,7 @@
           const data = await post({ action: 'keys_mute', id: muteBtn.dataset.keyMute, muted: toMuted ? '1' : '0' });
           keysMsgEl.textContent = data.message || 'Fehler.';
         } catch (err) {
-          keysMsgEl.textContent = 'Anfrage fehlgeschlagen.';
+          keysMsgEl.textContent = errorText(err);
         } finally {
           setBusy(false);
           refreshKeys();
@@ -963,7 +1370,7 @@
           });
           keysMsgEl.textContent = data.message || 'Fehler.';
         } catch (err) {
-          keysMsgEl.textContent = 'Anfrage fehlgeschlagen.';
+          keysMsgEl.textContent = errorText(err);
         } finally {
           setBusy(false);
           refreshKeys();
@@ -991,7 +1398,7 @@
           const data = await post({ action: 'keys_delete', id: btn.dataset.keyDelete });
           keysMsgEl.textContent = data.message || 'Fehler.';
         } catch (err) {
-          keysMsgEl.textContent = 'Anfrage fehlgeschlagen.';
+          keysMsgEl.textContent = errorText(err);
         } finally {
           setBusy(false);
           refreshKeys();
@@ -1010,7 +1417,7 @@
       const data = await post({ action: 'keys_set_mute_volume', id: sel.dataset.keyVolume, volume: sel.value });
       keysMsgEl.textContent = data.message || 'Fehler.';
     } catch (err) {
-      keysMsgEl.textContent = 'Anfrage fehlgeschlagen.';
+      keysMsgEl.textContent = errorText(err);
     } finally {
       setBusy(false);
       refreshKeys();
@@ -1028,7 +1435,7 @@
       keysMsgEl.textContent = data.message || 'Fehler.';
       if (data.ok) keysAddForm.reset();
     } catch (err) {
-      keysMsgEl.textContent = 'Anfrage fehlgeschlagen.';
+      keysMsgEl.textContent = errorText(err);
     } finally {
       setBusy(false);
       refreshKeys();
@@ -1058,6 +1465,10 @@
   const ARM_TIMEOUT_S = 10;
   let armedBtn = null;      // höchstens EIN geschärfter Knopf gleichzeitig
   let disarmFn = null;
+  // Nur bei Alarm-Knöpfen gesetzt: der Modus (expect_demo), den die offene
+  // Bestätigungsfrage beschreibt. updateDemoInfo() entschärft, sobald der
+  // tatsächliche Modus davon abweicht.
+  let armedExpect = null;
 
   function disarm() {
     if (disarmFn) disarmFn();
@@ -1068,7 +1479,10 @@
   // Ereignis-Delegation behandelt werden (Empfängerliste): Wird die Liste
   // währenddessen neu gerendert, verschwindet die Frage einfach mit - es kann
   // nichts unbeabsichtigt ausgelöst werden.
-  function armInline(btn, questionText, confirmLabel, onConfirm) {
+  // Der Countdown rechnet gegen eine feste Frist (Date.now()) statt Ticks zu
+  // zählen: iOS pausiert Timer im Hintergrund - eine "10-s-Bestätigung" darf
+  // nach der Rückkehr nicht noch minutenlang scharf sein.
+  function armInline(btn, questionText, confirmLabel, onConfirm, expectDemo = null) {
     disarm();
     const box = document.createElement('div');
     box.className = 'arm-confirm';
@@ -1084,20 +1498,22 @@
     cancel.textContent = 'Abbrechen';
     const countdown = document.createElement('span');
     countdown.className = 'arm-count';
-    let secondsLeft = ARM_TIMEOUT_S;
-    countdown.textContent = `${secondsLeft} s`;
+    const deadline = Date.now() + ARM_TIMEOUT_S * 1000;
+    const secondsLeft = () => Math.ceil((deadline - Date.now()) / 1000);
+    countdown.textContent = `${ARM_TIMEOUT_S} s`;
     box.append(question, yes, cancel, countdown);
     btn.hidden = true;
     btn.after(box);
     const timer = setInterval(() => {
-      secondsLeft -= 1;
-      if (secondsLeft <= 0) {
+      const left = secondsLeft();
+      if (left <= 0) {
         disarm();
       } else {
-        countdown.textContent = `${secondsLeft} s`;
+        countdown.textContent = `${left} s`;
       }
-    }, 1000);
+    }, 250);
     armedBtn = btn;
+    armedExpect = expectDemo;
     disarmFn = () => {
       clearInterval(timer);
       // Stand der Fokus in der Bestätigung (Tastatur-Bedienung), geht er
@@ -1107,36 +1523,46 @@
       btn.hidden = false;
       if (hadFocus) btn.focus();
       armedBtn = null;
+      armedExpect = null;
       disarmFn = null;
     };
     cancel.addEventListener('click', disarm);
     yes.addEventListener('click', () => {
+      // Frist schon abgelaufen (Timer lief im Hintergrund nicht)? Dann nur
+      // entschärfen - NICHT auslösen.
+      const expired = secondsLeft() <= 0;
       disarm();
-      onConfirm();
+      if (!expired) onConfirm();
     });
     // Fokus auf "Abbrechen": Tastatur-Nutzer verlieren den Fokus nicht (der
     // Auslöse-Knopf ist jetzt versteckt), und ein blindes Enter bricht ab.
     cancel.focus();
   }
 
+  // Alarm-Knöpfe: Frage UND Erwartung kommen aus DERSELBEN Momentaufnahme
+  // von demoInfo. Die Erwartung geht als expect_demo an den Server - hat
+  // sich der Modus bis zum Bestätigen geändert, sendet er nichts (HTTP 409).
   function armButton(btn, getQuestion, confirmLabel, onConfirm) {
     if (!btn) return;   // Lese-Rolle: Knopf existiert im HTML nicht
     btn.addEventListener('click', () => {
-      armInline(btn, getQuestion(), confirmLabel, onConfirm);
+      if (alarmInFlight || btn.disabled) return;
+      const snapshot = demoInfo;
+      const expect = expectDemoOf(snapshot);
+      armInline(btn, getQuestion(snapshot), confirmLabel, () => onConfirm(expect), expect);
     });
   }
 
-  armButton(alarmBtn, () => demoInfo && demoInfo.enabled
-      ? `DEMO-MODUS: Alarm geht nur an "${demoInfo.label || 'Test-Empfänger'}". Jetzt senden?`
+  armButton(alarmBtn, (info) => info && info.enabled
+      ? `DEMO-MODUS: Alarm geht nur an "${info.label || 'Test-Empfänger'}". Jetzt senden?`
       : 'ECHTEN FEUERWEHR-ALARM direkt vom NAS an alle Empfänger senden?',
     'Ja, Alarm auslösen', sendRealAlarm);
 
-  armButton(espAlarmBtn, () =>
-      `DEMO-MODUS: Alarm über den ESP32 auslösen? Er durchläuft die komplette Alarm-Kette der Box und geht an "${demoInfo?.label || 'Test-Empfänger'}". Danach greift der normale 5-Minuten-Cooldown der Box.`,
+  armButton(espAlarmBtn, (info) =>
+      `DEMO-MODUS: Alarm über den ESP32 auslösen? Er durchläuft die komplette Alarm-Kette der Box und geht an "${info?.label || 'Test-Empfänger'}". Danach greift der normale 5-Minuten-Cooldown der Box.`,
     'Ja, Demo-Alarm auslösen', enqueueEspAlarm);
 
-  armButton(falseAlarmBtn, () => demoInfo && demoInfo.enabled
-      ? `DEMO-MODUS: Entwarnung geht nur an "${demoInfo.label || 'Test-Empfänger'}". Jetzt senden?`
+  armButton(falseAlarmBtn, (info) => info && info.enabled
+      ? `DEMO-MODUS: Entwarnung geht nur an "${info.label || 'Test-Empfänger'}". Jetzt senden?`
       : 'ENTWARNUNG an ALLE senden? („Der letzte Alarm war ein FEHLALARM“ – Critical Alert mit kurzem Ton, kommt auch durch Stummschalter durch)',
     'Ja, Entwarnung senden', sendFalseAlarm);
 
@@ -1184,26 +1610,39 @@
   let refreshTimer = null;
   let keysTimer = null;
   let logTimer = null;
+  let tickTimer = null;
 
   function startPolling() {
     if (authLost || refreshTimer !== null) return;
     refresh();
     refreshKeys();
     refreshLog();
-    refreshTimer = setInterval(refresh, 5000);
-    keysTimer = setInterval(refreshKeys, 30000);
-    logTimer = setInterval(refreshLog, 30000);
+    // .tick: Der Timer überspringt einen Takt, solange die vorige Abfrage
+    // noch läuft (siehe makePoller).
+    refreshTimer = setInterval(refresh.tick, 5000);
+    keysTimer = setInterval(refreshKeys.tick, 30000);
+    logTimer = setInterval(refreshLog.tick, 30000);
+    tickTimer = setInterval(tick, 1000);
   }
 
   function stopPolling() {
     clearInterval(refreshTimer);
     clearInterval(keysTimer);
     clearInterval(logTimer);
-    refreshTimer = keysTimer = logTimer = null;
+    clearInterval(tickTimer);
+    refreshTimer = keysTimer = logTimer = tickTimer = null;
   }
 
+  // Tab im Hintergrund: Polling aus UND jede offene Bestätigung entschärfen -
+  // wer zurückkommt, soll nicht eine (evtl. veraltete) Alarm-Frage mit einem
+  // Tipp bestätigen können.
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) stopPolling(); else startPolling();
+    if (document.hidden) {
+      disarm();
+      stopPolling();
+    } else {
+      startPolling();
+    }
   });
 
   startPolling();

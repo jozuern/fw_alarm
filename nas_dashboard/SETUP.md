@@ -12,7 +12,14 @@ Nginx als Back-end ist in Ordnung; Apache ist nicht erforderlich.
 
 Prüfe im PHP-Profil (Web Station → Skriptsprache-Einstellungen → PHP-Profil
 bearbeiten → Erweiterungen), dass **curl** aktiviert ist – der manuelle
-REAL ALARM sendet damit direkt vom NAS an Bark.
+REAL ALARM sendet damit direkt vom NAS an Bark (an alle Empfänger parallel).
+Weitere Erweiterungen (z. B. mbstring) sind nicht nötig.
+
+**Kein DSM-Reverse-Proxy davor:** Läuft das Dashboard hinter dem
+„Reverse Proxy“ von DSM (Anmeldeportal → Erweitert), kommen aus Sicht von PHP
+ALLE Aufrufe von `127.0.0.1`. Dann zählt die Login-Sperre alle Besucher als
+eine Adresse (ein Angreifer sperrt alle aus), und `api/health.php` wäre von
+außen erreichbar. Web Station direkt auf Port 443 ausliefern lassen.
 
 ## 2. Dateien ablegen
 
@@ -56,22 +63,25 @@ der Tiefe), ersetzt aber NICHT den Ordner außerhalb des Web-Roots.
 
 ## 3. Geheimnisse erzeugen
 
-Maschinen-Token für den ESP32:
+Maschinen-Token für den ESP32 – Token **und** Hash in einem Schritt, damit der
+Token nie als Argument in der Shell-History landet:
 
 ```bash
-php -r "echo bin2hex(random_bytes(32)), PHP_EOL;"
-php -r "echo hash('sha256', 'HIER_DEN_TOKEN_EINFUEGEN'), PHP_EOL;"
+php -r '$t=bin2hex(random_bytes(32)); echo $t, PHP_EOL, hash("sha256", $t), PHP_EOL;'
 ```
 
-Den Klartext-Token trägst du in `boss925_alarm_bark/config.h` als
-`REMOTE_MACHINE_TOKEN` ein. In `nas_dashboard/config.php` kommt nur der
-SHA-256-Hash. **Klartext und Hash müssen zueinander passen** – wenn du den
-Klartext verlierst, erzeuge beides neu.
+Zeile 1 (den Klartext-Token) trägst du in `boss925_alarm_bark/config.h` als
+`REMOTE_MACHINE_TOKEN` ein, Zeile 2 (den SHA-256-Hash) in
+`nas_dashboard/config.php` als `machine_token_sha256`. **Klartext und Hash
+müssen zueinander passen** – wenn du den Klartext verlierst, erzeuge beides neu.
+(Groß-/Kleinschreibung des Hashes und Leerzeichen drumherum spielen keine Rolle.)
 
-Dashboard-Passwort:
+Dashboard-Passwort – nach dem Befehl das Passwort eintippen und Enter drücken
+(es steht so weder in der History noch können Zeichen wie `$`, `!` oder `'` es
+verfälschen):
 
 ```bash
-php -r "echo password_hash('DEIN_DASHBOARD_PASSWORT', PASSWORD_DEFAULT), PHP_EOL;"
+php -r 'echo password_hash(rtrim(fgets(STDIN), "\r\n"), PASSWORD_DEFAULT), PHP_EOL;'
 ```
 
 Den Hash trägst du in `dashboard_password_hash` ein.
@@ -135,21 +145,35 @@ Einrichtung:
 
 2. DSM → **Systemsteuerung → Aufgabenplaner → Erstellen → Geplante Aufgabe →
    Benutzerdefiniertes Skript**:
-   - Benutzer: `root` (oder ein Benutzer mit Leserecht auf den Web-Ordner)
+   - Benutzer: `root` (oder ein Benutzer mit **Lese- UND Schreibrecht** auf
+     den `data_dir` und Leserecht auf den Web-Ordner – der Wächter schreibt
+     seinen Zustand, den Verlauf und beendet überfällige Stummschaltungen).
+     Gehört der `data_dir` dem Web-Benutzer selbst (klassische Unix-Rechte
+     statt File-Station-Berechtigung), übergibt der Wächter als `root`
+     angelegte Dateien automatisch an dessen Besitzer/Gruppe (braucht die
+     Erweiterung `posix` im CLI-PHP). Die Rechte-Bits fasst er nie an, und bei
+     einem `root`-eigenen Ordner ändert er nichts – dort regeln die
+     File-Station-Berechtigungen (ACL) den Zugriff.
    - Zeitplan: täglich, **alle 15 Minuten** wiederholen
-   - Skript:
+   - Skript – immer mit dem vollen Pfad des PHP-8.3-Pakets (das `php` im
+     PATH ist auf DSM oft ein anderes PHP ohne cURL; per SSH mit
+     `which php83` prüfbar):
 
      ```bash
-     php -f /volume1/web/fw_alarm/cron/check_offline.php
+     /usr/local/bin/php83 -f /volume1/web/fw_alarm/cron/check_offline.php
      ```
 
-     Falls `php` nicht gefunden wird, den vollen Pfad des PHP-8.3-Pakets
-     verwenden (z. B. `/usr/local/bin/php83` – per SSH mit `which php83`
-     prüfbar).
-
 3. Aufgabe einmal manuell ausführen („Ausführen") und das Ergebnis ansehen
-   (Aufgabenplaner → Aktion → „Ergebnis anzeigen"): `OK` bzw. `NO_DATA` ist
-   gut; `DISABLED` heißt, der Key aus Schritt 1 fehlt noch.
+   (Aufgabenplaner → Aktion → „Ergebnis anzeigen"). Gut ist z. B.
+   `WEB_OK | OK` (bzw. `WEB_OK | NO_DATA`, solange die Box noch nie gepusht
+   hat), ggf. ergänzt um `DEMO_ACTIVE`, `MUTED_ACTIVE (n)` o. ä.
+   - `DISABLED` – der Key aus Schritt 1 fehlt noch (überfällige
+     Stummschaltungen beendet der Lauf trotzdem).
+   - `NO_CURL` – das verwendete CLI-PHP hat keine curl-Erweiterung → vollen
+     Pfad wie oben verwenden.
+   - `WEB_FAIL (n) …` – der Selbsttest (unten) schlägt fehl.
+   - `SEND_FAILED` / `…_FAILED` – Bark hat die Meldung nicht angenommen
+     (Status-Key prüfen); das Dashboard zeigt das ebenfalls an.
 
 Das Skript ist auch per HTTPS aufrufbar (POST mit dem Maschinen-Token wie bei
 `api/status.php`) – anonyme Web-Aufrufe weist es mit 403 ab. Derselbe
@@ -163,8 +187,10 @@ Der Wächter übernimmt noch drei weitere Aufgaben:
   `data_dir` schreiben darf (passiert z. B., wenn ein Web-Station-Update die
   Rechte von `web_packages` zurücksetzt – dann scheitern Login und alle
   Status-Pushs still). Deshalb ruft er bei jedem Lauf `api/health.php` über
-  `https://127.0.0.1/…` auf; das Skript läuft als `http` und prüft
-  Lock-Datei, Schreiben, Zurücklesen und Löschen. Ab **zwei Fehlschlägen in
+  `https://127.0.0.1/…` auf; das Skript läuft als `http` und prüft Lock-Datei,
+  Schreiben, Zurücklesen und Löschen – und ob die Dateien beschreibbar sind,
+  die das Dashboard an Ort und Stelle beschreibt (Verlauf, Lock-Dateien,
+  Sicherungen; die Meldung nennt dann die betroffene Datei). Ab **zwei Fehlschlägen in
   Folge** kommt die Bark-Meldung „NAS-Dashboard DEFEKT“, danach alle 24 h
   erneut, bis es wieder geht (dann einmal „wieder OK“). Abhilfe meist:
   File Station → `fw_alarm_data` → Eigenschaften → Berechtigung → Gruppe
@@ -179,7 +205,8 @@ Der Wächter übernimmt noch drei weitere Aufgaben:
   „Offline-Wächter: zuletzt gelaufen vor X min" und warnt, wenn die Aufgabe
   nie oder seit mehr als 35 Minuten nicht gelaufen ist – also mehr als zwei
   verpasste 15-Minuten-Läufe (z. B. weil sie im Aufgabenplaner deaktiviert
-  wurde).
+  wurde) – und auch, wenn sie zwar läuft, Bark ihre letzte Meldung aber
+  abgelehnt hat.
 
 ### Backup der Laufzeitdaten
 
@@ -187,8 +214,13 @@ Empfängerliste, Demo-Zustand und Verlauf leben im `data_dir`
 (außerhalb des Web-Roots, z. B. `/volume1/web_packages/fw_alarm_data`).
 Nimm den Ordner in dein NAS-Backup auf
 (z. B. Hyper Backup), wenn du eins hast. Zusätzlich hält das Dashboard vor
-jeder Änderung der Empfängerliste die Vorversion als `*.bak.php`-Datei fest –
-Wiederherstellen = Datei umbenennen.
+jeder Änderung der Empfängerliste die letzte **lesbare** Vorversion als
+`*.bak.php`-Datei fest. Ist `alarm_keys.json.php` beschädigt, greifen Dashboard,
+ESP32-Sync und REAL ALARM automatisch auf die Sicherung zurück; sind beide
+unlesbar, verweigert das Dashboard Änderungen, statt mit einer leeren Liste neu
+anzufangen. Die Listen-Version läuft dabei nie rückwärts (Hochwassermarke in
+`alarm_keys_version.json.php`), damit der ESP32 einen wiederhergestellten Stand
+sicher neu holt.
 
 ## 6. Härtung
 
@@ -201,7 +233,14 @@ Wiederherstellen = Datei umbenennen.
   `X-Frame-Options`, HSTS bei HTTPS, zentral in `lib/common.php`), ein
   Session-Ablauf nach 12 h Inaktivität, Rotation von `commands.log` ab 5 MB
   sowie `index.php`-Platzhalter gegen Verzeichnislisting in `api/`, `lib/`,
-  `data/` und im `data_dir`.
+  `cron/` und im `data_dir`. Logins von fremden Seiten (Login-CSRF) werden
+  abgewiesen, bevor sie die Login-Sperre zählen.
+- Kurzbefehl-Links (`api/mute.php`) möglichst nicht per Messenger/Mail
+  verschicken: Link-Vorschauen und Mail-Scanner rufen Links schon beim
+  Absender ab. Bekannte Vorschau-Abrufe (und HEAD-Anfragen) schalten zwar
+  bewusst nichts um, aber nicht jeder Scanner gibt sich zu erkennen. Für die
+  kopierten Links in `config.php` `public_base_url` setzen, sonst stammen sie
+  von der Adresse, unter der das Dashboard gerade offen ist (z. B. LAN-IP).
 - Lösche nach der Einrichtung `config.example.php` und `SETUP.md` aus dem
   Webroot auf dem NAS – sie verraten Angreifern nur die Struktur (das Original
   bleibt ja im Git-Repo).
@@ -224,13 +263,15 @@ ok=1
 nonce=esp32nonce
 id=17
 type=TEST
+keys_version=12
 ```
 
 Ohne Befehl kommt `id=0` und `type=NONE`. Die `nonce` wird vom ESP32 im Poll
 mitgeschickt und vom NAS gespiegelt; Antworten mit falscher Nonce werden
 verworfen, damit alte Poll-Antworten nicht versehentlich erneut wirken. Ein neuer
 Befehl liegt als `pending` in `command_state.json.php`. Beim Poll wird er unter
-Dateisperre sofort als `delivered` markiert und genau einmal ausgeliefert; der
+Dateisperre sofort als `delivered` markiert und höchstens einmal ausgeliefert
+(at-most-once); der
 ESP32 quittiert danach `api/ack.php`. Alte, quittierte oder bereits ausgelieferte
 Befehle werden nicht erneut gesendet, auch nicht nach NAS-Neustart. Diese
 Entscheidung schützt vor Replay-Doppelalarmen. Wenn die ACK verloren geht, wird
@@ -240,19 +281,26 @@ der ESP32 nicht innerhalb `pending_command_ttl_seconds` (Default 300 s) abholt,
 verfällt automatisch als `expired` und lässt sich im Dashboard auch aktiv
 abbrechen.
 
-Über das Command-Protokoll läuft nur noch **TEST** (leise Bark-Meldung vom ESP32
-an den Status-Empfänger – testet WLAN, NAS-Anbindung und Bark-Versand der Box).
-Der manuelle **REAL ALARM** wird direkt vom NAS per cURL an Bark gesendet
-(`level=critical`, pro Key isoliert mit Retry, HTTP 4xx ohne Retry): Manuelle
-Alarmierung muss gerade dann funktionieren, wenn die ESP32-Kette klemmt.
+Über das Command-Protokoll laufen **TEST** (leise Bark-Meldung vom ESP32 an den
+Status-Empfänger – testet WLAN, NAS-Anbindung und Bark-Versand der Box) und der
+**DEMO-ALARM über ESP32** (nur im Demo-Modus; das NAS prüft beim Anlegen UND
+beim Ausliefern, dass der ESP32 nachweislich die Demo-Liste mit genau einem
+Empfänger hat – sonst wird der Befehl verworfen). Der manuelle **REAL ALARM**
+wird direkt vom NAS per cURL an Bark gesendet (`level=critical`, an alle
+Empfänger parallel, pro Key isoliert mit Retry, HTTP 4xx ohne Retry): Manuelle
+Alarmierung muss gerade dann funktionieren, wenn die ESP32-Kette klemmt. Sie
+hängt auch nicht am Schreibrecht auf den `data_dir`.
 
 Die **Empfängerliste** liegt versioniert in `alarm_keys.json.php` im `data_dir`
 und wird im Dashboard verwaltet. `poll.php` meldet dem ESP32 bei jedem Poll die
 aktuelle `keys_version`; weicht sie von seiner ab, holt er die Liste über
 `api/keys.php` (gleiches Text-Protokoll, Token-Auth, gespiegelte Nonce) und
 speichert sie im NVS-Flash. Leere oder unplausible Listen verwirft er, während
-eines offenen Alarms synchronisiert er nicht, und jede Übernahme bestätigt er
-per Statusmeldung an den Owner.
+eines offenen Alarms synchronisiert er nicht, und eine Übernahme meldet er dem
+Owner per Statusmeldung, sobald sich die Empfänger selbst geändert haben
+(reine Stumm-Wechsel laufen still). `poll.php` beendet vor jeder Antwort auch
+überfällige Stummschaltungen – so erreicht das 12-h-Sicherheitsnetz den
+Relaisweg auch ohne Cron-Wächter.
 
 Der **Demo-Modus** (Panel „Betriebsmodus", nur Admin) leitet ALLE Alarme –
 Relaisalarm über den ESP32 und REAL ALARM vom NAS – auf genau einen

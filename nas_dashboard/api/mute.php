@@ -26,6 +26,21 @@ require __DIR__ . '/../lib/common.php';
 
 $config = load_config();
 
+// Link-Vorschauen dürfen NICHTS umschalten: iMessage, WhatsApp, Signal,
+// Mail-Scanner usw. rufen einen verschickten Link schon beim ABSENDER ab
+// (teils per HEAD) - ohne diese Sperre würde der Admin einen Kollegen
+// unbemerkt stumm schalten, nur indem er ihm seinen Link schickt. Ein
+// echter Kurzbefehl ("URL abrufen") sendet GET/POST mit iOS-Kennung.
+$method = (string)($_SERVER['REQUEST_METHOD'] ?? 'GET');
+$agent = (string)($_SERVER['HTTP_USER_AGENT'] ?? '');
+$isPreview = !in_array($method, ['GET', 'POST'], true)
+    || preg_match('/facebookexternalhit|facebot|twitterbot|whatsapp|telegrambot|slackbot|discordbot|'
+        . 'linkedinbot|skypeuripreview|signal|bingpreview|embedly|ms-office|safelinks|'
+        . 'preview|crawler|spider|bot\/|\bbot\b/i', $agent) === 1;
+if ($isPreview) {
+    text_response("ok=0\nerror=Vorschau - nichts geaendert\n");
+}
+
 $token = trim((string)($_POST['t'] ?? $_GET['t'] ?? ''));
 $key = trim((string)($_POST['key'] ?? $_GET['key'] ?? ''));
 $stateParam = strtolower(trim((string)($_POST['state'] ?? $_GET['state'] ?? '')));
@@ -35,17 +50,58 @@ if (!in_array($stateParam, ['on', 'off'], true)) {
     text_response("ok=0\nerror=state fehlt (on oder off)\n");
 }
 
-// Enumerations-Bremse: Für ungültige wie unbekannte Tokens/Keys dieselbe
-// verzögerte, generische Antwort - der Endpoint verrät nicht, was existiert.
-function mute_reject(): void
+// Bremse gegen Durchprobieren: NUR Fehlversuche (ungültige/unbekannte Tokens)
+// zählen pro Absender; nach zu vielen bekommen weitere FEHLversuche 429.
+// Ein GÜLTIGER Token wird nie gebremst: Hinter einer gemeinsamen Adresse
+// (Wachen-WLAN, Mobilfunk-NAT) könnte sonst jeder mit ein paar
+// Unsinns-Aufrufen die Links aller Kollegen sperren - auch das sichere
+// "wieder laut". (Früher: usleep pro Fehlversuch - das hielt nur PHP-Worker
+// fest und war parallel umgehbar.) Für ungültige wie unbekannte Tokens
+// dieselbe generische Antwort - der Endpoint verrät nicht, was existiert.
+const MUTE_MAX_FAILURES = 20;
+const MUTE_FAILURE_WINDOW = 900;
+
+function mute_reject(array $config): void
 {
-    usleep(500000);
+    $hit = throttle_hit($config, 'mute', MUTE_MAX_FAILURES, MUTE_FAILURE_WINDOW);
+    if (!empty($hit['blocked'])) {
+        http_response_code(429);
+        text_response("ok=0
+error=zu viele Fehlversuche - spaeter erneut
+");
+    }
     http_response_code(404);
-    text_response("ok=0\nerror=unbekannter Empfaenger\n");
+    text_response("ok=0
+error=unbekannter Empfaenger
+");
+}
+
+// Gehört der Token (bzw. alt: der Bark-Key) zu diesem Listeneintrag?
+function mute_entry_matches($entry, string $token, string $key): bool
+{
+    if (!is_array($entry)) {
+        return false;
+    }
+    return $token !== ''
+        ? hash_equals((string)($entry['mute_token'] ?? ''), $token)
+        : hash_equals((string)($entry['key'] ?? ''), $key);
 }
 
 if ($token !== '' ? !valid_mute_token($token) : !valid_bark_key($key)) {
-    mute_reject();
+    mute_reject($config);
+}
+
+// Erst lock-frei nachsehen, ob es den Empfänger überhaupt gibt: Fehlversuche
+// brauchen so weder den 'keys'-Lock noch den Mute-Ablauf darunter.
+$known = false;
+foreach ((load_alarm_keys($config)['keys'] ?? []) as $entry) {
+    if (mute_entry_matches($entry, $token, $key)) {
+        $known = true;
+        break;
+    }
+}
+if (!$known) {
+    mute_reject($config);
 }
 
 // Abgelaufene Stummschaltungen zuerst aufräumen (nimmt selbst den keys-Lock,
@@ -54,14 +110,10 @@ expire_stale_mutes($config);
 
 $wantMuted = ($stateParam === 'on');
 
-$result = with_lock($config, 'keys', function () use ($config, $token, $key, $wantMuted): array {
-    $state = read_json_file(data_path($config, 'alarm_keys.json'), alarm_keys_default());
+$result = mutate_alarm_keys($config, function (array &$state) use ($token, $key, $wantMuted): array {
     $idx = -1;
     foreach (($state['keys'] ?? []) as $i => $entry) {
-        $match = $token !== ''
-            ? hash_equals((string)($entry['mute_token'] ?? ''), $token)
-            : hash_equals((string)($entry['key'] ?? ''), $key);
-        if ($match) {
+        if (mute_entry_matches($entry, $token, $key)) {
             $idx = $i;
             break;
         }
@@ -86,20 +138,17 @@ $result = with_lock($config, 'keys', function () use ($config, $token, $key, $wa
     if (!$wantMuted) {
         $state['keys'][$idx]['mute_permanent'] = false;
     }
-    $state['version'] = (int)($state['version'] ?? 0) + 1;
-    if (!backup_then_write($config, 'alarm_keys.json', $state)) {
-        return ['found' => true, 'changed' => false, 'entry' => $entry, 'write_failed' => true];
-    }
-    return ['found' => true, 'changed' => true, 'entry' => $state['keys'][$idx],
-        'version' => (int)$state['version'], 'permanent_ended' => ($wasPermanent && !$wantMuted)];
+    return ['found' => true, 'changed' => true, 'write' => true, 'bump' => true,
+        'entry' => $state['keys'][$idx], 'permanent_ended' => ($wasPermanent && !$wantMuted)];
 });
 
-if (empty($result['found'])) {
-    mute_reject();
-}
-if (!empty($result['write_failed'])) {
+if (!empty($result['write_failed']) || (!isset($result['found']) && empty($result['ok']))) {
+    // Speichern gescheitert bzw. Liste unlesbar: ehrlich melden.
     http_response_code(500);
     text_response("ok=0\nerror=speichern fehlgeschlagen\n");
+}
+if (empty($result['found'])) {
+    mute_reject($config);
 }
 
 // Nur bei echter Änderung loggen, und NACH dem Lock. Bewusst KEIN

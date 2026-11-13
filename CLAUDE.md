@@ -82,21 +82,34 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   NAS-Fehler/TLS/Timeouts sind nicht fatal, nutzen kurze Timeouts und Backoff und
   dürfen die Bark-Alarmierung nicht verhindern.
 - **Manueller REAL ALARM läuft DIREKT vom NAS zu Bark** (`bark_send_alarm_all()`
-  in `nas_dashboard/lib/common.php`, PHP-cURL, `level=critical`, pro Key isoliert
-  mit Retry, HTTP 4xx ohne Retry). Bewusste Entscheidung: Die manuelle
+  in `nas_dashboard/lib/common.php`, PHP-cURL, `level=critical`, an alle Keys
+  PARALLEL über `bark_post_many()` (curl_multi), pro Key isoliert mit Retry,
+  HTTP 4xx ohne Retry, `ignore_user_abort`; Titel/Text gehen unverändert raus
+  wie in config.php eingetragen — `bark_ascii()` sichert nur die
+  Statusmeldungen mit Nutzereingaben ab). Der Alarmpfad braucht KEIN
+  Schreibrecht: überfällige Stummschaltungen rechnet er beim Lesen als laut
+  (`mute_is_stale()`), weggeschrieben wird erst NACH dem Versand und nur
+  best effort (`with_lock_soft()`). Vorher/nachher landen `nas_alarm_started`/
+  `nas_alarm` im Verlauf. Bewusste Entscheidung: Die manuelle
   Alarmierung braucht man gerade dann, wenn die ESP32-Kette klemmt — sie darf
   deshalb nicht am Poll des ESP32 hängen. `ALARM`-Commands legt das
   Dashboard nur noch als **Demo-Werkzeug** an (Button „DEMO-ALARM über
-  ESP32"): serverseitig doppelt gesichert — nur bei aktivem Demo-Modus UND
-  nur, wenn der letzte Status-Push des ESP32 die aktuelle `keys_version`
-  bestätigt und jünger als `offline_after_seconds` ist (sonst könnte der
-  Testalarm noch an die volle Liste gehen). Der `ALARM`-Zweig in der Firmware
+  ESP32"): serverseitig gesichert (`demo_alarm_block_reason()`) — nur bei
+  aktivem Demo-Modus UND nur, wenn der letzte Status-Push des ESP32 die
+  aktuelle `keys_version` bestätigt, genau EINEN Empfänger (`keys_count=1`)
+  meldet und jünger als `offline_after_seconds` ist (sonst könnte der
+  Testalarm noch an die volle Liste gehen). Geprüft beim Anlegen (auch erneut
+  unter dem `command`-Lock) UND beim Ausliefern in `poll.php`: Hat sich der
+  Demo-Stand seit dem Anlegen geändert (`demo_changed_at` im Befehl), wird der
+  Befehl als `cancelled` verworfen. REAL ALARM, ENTWARNUNG und DEMO-ALARM
+  senden `expect_demo` mit (`'0'` = LIVE, sonst `key_id`); weicht der Modus
+  ab, antwortet das NAS mit 409 `mode_changed` und sendet NICHTS. Der `ALARM`-Zweig in der Firmware
   läuft durch dieselbe `startAlarm()`/`processPendingAlarm()`-Logik wie ein
   Relaisalarm.
   **TEST** läuft dagegen absichtlich über den ESP32 (Poll → `sendStatus()` an
   `BARK_KEY_STATUS`) — er testet die halbe Kette mit — und darf die
   Alarm-Zustandsmaschine nicht verändern. **ENTWARNUNG** (`false_alarm` /
-  `bark_send_false_alarm_all()` → `bark_send_false_alarm_one()`): ebenfalls
+  `bark_send_false_alarm_all()` → `bark_false_alarm_fields()`): ebenfalls
   **Critical Alert** (ASCII-Texte) an die effektive Empfängerliste, direkt vom
   NAS — muss durchdringen, sonst fährt jemand umsonst los. Unterschied zum
   Alarm: kurzer Standardton (`bark_false_alarm_sound`, Default `glass`) statt
@@ -106,7 +119,17 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
 - **Empfängerliste wird im Dashboard gepflegt** (eine Quelle für beide
   Alarmwege): versioniert in `alarm_keys.json(.php)` im `data_dir`, verwaltet
   über `dashboard_api.php` (`keys_list`/`keys_add`/`keys_delete`; letzter
-  Empfänger nicht löschbar, max. 10, Key-Format validiert). `poll.php` liefert
+  Empfänger nicht löschbar, max. 10 = `MAX_ALARM_KEYS`, Key-Format validiert).
+  Alle Schreiber laufen über `mutate_alarm_keys()` (Lock, Lesen, Ändern,
+  `backup_then_write()`); Versionen nur über `bump_keys_version()` — monoton
+  über eine Hochwassermarke (`alarm_keys_version.json`), damit ein `.bak`-Restore
+  die Version nie auf eine Nummer zurücksetzt, die der ESP32 mit anderem Inhalt
+  kennt. `read_json_file()` unterscheidet `missing`/`corrupt`;
+  `read_alarm_keys_state()` fällt bei kaputter Datei auf die `.bak` zurück und
+  liefert `null`, wenn beide unlesbar sind — Schreiber brechen dann ab, statt
+  mit leerer Liste neu anzufangen. `backup_then_write()` sichert nur einen
+  lesbaren Stand. `effective_alarm_entries()` bereinigt (gültige Keys, keine
+  Duplikate, max. 10) — genau das, was die Firmware akzeptiert. `poll.php` liefert
   `keys_version=N` mit; weicht sie ab, holt der ESP32 die Liste über
   `api/keys.php` (Plain Text: `version=`, `count=`, `key0=`…, Nonce gespiegelt)
   und persistiert sie per `Preferences` im NVS (`syncAlarmKeys()`), damit sie
@@ -121,10 +144,14 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
 - **Demo-Modus (Dashboard, nur Admin)**: leitet beide Alarmwege auf genau einen
   Test-Empfänger aus der gepflegten Liste um — ohne Firmware-Änderung, über
   denselben Empfängerlisten-Mechanismus: `demo_mode.json` im `data_dir` hält den
-  Zustand, `effective_alarm_keys()` in `common.php` liefert im Demo-Modus nur
+  Zustand, `effective_alarm_entries()` in `common.php` liefert im Demo-Modus nur
   den Demo-Key (genutzt von `api/keys.php` UND `bark_send_alarm_all()`), jeder
   Moduswechsel erhöht die `keys_version` → ESP32 holt die Liste beim nächsten
-  Poll. Schutzregeln: Demo-Empfänger muss aus der Liste stammen (beim
+  Poll. `demo_set` schreibt erst `demo_mode.json`, dann `alarm_keys.json`
+  (diese Reihenfolge ist gegenüber dem lockfreien Leser `api/keys.php`
+  selbstheilend — NICHT tauschen); scheitert der zweite Schritt, wird der
+  Demo-Zustand zurückgerollt. Ausschalten ist idempotent und erhöht immer die
+  Version (Reparaturweg). Schutzregeln: Demo-Empfänger muss aus der Liste stammen (beim
   Zurückschalten existiert so garantiert eine nicht-leere Liste, die der ESP32
   akzeptiert), der aktive Demo-Empfänger ist nicht löschbar, das Dashboard zeigt
   ein Warn-Banner mit Sync-Status (Vergleich ESP32-`keys_version` vs.
@@ -135,12 +162,17 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   `mute_volume` pro Eintrag in `alarm_keys.json`; stumme Keys bekommen
   weiterhin denselben Critical Alert, aber mit ihrer **Stumm-Lautstärke**
   (`mute_volume` 0–10, Default 0 = lautlos) und ohne `call=1` — durchbricht
-  trotzdem Stummschalter/Fokus (beide Alarmwege: `bark_send_alarm_one()` mit
+  trotzdem Stummschalter/Fokus (beide Alarmwege: `bark_alarm_fields()` mit
   `$muted`/`$muteVolume` und die Firmware über `alarmKeyMuted[]`/
   `alarmKeyMuteVolume[]`). Umschalten per öffentlichem GET/POST-Endpoint
   `api/mute.php?t=<GEHEIM_TOKEN>&state=on|off` (Token `mute_token` pro
   Eintrag, im Dashboard kopierbar und nur an die Admin-Rolle ausgeliefert;
-  Alt-Form `key=<BARK_KEY>` bleibt gültig; Enumerations-Bremse, idempotent;
+  Alt-Form `key=<BARK_KEY>` bleibt gültig; Bremse gegen Durchprobieren über
+  einen persistenten Zähler pro Absender (`throttle_*`, Bucket `mute`, KEIN
+  `usleep`) — gezählt und gebremst werden NUR Fehlversuche, ein gültiger
+  Token funktioniert immer (sonst könnte jemand hinter derselben Adresse die
+  Links aller Kollegen sperren); idempotent; HEAD-Anfragen und bekannte Link-Vorschau-Abrufer
+  (iMessage/WhatsApp/… User-Agents) schalten bewusst NICHTS um;
   bewusst KEIN `name=`-Parameter — Namen wären erratbar) oder per
   Dashboard-Aktion `keys_mute` (Admin+CSRF); Stumm-Lautstärke über
   `keys_set_mute_volume` (Admin+CSRF). Jeder Wechsel erhöht die
@@ -150,10 +182,15 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   NAS bleiben so in sicheren Modi). `ensure_mute_tokens()` rüstet
   Bestandseinträgen Tokens nach (Lazy, ohne Versions-Bump, nimmt selbst den
   `keys`-Lock). Sicherheitsnetz `expire_stale_mutes()` (`mute_max_seconds`,
-  Default 12 h, 0 = aus): läuft in mute.php, keys.php, keys_list,
-  `bark_send_alarm_all()` und im Cron-Wächter; nimmt selbst den `keys`-Lock
-  (NIE aus einem gehaltenen `keys`-Lock aufrufen), Bark-Pushes immer erst
-  NACH dem Lock. Der Wächter erinnert zusätzlich max. 1×/Tag am Status-Key,
+  Default 12 h, 0 = aus): läuft in poll.php (damit es den Relaisweg auch OHNE
+  Cron erreicht), mute.php, keys.php, keys_list, nach `bark_send_alarm_all()`
+  und im Cron-Wächter (dort auch ohne `bark_key_status`); die Leseseite
+  rechnet überfällige Stummschaltungen schon vorher als laut
+  (`mute_is_stale()` — EINE Definition für beide). Nimmt selbst den
+  `keys`-Lock (NIE aus einem gehaltenen `keys`-Lock aufrufen; `$soft=true` =
+  nicht fatal); die Info-Pushs laufen erst NACH der Antwort
+  (`defer_after_response()` + `fastcgi_finish_request()`), nie davor — der
+  ESP32 hat nur 4 s Timeout. Der Wächter erinnert zusätzlich max. 1×/Tag am Status-Key,
   solange jemand stumm ist (`mute_reminded_at` in `watchdog_state.json`).
   Beim **manuellen** Umschalten geht bewusst KEINE Bestätigung mehr an den
   betroffenen Key (Nutzerentscheidung, störte nur); nur die **automatische**
@@ -219,20 +256,34 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
 - Alarm-Sound `alarm_fw` ist ein **eigener importierter** Bark-Ton; muss auf jedem
   Empfänger-iPhone vorhanden sein, sonst Standardton.
 - Synology-Dashboard: separate Auth für Maschine (`REMOTE_MACHINE_TOKEN`, im PHP
-  nur SHA-256-Hash, **nur per POST**) und Mensch (Dashboard-Login mit
-  Passwort-Hash + CSRF, `sleep(1)` plus IP-Sperrfenster nach zu vielen
-  Fehlversuchen als Brute-Force-Bremse, Session-Idle-Timeout 12 h,
+  nur SHA-256-Hash, **nur per POST**, Hash-Vergleich case-/whitespace-tolerant)
+  und Mensch (Dashboard-Login mit Passwort-Hash + CSRF, `sleep(1)` plus
+  Sperrfenster pro Absender (IPv4 einzeln, IPv6 als /64) nach zu vielen
+  Fehlversuchen als Brute-Force-Bremse — der Versuch wird VOR
+  `password_verify` atomar gezählt (`throttle_hit()`), Login-POSTs von fremden
+  Seiten (nur `Sec-Fetch-Site: cross-site` — bewusst KEIN Origin/Host-Vergleich,
+  der hinter einem Host-umschreibenden Proxy jeden Login sperren würde) werden
+  vorher abgewiesen; alle
+  Throttle-Locks sind nicht fatal, damit ein fehlendes Schreibrecht den Login
+  nicht sperrt), Session-Idle-Timeout 12 h, `session_write_close()` direkt
+  nach der Auth in `dashboard_api.php` (ein laufender REAL ALARM blockiert so
+  keine anderen Requests derselben Sitzung), ändernde Aktionen nur per POST,
   Sicherheits-Header/CSP zentral oben in `common.php`, `commands.log`-Rotation
   ab 5 MB, Assets mit `?v=filemtime()`-Cache-Busting). Zusätzlich optionaler
   Lese-Benutzer (`dashboard_readonly_user`/`..._password_hash`, Rolle in
-  `$_SESSION['role']`): sieht Status + Empfängerliste, alle ändernden/auslösenden
+  `$_SESSION['role']`, fehlende Rolle = `readonly`, fail-closed): sieht
+  Status + Empfängerliste, alle ändernden/auslösenden
   Aktionen werden **serverseitig** per `require_dashboard_admin()` geblockt
   (UI-Ausblendung ist nur Komfort). Das Verlaufs-Panel liest die letzten
   `commands.log`-Zeilen per Tail-Read (`log_view` in `dashboard_api.php`) und
   liefert **nur serverseitig whitelistete Felder** aus (Keys stehen im Log nur
   maskiert). Dauerhaft im Verlauf landen auch: Relaisalarme (`relay_alarm` —
-  `api/status.php` loggt, wenn sich `last_alarm` im Push gegenüber dem
-  vorigen ändert; Wechsel zu „nie" = ESP32-Reboot, kein Alarm) und
+  `api/status.php` loggt, wenn sich `last_alarm` (oder, bei neuerer Firmware,
+  der Zähler `alarm_seq`) gegenüber dem zuletzt gemerkten Stand DIESER Box
+  ändert — gemerkt pro `device_id` in `alarm_seen.json`, damit ein zweites
+  Board mit demselben Token nichts unterdrückt; Wechsel zu „nie" =
+  ESP32-Reboot, kein Alarm; `source=remote` = Demo-Alarm nur, wenn die Box den
+  ALARM-Befehl kurz zuvor mit `executed` quittiert hat — im Zweifel `relay`) und
   Wächter-Ereignisse (`box_offline`/`box_recovered`, gleiche Einmal-Semantik
   wie die Bark-Meldung). Der ESP32-Status-Push enthält als Diagnose-Felder
   zusätzlich `reset_reason` (Token, im Frontend übersetzt und bei
@@ -263,7 +314,21 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Meldung das NAS als wahrscheinliche Ursache (Störung 10/2026: Box lief,
   `http` hatte nach einem Update nur noch Leserecht auf `web_packages`).
   `with_lock()` zeigt dann statt „Fehler.“ einen lesbaren Hinweis (ohne
-  Pfad; Pfad nur per `error_log`). Derselbe Key aktiviert die
+  Pfad; Pfad nur per `error_log`; JSON für `dashboard_api.php` über die
+  Konstante `FW_ALARM_JSON_API`). Was nur best effort ist (Mute-Ablauf im
+  Alarmpfad, Login-Throttle, Verlauf), nutzt `with_lock_soft()` statt des
+  fatalen `with_lock()`. Legt der root-Cron Dateien neu an, übergibt
+  `fix_owner()` sie an Besitzer/Gruppe des `data_dir` — aber NUR, wenn der
+  Ordner einem Nicht-root-Benutzer gehört, und OHNE je die Rechte-Bits
+  anzufassen (kein `chmod`: auf Synology kommt der Zugriff von `http` meist
+  über File-Station-ACLs, die ein chmod aushebeln könnte — die Funktion darf
+  Zugriff nie wegnehmen). `data_dir_write_check()` prüft zusätzlich (Schritt
+  `perm`), ob die Dateien beschreibbar sind, die das Dashboard an Ort und
+  Stelle beschreibt (`inplace_data_files()`: Verlauf, Lock-Dateien, `*.bak`) —
+  bewusst NICHT alle Dateien, denn die übrigen ersetzt es per `rename()`.
+  Bei `perm` nennt die DEFEKT-Meldung die Datei, und „Box OFFLINE“ gibt dem
+  NAS nur dann die Schuld, wenn die Störung die Status-Pushs wirklich
+  blockiert (`blocks_pushes`). Derselbe Key aktiviert die
   Meldung bei ausgelöster Login-IP-Sperre. Ohne `bark_key_status` in
   config.php sind alle Meldewege inaktiv. Keine Geheimnisse in
   clientseitigem JavaScript. Laufzeitdaten (`data_dir`) bei Nginx möglichst

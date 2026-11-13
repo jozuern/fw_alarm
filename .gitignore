@@ -1,8 +1,13 @@
 # ============================================================================
 #  Secrets NIEMALS committen!  config.h enthält WLAN-Passwort und Bark-Keys.
 # ============================================================================
-boss925_alarm_bark/config.h
-config.h
+#  Bewusst mit Muster: auch Sicherungskopien (config.h.bak, config.h~, ...)
+#  enthalten die Geheimnisse. Die Vorlagen bleiben per !-Ausnahme drin.
+boss925_alarm_bark/config.h*
+config.h*
+nas_dashboard/config.php*
+!boss925_alarm_bark/config.example.h
+!nas_dashboard/config.example.php
 
 # PlatformIO Build-Artefakte
 .pio/
@@ -28,10 +33,15 @@ nas_dashboard/data/*.php
 bark-anleitung.html
 Bark-Anleitung-iPhone.pdf
 
-# Editor / OS
+# Editor / OS (inkl. Sicherungs-/Swap-Dateien, die Geheimnisse enthalten können)
 .vscode/
+.idea/
 .DS_Store
 Thumbs.db
+*.swp
+*~
+*.bak
+*.orig
 
 # Lokale Logdateien (z.B. debug.log vom seriellen Mitlesen)
 *.log

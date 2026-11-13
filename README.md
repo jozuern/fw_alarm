@@ -176,14 +176,17 @@ Empfänger **laut und ~30 Sekunden lang** klingelt, muss die Tondatei in der
 **Bark-App auf JEDEM Empfänger-iPhone** importiert sein. Fehlt sie, spielt Bark
 nur einen kurzen Standardton ab.
 
-Die fertige Datei liegt im Projekt: **`alarm_fw.mp3`** (im Wurzelverzeichnis,
-auch im GitHub-Repo).
+Die fertige Datei liegt im Projekt: **`alarm_fw.caf`** (im Wurzelverzeichnis,
+auch im GitHub-Repo, **28 s** lang). **Nimm die `.caf`, nicht die `.mp3`:**
+`alarm_fw.mp3` ist mit gut 30,4 s minimal zu lang für das iOS-Limit (siehe
+unten) – iOS spielt dann statt der Sirene nur den Standardton. Wer die MP3
+schon importiert hat, ersetzt sie in Bark durch die `.caf`.
 
 **So bekommst du sie auf jedes iPhone und in Bark:**
 
 1. **Datei aufs iPhone bringen** – ein Weg genügt:
    - Im **Safari** auf dem iPhone die Datei im GitHub-Repo öffnen
-     (`alarm_fw.mp3` → „Download"), **oder**
+     (`alarm_fw.caf` → „Download"), **oder**
    - per **AirDrop** / **iMessage** / **E-Mail** an das iPhone schicken.
 2. **In Bark importieren:** Die Datei antippen → **Teilen-Symbol** (Quadrat mit
    Pfeil nach oben) → in der App-Liste **„Bark"** wählen bzw. **„In Bark öffnen / In
@@ -192,8 +195,10 @@ auch im GitHub-Repo).
 3. **Prüfen:** In Bark unter **Sounds** sollte **`alarm_fw`** jetzt in der Liste
    stehen (antippen = Vorhören).
 
-> ⏱️ **Wichtig:** iOS erlaubt für Mitteilungstöne **maximal 30 Sekunden** Länge.
-> `alarm_fw.mp3` hält das ein. Eigene Töne also nie länger als 30 s machen.
+> ⏱️ **Wichtig:** iOS erlaubt für Mitteilungstöne **maximal 30 Sekunden** Länge –
+> ist ein Ton auch nur knapp länger, spielt iOS stattdessen den Standardton.
+> `alarm_fw.caf` (28 s) hält das ein, `alarm_fw.mp3` (~30,4 s) **nicht**. Eigene
+> Töne also deutlich unter 30 s halten.
 >
 > 💡 **Alternative ohne Import:** Wer sich den Import sparen will, trägt in `config.h`
 > einen der **eingebauten** Bark-Töne ein (z. B. `multiwayinvitation` – ein langer
@@ -251,7 +256,11 @@ static const char* BARK_KEYS_ALARM[] = {
 > (bzw. ins NAS-Dashboard) ein und teile sie nicht öffentlich. Landet ein Key doch
 > einmal in falschen Händen, erstelle in der Bark-App einen neuen und ersetze ihn.
 
-**Optional für das NAS-Dashboard:**
+**Optional für das NAS-Dashboard** – **ohne eigenes NAS** unbedingt
+`REMOTE_MONITOR_ENABLED false` setzen: Die Vorlage hat den Block
+eingeschaltet, und der Platzhalter-Host `dein-name.synology.me` ist ein
+öffentlich registrierbarer Name. Wer ihn besitzt, könnte über das
+Poll-Protokoll Alarme auslösen oder die Empfängerliste ersetzen.
 
 ```c
 #define REMOTE_MONITOR_ENABLED true
@@ -283,7 +292,7 @@ Synology steht davon nur der SHA-256-Hash in `nas_dashboard/config.php`.
 5. **Port wählen:** ESP32 per USB anstecken. **Werkzeuge → Port** → den neuen
    COM-Port (Windows) bzw. `/dev/cu.*` (Mac) auswählen.
    - *Windows erkennt nichts?* Dann fehlt der USB-Treiber (CP210x oder CH340) –
-     siehe [Troubleshooting](#11-troubleshooting).
+     siehe [Troubleshooting](#12-troubleshooting).
 6. **Hochladen:** Auf den **Pfeil-Knopf (→)** oben links klicken. Beim ersten Mal
    muss man manchmal beim Erscheinen von „Connecting…" kurz den **BOOT**-Taster
    am ESP32 gedrückt halten.
@@ -473,12 +482,14 @@ Funktionen:
   „Alarm-Empfänger" hinzufügen und löschen. Die Liste ist versioniert und gilt
   für beide Alarmwege; der ESP32 sieht die Version bei jedem Poll, holt sich
   Änderungen automatisch über `api/keys.php` und speichert sie dauerhaft im
-  NVS-Flash (übersteht Reboot und NAS-Ausfall). Jede Übernahme bestätigt er mit
-  einer leisen Statusmeldung. `BARK_KEYS_ALARM` in `config.h` ist nur noch die
+  NVS-Flash (übersteht Reboot und NAS-Ausfall). Ändern sich dabei die Empfänger
+  selbst, meldet er das mit einer leisen Statusmeldung (reine Stumm-Wechsel
+  laufen still). `BARK_KEYS_ALARM` in `config.h` ist nur noch die
   Startliste für den allerersten Boot; sobald die Dashboard-Liste gepflegt ist,
   ist sie führend. Der letzte Empfänger lässt sich nicht löschen.
-- Dashboard mit Login, Offline-Anzeige, zwei Buttons (`TEST`, `REAL ALARM` mit
-  zusätzlicher Browser-Bestätigung und Ergebnis pro Empfänger) und einem
+- Dashboard mit Login, Offline-Anzeige, Aktionsknöpfen (`TEST`, `REAL ALARM`
+  und `ENTWARNUNG` – beide mit zusätzlicher Bestätigung und Ergebnis pro
+  Empfänger – sowie im Demo-Modus `DEMO-ALARM über ESP32`) und einem
   Abbrechen-Knopf für noch nicht abgeholte Befehle.
 - **Demo-Modus** (Panel „Betriebsmodus", nur Admin): leitet **alle** Alarme –
   Relaisalarm über den ESP32 und `REAL ALARM` vom NAS – auf genau **einen**
@@ -652,7 +663,7 @@ separates Login mit Passwort-Hash und CSRF-Schutz.
   bei Fehlversuch nach 5 min wiederholt statt erst am nächsten Tag.
 - ✅ Optionaler zweiter Eingangs-Pin (`RELAY_PIN2_ENABLED`).
 - ✅ Optionales Synology-Dashboard mit Status-Push, Command-Polling, separatem
-  Maschinen-Token, Dashboard-Login und genau-einmal-Auslieferung pro Command-ID;
+  Maschinen-Token, Dashboard-Login und höchstens-einmal-Auslieferung pro Command-ID;
   Befehle verfallen per TTL und sind abbrechbar.
 - ✅ Manueller `REAL ALARM` direkt vom NAS an Bark – unabhängig vom ESP32, als
   Rückfallebene, wenn dessen Kette klemmt.

@@ -19,6 +19,10 @@
   --inset: #161b21;
   --line: #2b333c;
   --line-soft: #232a32;
+  /* Hover-Rahmen (eine Stufe heller als --line) und ausgeschaltete Lampe -
+     vorher als feste Hex-Werte über die Datei verstreut. */
+  --line-hover: #46515c;
+  --lamp-off: #39434d;
 
   /* Text */
   --text: #e9edf1;
@@ -177,7 +181,7 @@ p {
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  background: #39434d;
+  background: var(--lamp-off);
 }
 
 .mini-ok    { background: var(--ok); box-shadow: 0 0 7px rgba(69, 208, 125, 0.7); }
@@ -274,7 +278,7 @@ p {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #39434d;
+  background: var(--lamp-off);
 }
 
 .state-boot { color: var(--muted); }
@@ -337,7 +341,9 @@ p {
 
 .tele {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  /* min(): Auf 320-px-Geräten ist das Panel schmaler als 280 px - ohne die
+     Begrenzung liefe die Spalte rechts aus dem Bildschirm. */
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
   gap: 18px 44px;
   align-items: start;
 }
@@ -435,7 +441,7 @@ p {
 .help:hover,
 .help.tip-open {
   color: var(--text);
-  border-color: #46515c;
+  border-color: var(--line-hover);
 }
 
 /* Sprechblase: ein ECHTES Element (kein ::after), damit Screenreader den
@@ -509,7 +515,7 @@ button {
 
 button:hover {
   background: rgba(255, 255, 255, 0.04);
-  border-color: #46515c;
+  border-color: var(--line-hover);
 }
 
 button:active {
@@ -627,6 +633,28 @@ select {
   overflow-wrap: anywhere;
 }
 
+/* Ergebnis eines REAL ALARM/einer ENTWARNUNG hervorheben (app.js):
+   rot = (teilweise) NICHT zugestellt bzw. sicher nicht gesendet - wer fehlt,
+   muss anders benachrichtigt werden; gelb = Antwort unklar, erst Verlauf
+   prüfen. Rahmen + Fläche, damit es auch unter Stress ins Auge springt. */
+[data-alarm-result].result-fail,
+[data-alarm-result].result-warn {
+  padding: 8px 12px;
+  border-radius: var(--r-ctl);
+}
+
+[data-alarm-result].result-fail {
+  color: var(--crit-text);
+  background: var(--crit-bg);
+  border: 1px solid var(--crit-line);
+}
+
+[data-alarm-result].result-warn {
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+}
+
 /* Zweistufige Inline-Bestätigung (app.js): erscheint anstelle des
    "geschärften" Auslöse-Knopfs. Gelber Rahmen = "Achtung, Entscheidung
    steht an"; der eigentliche Auslöser bleibt der rote Bestätigungsknopf.
@@ -737,7 +765,7 @@ details.explain li {
   border-radius: 9px 9px 0 0;
   background: repeating-linear-gradient(-45deg,
     #cf9a0e 0 10px,
-    #14181d 10px 20px);
+    var(--bg) 10px 20px);
 }
 
 .demo-banner strong {
@@ -978,7 +1006,7 @@ details.keys-more .keys-links {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #39434d;
+  background: var(--lamp-off);
 }
 
 .log-warn .log-dot {
