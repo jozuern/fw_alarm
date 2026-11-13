@@ -120,8 +120,16 @@ function with_lock(array $config, string $name, callable $callback)
     $lockPath = data_path($config, $name . '.lock');
     $handle = @fopen($lockPath, 'c');
     if ($handle === false) {
+        // Häufigste Ursache (Störung 10-11/2026): Ein Web-Station-/DSM-Update
+        // hat der Gruppe 'http' das Schreibrecht auf den data_dir entzogen.
+        // Früher stand hier nur "Fehler." - das sagte niemandem etwas. Den
+        // Pfad gibt es nur im PHP-Fehlerlog, nicht im Browser (Struktur-Leak).
+        error_log('fw_alarm: Lock-Datei nicht beschreibbar: ' . $lockPath);
         http_response_code(500);
-        exit('Fehler.');
+        if (!headers_sent()) {
+            header('Content-Type: text/plain; charset=utf-8');
+        }
+        exit('Fehler: Datenordner nicht beschreibbar (Berechtigungen der Gruppe http prüfen).');
     }
     flock($handle, LOCK_EX);
     try {
@@ -130,6 +138,80 @@ function with_lock(array $config, string $name, callable $callback)
         flock($handle, LOCK_UN);
         fclose($handle);
     }
+}
+
+// Selbsttest für den data_dir: Kann DIESER PHP-Prozess dort Lock-Dateien
+// öffnen und Dateien schreiben, zurücklesen und löschen? Gedacht für
+// api/health.php - also für den echten Web-Benutzer (http). Der Cron-Wächter
+// läuft als root und würde einen Rechteverlust selbst nie bemerken.
+// Liefert ['ok' => bool, 'step' => 'ok'|'lock'|'write'|'read'|'delete'].
+function data_dir_write_check(array $config): array
+{
+    $handle = @fopen(data_path($config, 'health.lock'), 'c');
+    if ($handle === false) {
+        return ['ok' => false, 'step' => 'lock'];
+    }
+    flock($handle, LOCK_EX);
+    try {
+        $path = data_path($config, 'health_probe.json');
+        $nonce = bin2hex(random_bytes(8));
+        if (!write_json_file($path, ['nonce' => $nonce, 'at' => time()])) {
+            return ['ok' => false, 'step' => 'write'];
+        }
+        if ((read_json_file($path, [])['nonce'] ?? '') !== $nonce) {
+            return ['ok' => false, 'step' => 'read'];
+        }
+        if (!@unlink($path)) {
+            return ['ok' => false, 'step' => 'delete'];
+        }
+        return ['ok' => true, 'step' => 'ok'];
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+// Ruft api/health.php über den Webserver auf (also als Web-Benutzer, mit
+// echtem PHP-Profil) und wertet die Antwort aus. Für den Cron-Wächter.
+// Liefert ['ok' => bool, 'detail' => kurzer ASCII-Text für Bark/Verlauf].
+function web_health_check(array $config): array
+{
+    $url = (string)($config['health_check_url'] ?? 'https://127.0.0.1/fw_alarm/api/health.php');
+    if (!function_exists('curl_init')) {
+        return ['ok' => false, 'detail' => 'PHP-cURL fehlt (Selbsttest nicht moeglich)'];
+    }
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_TIMEOUT => 10,
+        // Aufruf geht an 127.0.0.1 - das Let's-Encrypt-Zertifikat lautet auf
+        // den DDNS-Namen und passt hier nie. Es verlässt das NAS nicht.
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_SSL_VERIFYHOST => 0,
+    ]);
+    $body = curl_exec($ch);
+    $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err = curl_error($ch);
+    curl_close($ch);
+
+    if ($body === false) {
+        return ['ok' => false, 'detail' => 'Web Station nicht erreichbar (' . $err . ')'];
+    }
+    if ($http === 200 && preg_match('/^ok=1$/m', (string)$body)) {
+        return ['ok' => true, 'detail' => 'ok'];
+    }
+    if (preg_match('/^step=(\w+)$/m', (string)$body, $m)) {
+        $steps = [
+            'lock' => 'Lock-Datei',
+            'write' => 'Schreiben',
+            'read' => 'Zuruecklesen',
+            'delete' => 'Loeschen',
+        ];
+        return ['ok' => false, 'detail' => 'Datenordner nicht beschreibbar (Schritt: '
+            . ($steps[$m[1]] ?? $m[1]) . ', HTTP ' . $http . ')'];
+    }
+    return ['ok' => false, 'detail' => 'Selbsttest lieferte HTTP ' . $http];
 }
 
 // Maschinen-Token NUR per POST akzeptieren: GET-Parameter landen sonst im

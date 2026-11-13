@@ -252,7 +252,18 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Offline/Recovery an `bark_key_status`, erinnert an einen zu lange aktiven
   Demo-Modus (`demo_reminder_after_seconds`, danach max. 1×/Tag) und schreibt
   bei jedem Lauf `last_run_at` in `watchdog_state.json` — das Dashboard warnt
-  daraus, wenn die DSM-Aufgabe fehlt oder hängt. Derselbe Key aktiviert die
+  daraus, wenn die DSM-Aufgabe fehlt oder hängt. Weil der Wächter als root
+  läuft, prüft er die Schreibrechte des Web-Benutzers über einen Selbsttest:
+  `web_health_check()` ruft `api/health.php` per `https://127.0.0.1/…` auf
+  (`health_check_url`; antwortet NUR auf Loopback, sonst 404), das als `http`
+  `data_dir_write_check()` ausführt (Lock, Schreiben, Zurücklesen, Löschen).
+  Ab 2 Fehlschlägen in Folge Bark „NAS-Dashboard DEFEKT“, Erinnerung alle
+  24 h, einmal „wieder OK“; Verlaufs-Events `nas_web_failed`/
+  `nas_web_recovered`. Scheitert der Selbsttest, nennt die „Box OFFLINE“-
+  Meldung das NAS als wahrscheinliche Ursache (Störung 10/2026: Box lief,
+  `http` hatte nach einem Update nur noch Leserecht auf `web_packages`).
+  `with_lock()` zeigt dann statt „Fehler.“ einen lesbaren Hinweis (ohne
+  Pfad; Pfad nur per `error_log`). Derselbe Key aktiviert die
   Meldung bei ausgelöster Login-IP-Sperre. Ohne `bark_key_status` in
   config.php sind alle Meldewege inaktiv. Keine Geheimnisse in
   clientseitigem JavaScript. Laufzeitdaten (`data_dir`) bei Nginx möglichst

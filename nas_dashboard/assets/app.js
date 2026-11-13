@@ -840,6 +840,10 @@
         return { text: `ESP32 OFFLINE gemeldet (kein Status seit ${entry.minutes} min)`, cls: 'log-warn' };
       case 'box_recovered':
         return { text: `ESP32 wieder online (Ausfall ca. ${entry.minutes} min)`, cls: '' };
+      case 'nas_web_failed':
+        return { text: `NAS-Dashboard gestört: ${entry.detail || 'Selbsttest fehlgeschlagen'}`, cls: 'log-alarm' };
+      case 'nas_web_recovered':
+        return { text: `NAS-Dashboard wieder in Ordnung (Störung ca. ${entry.minutes} min)`, cls: '' };
       default:
         return { text: String(entry.event || '?'), cls: '' };
     }

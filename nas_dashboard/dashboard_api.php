@@ -254,7 +254,11 @@ if ($action === 'log_view') {
                 break;
             case 'box_offline':
             case 'box_recovered':
+            case 'nas_web_recovered':
                 $item['minutes'] = (int)($entry['minutes'] ?? 0);
+                break;
+            case 'nas_web_failed':
+                $item['detail'] = (string)($entry['detail'] ?? '');
                 break;
             default:
                 continue 2;   // unbekannte Events gar nicht erst ausliefern

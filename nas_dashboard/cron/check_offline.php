@@ -41,7 +41,11 @@ $threshold = max(
     (int)($config['watchdog_offline_after_seconds'] ?? 600)
 );
 
-$result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $seenAt, $age, $threshold): string {
+// Selbsttest des Web-PHP VOR dem Lock (HTTP-Aufruf, bis zu 10 s - den
+// Wächter-Lock nicht so lange halten). Siehe Abschnitt 0 unten.
+$web = web_health_check($config);
+
+$result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $seenAt, $age, $threshold, $web): string {
     $path = data_path($config, 'watchdog_state.json');
     $state = read_json_file($path, [
         'offline_notified' => false,
@@ -52,6 +56,56 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
     // gelaufen vor X min" und warnt, wenn die DSM-Aufgabe nicht mehr läuft.
     $state['last_run_at'] = time();
     $out = [];
+
+    // ==== 0) Kann das Dashboard selbst noch schreiben? ======================
+    // Dieser Wächter läuft als root - fehlende Schreibrechte des Web-Benutzers
+    // sieht er selbst nie. Deshalb fragt er api/health.php, das als 'http'
+    // läuft. Gemeldet wird erst ab 2 Fehlschlägen in Folge (~30 min), damit
+    // ein NAS-Neustart nicht gleich piept; danach Erinnerung alle 24 h, bis es
+    // wieder geht (eine Einmal-Meldung ging im Oktober 2026 unter).
+    $webFailCount = (int)($state['web_fail_count'] ?? 0);
+    $webNotifiedAt = (int)($state['web_fail_notified_at'] ?? 0);
+    if ($web['ok']) {
+        if ($webNotifiedAt > 0) {
+            $downMins = max(1, (int)round((time() - (int)($state['web_fail_since'] ?? time())) / 60));
+            $ok = bark_send_status($config, $statusKey, 'NAS-Dashboard wieder OK',
+                date('[d.m.Y H:i] ') . "Der Datenordner ist wieder beschreibbar (Stoerung ca. {$downMins} min).");
+            if ($ok) {
+                append_command_log($config, ['event' => 'nas_web_recovered', 'minutes' => $downMins]);
+                $state['web_fail_count'] = 0;
+                $state['web_fail_since'] = 0;
+                $state['web_fail_notified_at'] = 0;
+            }
+            $out[] = $ok ? 'WEB_RECOVERED' : 'WEB_RECOVER_SEND_FAILED';
+        } else {
+            $state['web_fail_count'] = 0;
+            $state['web_fail_since'] = 0;
+            $out[] = 'WEB_OK';
+        }
+    } else {
+        $webFailCount++;
+        $state['web_fail_count'] = $webFailCount;
+        if (empty($state['web_fail_since'])) {
+            $state['web_fail_since'] = time();
+        }
+        if ($webFailCount >= 2 && ($webNotifiedAt === 0 || time() - $webNotifiedAt > 86400)) {
+            // Bark-Texte bewusst ASCII (keine Umlaute).
+            $ok = bark_send_status($config, $statusKey, 'NAS-Dashboard DEFEKT',
+                date('[d.m.Y H:i] ') . $web['detail'] . '. Login und Status-Pushs der Box scheitern! '
+                . 'Meist fehlt der Gruppe http das Schreibrecht: DSM > File Station > web_packages > '
+                . 'fw_alarm_data > Eigenschaften > Berechtigung > http Lesen+Schreiben. '
+                . 'Bark-Alarme der Box laufen davon unabhaengig weiter.');
+            if ($ok) {
+                if ($webNotifiedAt === 0) {
+                    append_command_log($config, ['event' => 'nas_web_failed', 'detail' => $web['detail']]);
+                }
+                $state['web_fail_notified_at'] = time();
+            }
+            $out[] = $ok ? 'WEB_FAIL_NOTIFIED' : 'WEB_FAIL_SEND_FAILED';
+        } else {
+            $out[] = 'WEB_FAIL (' . $webFailCount . ') ' . $web['detail'];
+        }
+    }
 
     // ==== 1) Box offline / wieder da ========================================
     if ($seenAt <= 0) {
@@ -64,10 +118,17 @@ $result = with_lock($config, 'watchdog', function () use ($config, $statusKey, $
         if ($offline && !$notified) {
             $mins = max(1, (int)round($age / 60));
             // Bark-Texte bewusst ASCII (keine Umlaute).
-            $ok = bark_send_status($config, $statusKey, 'Alarm-Box OFFLINE',
-                date('[d.m.Y H:i] ') . "Kein Status vom ESP32 seit {$mins} min. "
-                . 'Strom/WLAN/Box pruefen! Der Relaisalarm wuerde gerade NICHT ausgeloest. '
-                . '(Manueller REAL ALARM ueber das Dashboard geht weiterhin.)');
+            // Scheitert gleichzeitig der Selbsttest, kann die Box ihre Pushs
+            // gar nicht ablegen - dann NICHT zur Box schicken (Oktober 2026:
+            // die Box lief, das NAS war kaputt, die Meldung führte in die Irre).
+            $body = $web['ok']
+                ? "Kein Status vom ESP32 seit {$mins} min. "
+                    . 'Strom/WLAN/Box pruefen! Der Relaisalarm wuerde gerade NICHT ausgeloest. '
+                    . '(Manueller REAL ALARM ueber das Dashboard geht weiterhin.)'
+                : "Kein Status vom ESP32 seit {$mins} min - Ursache ist aber vermutlich das NAS, "
+                    . 'nicht die Box: ' . $web['detail'] . '. '
+                    . 'Kommen die taeglichen Bark-Heartbeats der Box noch an, laeuft sie normal.';
+            $ok = bark_send_status($config, $statusKey, 'Alarm-Box OFFLINE', date('[d.m.Y H:i] ') . $body);
             if ($ok) {
                 $state['offline_notified'] = true;
                 $state['offline_since'] = time() - $age;

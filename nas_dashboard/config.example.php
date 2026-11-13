@@ -46,6 +46,12 @@ return [
     // leise per Bark daran (danach max. 1x pro Tag) - echte Alarme erreichen
     // im Demo-Modus nur den Test-Empfänger!
     'demo_reminder_after_seconds' => 14400,
+    // Selbsttest des Wächters: Er ruft api/health.php über den Webserver auf
+    // (läuft dann als Web-Benutzer 'http') und meldet per Bark, wenn das
+    // Dashboard nicht mehr in den data_dir schreiben kann. Nur ändern, wenn
+    // das Dashboard NICHT unter /fw_alarm/ liegt. health.php antwortet nur
+    // auf Aufrufe vom NAS selbst (127.0.0.1).
+    // 'health_check_url' => 'https://127.0.0.1/fw_alarm/api/health.php',
 
     // ==== Arbeitsmodus (Stummschaltung per Kurzbefehl-Link) =================
     // Jeder Empfänger kann seinen Eintrag über einen persönlichen Link stumm

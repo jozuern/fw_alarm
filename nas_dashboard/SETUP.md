@@ -156,7 +156,20 @@ Das Skript ist auch per HTTPS aufrufbar (POST mit dem Maschinen-Token wie bei
 `bark_key_status` aktiviert außerdem eine Meldung, wenn eine IP wegen zu
 vieler Login-Fehlversuche gesperrt wurde.
 
-Der Wächter übernimmt noch zwei weitere Aufgaben:
+Der Wächter übernimmt noch drei weitere Aufgaben:
+
+- **Selbsttest des Dashboards**: Der Wächter läuft als `root` und würde es
+  selbst nie merken, wenn der Web-Benutzer `http` nicht mehr in den
+  `data_dir` schreiben darf (passiert z. B., wenn ein Web-Station-Update die
+  Rechte von `web_packages` zurücksetzt – dann scheitern Login und alle
+  Status-Pushs still). Deshalb ruft er bei jedem Lauf `api/health.php` über
+  `https://127.0.0.1/…` auf; das Skript läuft als `http` und prüft
+  Lock-Datei, Schreiben, Zurücklesen und Löschen. Ab **zwei Fehlschlägen in
+  Folge** kommt die Bark-Meldung „NAS-Dashboard DEFEKT“, danach alle 24 h
+  erneut, bis es wieder geht (dann einmal „wieder OK“). Abhilfe meist:
+  File Station → `fw_alarm_data` → Eigenschaften → Berechtigung → Gruppe
+  `http` Lesen + Schreiben. `health.php` antwortet nur auf Aufrufe vom NAS
+  selbst, alle anderen bekommen 404.
 
 - **Demo-Modus-Erinnerung**: Bleibt der Demo-Modus länger als
   `demo_reminder_after_seconds` (Default 4 h) aktiv, erinnert er leise per
