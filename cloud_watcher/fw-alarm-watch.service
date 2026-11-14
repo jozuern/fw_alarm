@@ -1,5 +1,5 @@
 [Unit]
-Description=FW-Alarm Aussen-Waechter: NAS von aussen pruefen
+Description=FW-Alarm Außen-Wächter: NAS von außen prüfen
 Wants=network-online.target
 After=network-online.target
 

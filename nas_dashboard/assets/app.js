@@ -683,7 +683,14 @@
     if (age > OUTSIDE_SILENT_S) {
       return { warn: true, text: `meldet sich seit ${fmtUptime(age)} nicht – VM in der Oracle-Konsole prüfen (gestoppt?)` };
     }
-    return { warn: false, text: `meldet sich (zuletzt ${age < 60 ? 'gerade eben' : 'vor ' + fmtUptime(age)})` };
+    const last = age < 60 ? 'gerade eben' : 'vor ' + fmtUptime(age);
+    // Wie bei den beiden anderen sicherheitsrelevanten Meldungen: Hat der
+    // Admin "Außen-Wächter meldet sich nicht" abgeschaltet, darf das nicht in
+    // Vergessenheit geraten (outside_alert kommt nur für den Admin).
+    if (info.outside_alert === false) {
+      return { warn: true, text: `meldet sich (zuletzt ${last}), aber die Meldung „Außen-Wächter meldet sich nicht“ ist abgeschaltet – fiele die VM aus, käme keine Warnung` };
+    }
+    return { warn: false, text: `meldet sich (zuletzt ${last})` };
   }
 
   // ==== Held-Bereich: Fakten und Hinweise ===================================
@@ -1381,10 +1388,26 @@
   // "keine Verbindung zu Bark bzw. Zeitüberschreitung" - nicht "HTTP 0".
   const failReason = (r) => (Number(r.http) === 0 ? 'keine Verbindung/Timeout' : `HTTP ${r.http}`);
 
+  // Wer zuletzt NICHT erreicht wurde, bleibt hier stehen, bis ein neueres
+  // Ergebnis es ersetzt oder der Admin "Ausblenden" klickt - auch wenn
+  // danach eine Nachsendung läuft, scheitert oder unklar endet oder sich der
+  // Demo-/LIVE-Modus ändert. Diese Namen braucht man zum Telefonieren; der
+  // Verlauf führt sie nicht.  { what, at (ms), names: [...] } oder null.
+  let lastUnreached = null;
+
+  function unreachedNodes() {
+    if (!lastUnreached) return [];
+    const list = el('ul', 'result-list');
+    lastUnreached.names.forEach((n) => list.append(el('li', '', n)));
+    return [el('p', 'result-label',
+      `Zuletzt NICHT erreicht (${lastUnreached.what}, ${fmtClockMs(lastUnreached.at)} Uhr) – bitte anders verständigen (Telefon):`), list];
+  }
+
   function clearResult() {
     if (!alarmResultEl) return;
     if (armedBtn && alarmResultEl.contains(armedBtn)) disarm();
     retryBtn = null;
+    lastUnreached = null;
     alarmResultEl.hidden = true;
     alarmResultEl.className = 'result';
     alarmResultEl.replaceChildren();
@@ -1405,7 +1428,7 @@
     retryBtn = null;
     alarmResultEl.hidden = false;
     alarmResultEl.className = 'result' + (kind ? ' result-' + kind : '');
-    const nodes = [el('p', 'result-head', text)];
+    const nodes = [el('p', 'result-head', text), ...unreachedNodes()];
     if (kind) {
       const row = el('div', 'actions result-actions');
       row.append(dismissButton());
@@ -1424,6 +1447,12 @@
     alarmResultEl.className = 'result ' + (data.ok === false ? 'result-fail' : 'result-ok');
     const nodes = [el('p', 'result-head',
       `${fmtClockMs(Date.now())} Uhr, ${what}: ${data.message || (data.ok ? 'Gesendet.' : 'Fehler.')}`)];
+    // Ein neues Ergebnis ersetzt die gemerkte Liste: Nach einer Nachsendung
+    // sind nur noch die dabei erneut Gescheiterten offen, nach einem
+    // vollständigen Erfolg niemand mehr.
+    lastUnreached = failed.length
+      ? { what, at: Date.now(), names: failed.map((r) => `${name(r)} (${failReason(r)})`) }
+      : null;
     if (failed.length) {
       nodes.push(el('p', 'result-label', 'NICHT erreicht – bitte anders verständigen (Telefon):'));
       const list = el('ul', 'result-list');
@@ -2045,7 +2074,7 @@
           cls: entry.message ? 'log-warn' : ''
         };
       case 'late_ack':
-        return { text: `Verspätete Bestätigung zu Befehl #${entry.id}${entry.result ? `: ${fmtAckResult(entry.result)}` : ''}`, cls: 'log-warn' };
+        return { text: `Verspätete Bestätigung zu Befehl #${entry.id}${entry.type ? ` ${entry.type}` : ''}${entry.result ? `: ${fmtAckResult(entry.result)}` : ''}`, cls: 'log-warn' };
       case 'demo_enabled':
         return { text: `Demo-Modus EIN – Alarme nur an "${entry.label}"${who}`, cls: 'log-warn' };
       case 'demo_disabled':
@@ -2182,12 +2211,14 @@
     }
   });
 
-  // Jüngster Alarm für den Held-Bereich: eigene kleine Abfrage mit dem
-  // Alarm-Filter - unabhängig davon, was im Verlaufs-Panel gerade gefiltert
-  // oder von Stumm-Wechseln verdrängt ist.
+  // Jüngster Alarm für den Held-Bereich: eigene kleine Abfrage nur über die
+  // Versand-Ereignisse (filter=alarm_core) - unabhängig davon, was im
+  // Verlaufs-Panel gerade gefiltert oder von Stumm-Wechseln verdrängt ist,
+  // und ohne die Befehls-Ereignisse der Demo-Alarme, die sonst den echten
+  // letzten Alarm aus dem Fenster schieben könnten.
   const refreshAlarmInfo = makePoller(async () => {
     try {
-      const data = await api('dashboard_api.php?action=log_view&limit=12&filter=alarm', {}, TIMEOUT_POLL_MS);
+      const data = await api('dashboard_api.php?action=log_view&limit=12&filter=alarm_core', {}, TIMEOUT_POLL_MS);
       if (!data.ok) return;
       alarmInfo = deriveAlarmInfo(data.entries || []);
       renderHeroExtras();

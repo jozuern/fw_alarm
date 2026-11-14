@@ -103,11 +103,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
         $statusKey = trim((string)($config['bark_key_status'] ?? ''));
         // Ob und wie dringend, stellt der Admin im Dashboard ein (Panel
         // "Meldungen an den Admin", Art login_lockout).
+        // Gesendet wird erst NACH der Antwort (Bark kann bis zu ~20 s brauchen,
+        // ggf. an zwei Empfänger); Text und Adresse jetzt festhalten.
         if ($failCount === $maxFailures && $statusKey !== '') {
-            admin_notify_send($config, 'login_lockout', 'Dashboard: Login gesperrt',
-                date('[d.m.Y H:i] ') . 'Zu viele fehlgeschlagene Login-Versuche von '
-                . login_client_ip() . ' - IP fuer ' . (int)($lockoutWindow / 60)
-                . ' min gesperrt.');
+            $lockoutText = date('[d.m.Y H:i] ') . 'Zu viele fehlgeschlagene Login-Versuche von '
+                . login_client_ip() . ' - IP fuer ' . (int)($lockoutWindow / 60) . ' min gesperrt.';
+            defer_after_response(static function () use ($config, $lockoutText): void {
+                // Sitzung vorher freigeben: Sonst hielte der Versand die
+                // Sitzungssperre, und der nächste Seitenaufruf dieses Browsers
+                // wartete auf Bark.
+                if (session_status() === PHP_SESSION_ACTIVE) {
+                    session_write_close();
+                }
+                admin_notify_send($config, 'login_lockout', 'Dashboard: Login gesperrt', $lockoutText);
+            });
         }
         sleep(1);   // einfache Brute-Force-Bremse (DSM Auto-Block greift hier nicht)
         $error = 'Login fehlgeschlagen.';

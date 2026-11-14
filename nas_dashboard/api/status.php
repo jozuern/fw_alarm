@@ -62,13 +62,19 @@ $alarmInfo = with_lock($config, 'status', function () use ($config, $status, &$r
     //   Push pro Start, bei der die Laufzeit zufällig nicht sinkt (12 s ->
     //   Neustart -> 13 s). Toleranz 10 s für die Laufzeit der Anfrage plus
     //   0,1 % des Abstands für die Abweichung der Box-Uhr nach langen Pausen.
+    //   Der Startzeitpunkt hängt aber an der NAS-Uhr: Springt die vorwärts
+    //   (NTP-Korrektur), "verschiebt" er sich ebenfalls. Deshalb zählt dieses
+    //   Anzeichen nur, wenn die Box auch erst NACH dem vorigen Push gestartet
+    //   sein KANN (Laufzeit nicht länger als der Abstand) - eine seit Wochen
+    //   laufende Box meldet sonst nach jeder Uhr-Korrektur einen "Neustart".
     if ($previousStatus === 'ok' && (string)($previous['device_id'] ?? '') === (string)($status['device_id'] ?? '')
         && isset($previous['uptime_s'], $previous['seen_at'], $status['uptime_s'])) {
         $prevUptime = (int)$previous['uptime_s'];
         $newUptime = (int)$status['uptime_s'];
         $gap = max(0, (int)$status['seen_at'] - (int)$previous['seen_at']);
         $bootShift = ((int)$status['seen_at'] - $newUptime) - ((int)$previous['seen_at'] - $prevUptime);
-        if ($newUptime < $prevUptime || $bootShift > 10 + 0.001 * $gap) {
+        $couldHaveBooted = $newUptime <= $gap + 10;
+        if ($newUptime < $prevUptime || ($couldHaveBooted && $bootShift > 10 + 0.001 * $gap)) {
             $reason = (string)($status['reset_reason'] ?? '');
             $restart = [
                 'reason' => $reason,

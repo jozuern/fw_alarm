@@ -47,7 +47,7 @@ fi
 . "$CONF"
 
 if [ -z "$NAS_ALIVE_URL" ] || [ -z "$WATCHER_TOKEN" ] || [ -z "$BARK_KEY" ]; then
-    echo "NAS_ALIVE_URL, WATCHER_TOKEN und BARK_KEY muessen in $CONF gesetzt sein" >&2
+    echo "NAS_ALIVE_URL, WATCHER_TOKEN und BARK_KEY müssen in $CONF gesetzt sein" >&2
     exit 2
 fi
 
@@ -133,6 +133,7 @@ http=$(curl -sS -o "$body_file" -w '%{http_code}' -m 20 \
     "$NAS_ALIVE_URL" 2>/dev/null)
 rc=$?
 
+# Der Grund landet im Bark-Text der Meldung - deshalb ASCII.
 reason=""
 if [ $rc -ne 0 ]; then
     case $rc in

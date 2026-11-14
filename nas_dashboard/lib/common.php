@@ -641,6 +641,17 @@ function command_state_default(): array
     return ['next_id' => 1, 'current' => null];
 }
 
+// Typ der letzten Befehle (id => ALARM/TEST), damit eine VERSPÄTETE Quittung
+// (api/ack.php, late_ack) noch ihrem Befehl zugeordnet werden kann, wenn der
+// längst nicht mehr "current" ist - die ACK eines Demo-Alarms gehört in den
+// Alarm-Verlauf. Höchstens 20 Einträge. Aufruf unter dem 'command'-Lock.
+function remember_command_type(array &$state, int $id, string $type): void
+{
+    $recent = is_array($state['recent_types'] ?? null) ? $state['recent_types'] : [];
+    $recent[(string)$id] = $type;
+    $state['recent_types'] = array_slice($recent, -20, null, true);
+}
+
 // Lässt einen zu lange wartenden pending-Befehl verfallen. Ohne diese TTL würde
 // ein Befehl an einen gerade toten ESP32 unbegrenzt lauern und Stunden später
 // noch ausgeführt (bei TEST harmlos, aber das Dashboard bliebe blockiert).
@@ -719,11 +730,17 @@ function read_command_log_tail(array $config, int $limit = 25): array
 // 'system' (TEST-Befehle, Demo-Modus, Wächter-Ereignisse). Ohne diesen
 // Filter verdrängen die täglichen Stumm-Wechsel der Kurzbefehle die Alarme
 // aus dem sichtbaren Fenster.
+// Die Versand-Ereignisse selbst (Relaisalarm, REAL ALARM, Entwarnung) - ohne
+// die Befehls-Ereignisse der Demo-Alarme. Filter 'alarm_core', genutzt für
+// "Letzter Alarm" im Held-Bereich: Sonst verdrängen ein paar Demo-Versuche
+// (je created/delivered/acked) den echten letzten Alarm aus dem Fenster.
+const LOG_ALARM_SEND_EVENTS = ['relay_alarm', 'nas_alarm', 'nas_alarm_started',
+    'false_alarm', 'false_alarm_started'];
+
 function log_event_category(array $entry): string
 {
     $event = (string)($entry['event'] ?? '');
-    if (in_array($event, ['relay_alarm', 'nas_alarm', 'nas_alarm_started',
-        'false_alarm', 'false_alarm_started'], true)) {
+    if (in_array($event, LOG_ALARM_SEND_EVENTS, true)) {
         return 'alarm';
     }
     if (str_starts_with($event, 'key_')) {
@@ -733,22 +750,46 @@ function log_event_category(array $entry): string
         $type = is_array($entry['command'] ?? null) ? (string)($entry['command']['type'] ?? '') : '';
         return $type === 'ALARM' ? 'alarm' : 'system';
     }
+    // Verspätete Quittung: Den Typ schreibt ack.php mit, soweit er noch
+    // bekannt ist - die ACK eines Demo-Alarms gehört zu dessen Lebenslauf.
+    if ($event === 'late_ack') {
+        return (string)($entry['type'] ?? '') === 'ALARM' ? 'alarm' : 'system';
+    }
     return 'system';
 }
 
-// Billige Vorprüfung an der ROHEN Log-Zeile: Kann sie zur Kategorie gehören?
+// Gehört ein Eintrag zum Filter? 'all' = alles, 'alarm_core' = nur die
+// Versand-Ereignisse, sonst die Kategorie aus log_event_category().
+function log_entry_in_filter(array $entry, string $filter): bool
+{
+    if ($filter === 'all') {
+        return true;
+    }
+    if ($filter === 'alarm_core') {
+        return in_array((string)($entry['event'] ?? ''), LOG_ALARM_SEND_EVENTS, true);
+    }
+    return log_event_category($entry) === $filter;
+}
+
+// Billige Vorprüfung an der ROHEN Log-Zeile: Kann sie zum Filter gehören?
 // Erspart das JSON-Dekodieren der vielen Zeilen, die es sicher nicht tun
-// (maßgeblich bleibt danach log_event_category()). Verlässt sich darauf, dass
+// (maßgeblich bleibt danach log_entry_in_filter()). Verlässt sich darauf, dass
 // json_encode Anführungszeichen in Werten maskiert - ein Name kann die
 // Zeichenfolge '"event":"key_' also nicht vortäuschen.
 function log_line_may_match(string $line, string $category): bool
 {
+    if ($category === 'all') {
+        return true;
+    }
     $isKey = strpos($line, '"event":"key_') !== false;
     $isAlarmEvent = strpos($line, '"event":"relay_alarm"') !== false
         || strpos($line, '"event":"nas_alarm') !== false
         || strpos($line, '"event":"false_alarm') !== false;
     if ($category === 'keys') {
         return $isKey;
+    }
+    if ($category === 'alarm_core') {
+        return $isAlarmEvent;
     }
     if ($category === 'alarm') {
         return $isAlarmEvent || strpos($line, '"type":"ALARM"') !== false;
@@ -802,7 +843,60 @@ function scan_log_file_reverse(string $path, callable $onLine, int $maxBytes): i
 // das, was der Filter verhindern soll. Gedeckelt auf $maxBytes insgesamt,
 // damit der Abruf auch auf einem kleinen NAS billig bleibt (dekodiert werden
 // nur Zeilen, die die Vorprüfung bestehen).
-function read_command_log_filtered(array $config, int $limit, string $category, int $maxBytes = 4194304): array
+// $filter: 'all', 'alarm', 'alarm_core', 'keys' oder 'system' (siehe
+// log_entry_in_filter()). $skipEvents werden VOR dem Zählen aussortiert -
+// z.B. notify_changed für die Lese-Rolle; würden sie erst danach verworfen,
+// bekäme sie weniger Einträge als verlangt und "Ältere anzeigen" verschwände.
+//
+// Gibt es weniger Treffer als $limit (beim Alarm-Filter der Normalfall),
+// liest die Suche das ganze Budget. Deshalb wird das Ergebnis zwischen-
+// gespeichert (log_cache.json), solange sich commands.log und commands.log.1
+// nicht ändern - das Held-Bereich-Abfragen jede Minute pro offenem Tab liest
+// sonst jedes Mal mehrere MB. Der Cache ist best effort: Kann er nicht
+// geschrieben werden, wird eben neu gelesen.
+function read_command_log_filtered(array $config, int $limit, string $filter, array $skipEvents = [],
+    int $maxBytes = 4194304): array
+{
+    $cacheKey = $filter . '|' . $limit . '|' . implode(',', $skipEvents) . '|' . $maxBytes;
+    $signature = log_files_signature($config);   // VOR dem Lesen: kommt währenddessen
+    $cachePath = data_path($config, 'log_cache.json');   // etwas dazu, gilt der Cache nicht
+    $cache = read_json_file($cachePath, []);
+    $hit = $cache[$cacheKey] ?? null;
+    if (is_array($hit) && ($hit['sig'] ?? '') === $signature && is_array($hit['entries'] ?? null)) {
+        return $hit['entries'];
+    }
+
+    $out = read_command_log_matching($config, $limit,
+        static fn(string $line): bool => log_line_may_match($line, $filter),
+        static fn(array $entry): bool => log_entry_in_filter($entry, $filter)
+            && !in_array((string)($entry['event'] ?? ''), $skipEvents, true),
+        $maxBytes);
+
+    $cache[$cacheKey] = ['sig' => $signature, 'entries' => $out, 'at' => time()];
+    // Höchstens 8 Abfragen merken (die zuletzt benutzten).
+    uasort($cache, static fn($a, $b): int => (int)($b['at'] ?? 0) <=> (int)($a['at'] ?? 0));
+    write_json_file($cachePath, array_slice($cache, 0, 8, true));
+    return $out;
+}
+
+// Größe und Änderungszeit beider Verlaufsdateien - ändert sich bei jedem
+// neuen Eintrag und bei der Rotation.
+function log_files_signature(array $config): string
+{
+    clearstatcache();
+    $parts = [];
+    foreach (['commands.log', 'commands.log.1'] as $name) {
+        $path = data_path($config, $name);
+        $parts[] = is_file($path) ? ((int)@filesize($path) . ':' . (int)@filemtime($path)) : '-';
+    }
+    return implode('|', $parts);
+}
+
+// Rückwärtssuche durch commands.log und commands.log.1 (neueste zuerst), bis
+// $limit Einträge passen oder $maxBytes gelesen sind. $mayMatch prüft billig
+// die rohe Zeile, $accept den dekodierten Eintrag.
+function read_command_log_matching(array $config, int $limit, callable $mayMatch, callable $accept,
+    int $maxBytes = 4194304): array
 {
     $out = [];
     $budget = $maxBytes;
@@ -811,12 +905,12 @@ function read_command_log_filtered(array $config, int $limit, string $category, 
             break;
         }
         $budget -= scan_log_file_reverse(data_path($config, $name),
-            static function (string $line) use (&$out, $limit, $category): bool {
-                if (!log_line_may_match($line, $category)) {
+            static function (string $line) use (&$out, $limit, $mayMatch, $accept): bool {
+                if (!$mayMatch($line)) {
                     return true;
                 }
                 $entry = json_decode($line, true);
-                if (is_array($entry) && log_event_category($entry) === $category) {
+                if (is_array($entry) && $accept($entry)) {
                     $out[] = $entry;
                 }
                 return count($out) < $limit;
@@ -1792,11 +1886,12 @@ function admin_notify_enabled(array $config, string $type): bool
     return !empty(load_notify_settings($config)['types'][$type]['enabled']);
 }
 
-// Nur die Frage "sind die beiden sicherheitsrelevanten Arten an?" - für den
+// Nur die Frage "sind die sicherheitsrelevanten Arten an?" - für den
 // Status-Abruf des Dashboards (alle 5 s pro offenem Tab). Liest dafür allein
 // notify_settings.json, statt über load_notify_settings() die ganze
-// Arten-Tabelle samt Empfängerliste aufzubauen. Beide Arten sind ab Werk an:
-// Nur ein ausdrücklich gespeichertes "aus" zählt.
+// Arten-Tabelle samt Empfängerliste aufzubauen. Alle drei Arten sind ab Werk
+// an: Nur ein ausdrücklich gespeichertes "aus" zählt. (outside_watcher wertet
+// der Aufrufer nur aus, wenn der Außen-Wächter eingerichtet ist.)
 function important_notify_flags(array $config): array
 {
     $stored = read_json_file(data_path($config, 'notify_settings.json'), []);
@@ -1804,7 +1899,8 @@ function important_notify_flags(array $config): array
         $row = $stored['types'][$type] ?? null;
         return !(is_array($row) && array_key_exists('enabled', $row) && empty($row['enabled']));
     };
-    return ['box_offline' => $on('box_offline'), 'nas_web' => $on('nas_web')];
+    return ['box_offline' => $on('box_offline'), 'nas_web' => $on('nas_web'),
+        'outside_watcher' => $on('outside_watcher')];
 }
 
 // Liegt $now in der Ruhezeit? Gerechnet in vollen Stunden; "von 22 bis 7"
@@ -1831,9 +1927,13 @@ function notify_in_quiet_hours(array $global, ?int $now = null): bool
 // gesendet). $force = Probe-Meldung aus dem Dashboard: sendet auch eine
 // abgeschaltete Art. Texte gehen per bark_ascii() als ASCII raus.
 // Der Stellvertreter ist "best effort": Sein Ergebnis ändert die Rückgabe nicht.
+// $used (optional) erfährt, wie gesendet wurde: ['level' => tatsächliche
+// Dringlichkeit, 'quiet_capped' => true, wenn die Ruhezeit sie gekappt hat] -
+// so muss niemand die Logik nachrechnen (Probe-Meldung im Dashboard).
 function admin_notify_send(array $config, string $type, string $title, string $body,
-    ?array $settings = null, bool $force = false): string
+    ?array $settings = null, bool $force = false, ?array &$used = null): string
 {
+    $used = [];
     $key = trim((string)($config['bark_key_status'] ?? ''));
     $settings = $settings ?? load_notify_settings($config);
     $row = $settings['types'][$type] ?? null;
@@ -1851,9 +1951,12 @@ function admin_notify_send(array $config, string $type, string $title, string $b
     }
     $global = $settings['global'];
     $level = (string)$row['level'];
-    if (empty($row['ignore_quiet']) && notify_in_quiet_hours($global)) {
+    $capped = false;
+    if (empty($row['ignore_quiet']) && notify_in_quiet_hours($global) && $level !== 'passive') {
         $level = 'passive';
+        $capped = true;
     }
+    $used = ['level' => $level, 'quiet_capped' => $capped];
     $fields = ['title' => bark_ascii($title), 'body' => bark_ascii($body), 'level' => $level];
     if ($level !== 'passive' && (string)$global['sound'] !== '') {
         $fields['sound'] = (string)$global['sound'];
@@ -2074,6 +2177,27 @@ function bark_broadcast(array $config, callable $fieldsFor, ?array $onlyIds = nu
     ];
 }
 
+// Bark-Text mit Zeitstempel. Bei einer Nachsendung ($onlyIds gesetzt) gilt -
+// wie bei den Nachsende-Runden der Firmware - die Zeit des URSPRÜNGLICHEN
+// Versands, und der Zusatz "(verspaetet zugestellt)" kommt dazu: Sonst sähe
+// ein 15 Minuten alter Alarm wie ein frischer aus, und wen der erste Versuch
+// doch erreicht hatte (z.B. HTTP 0, nachdem Bark schon angenommen hatte),
+// hielte die Nachsendung für einen zweiten Alarm. Der ursprüngliche Versand
+// ist der jüngste $startedEvent ohne resend im Verlauf; fehlt er (Verlauf
+// verloren), bleibt es bei der aktuellen Zeit - der Zusatz kommt trotzdem.
+function resend_stamped_body(array $config, string $startedEvent, ?array $onlyIds, string $text): string
+{
+    if ($onlyIds === null) {
+        return date('[d.m.Y H:i] ') . $text;
+    }
+    $found = read_command_log_matching($config, 1,
+        static fn(string $line): bool => strpos($line, '"event":"' . $startedEvent . '"') !== false,
+        static fn(array $entry): bool => (string)($entry['event'] ?? '') === $startedEvent
+            && empty($entry['resend']));
+    $at = (int)($found[0]['log_at'] ?? 0);
+    return date('[d.m.Y H:i] ', $at > 0 ? $at : time()) . $text . ' (verspaetet zugestellt)';
+}
+
 // ENTWARNUNG (Fehlalarm): CRITICAL ALERT mit kurzem, normalem Ton an alle
 // aktuellen Empfänger - für den Fall, dass ein Alarm versehentlich ausgelöst
 // wurde. Muss genauso durchdringen wie der Alarm selbst, sonst fährt jemand
@@ -2086,7 +2210,8 @@ function bark_send_false_alarm_all(array $config, ?array $onlyIds = null): array
     }
     // Bark-Texte bewusst ASCII (ae/ue/oe).
     $title = 'ENTWARNUNG - Fehlalarm';
-    $body = date('[d.m.Y H:i] ') . 'Der letzte Alarm war ein FEHLALARM - kein Einsatz.';
+    $body = resend_stamped_body($config, 'false_alarm_started', $onlyIds,
+        'Der letzte Alarm war ein FEHLALARM - kein Einsatz.');
     $sent = bark_broadcast($config, static fn(array $entry): array => bark_false_alarm_fields(
         $config, $title, $body, !empty($entry['muted']), (int)($entry['mute_volume'] ?? 0)), $onlyIds);
 
@@ -2121,8 +2246,8 @@ function bark_send_alarm_all(array $config, ?array $onlyIds = null): array
     // Zeitstempel wie in der Firmware; Bark-Texte bewusst ASCII (ae/ue/oe).
     // Bewusst KEIN Demo-Zusatz im Text: Ein Demo-Alarm soll exakt so aussehen
     // und klingen wie ein echter - er geht nur an weniger Empfänger.
-    $body = date('[d.m.Y H:i] ')
-        . (string)($config['bark_alarm_body'] ?? 'Manuelle Alarmierung ueber das NAS-Dashboard!');
+    $body = resend_stamped_body($config, 'nas_alarm_started', $onlyIds,
+        (string)($config['bark_alarm_body'] ?? 'Manuelle Alarmierung ueber das NAS-Dashboard!'));
     $sent = bark_broadcast($config, static fn(array $entry): array => bark_alarm_fields(
         $config, $body, !empty($entry['muted']), (int)($entry['mute_volume'] ?? 0)), $onlyIds);
 

@@ -54,6 +54,7 @@ $response = with_lock($config, 'command', function () use ($config, $deviceId, $
         $pending['id'] = max(1, (int)$state['next_id']);   // wartenden Befehl neu nummerieren
         $state['next_id'] = $pending['id'] + 1;
         $state['current'] = $pending;
+        remember_command_type($state, (int)$pending['id'], (string)($pending['type'] ?? ''));
         $renumbered = true;
     }
     if ($renumbered) {

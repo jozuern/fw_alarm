@@ -89,13 +89,21 @@ function mute_page(string $lamp, string $headline, string $detail): void
 // Empfänger wird dadurch nicht unbemerkt erneut stumm geschaltet.
 // Parameter (nur Zahlen/Schalter, nichts Persönliches): done=on|off,
 // vol=0..10, until=Zeitpunkt der automatischen Rückschaltung (0 = keine),
-// perm=1 dauerhaft stumm, at=Zeitpunkt des Umschaltens.
+// perm=1 dauerhaft stumm, at=Zeitpunkt des Umschaltens, same=1 = der Aufruf
+// hat nichts geändert (Zustand stimmte schon; at ist dann der Beginn der
+// bestehenden Stummschaltung bzw. 0).
 $done = strtolower(trim((string)($_GET['done'] ?? '')));
 if ($method === 'GET' && ($done === 'on' || $done === 'off')) {
     $at = max(0, (int)($_GET['at'] ?? 0));
-    $stamp = $at > 0 ? ' Umgeschaltet am ' . date('d.m.', $at) . ' um ' . date('H:i', $at) . ' Uhr.' : '';
+    $same = (string)($_GET['same'] ?? '') === '1';
+    $when = $at > 0 ? date('d.m.', $at) . ' um ' . date('H:i', $at) . ' Uhr' : '';
+    if ($same) {
+        $stamp = $when !== '' ? ' Unverändert – stumm seit ' . $when . '.' : ' Unverändert – war schon so eingestellt.';
+    } else {
+        $stamp = $when !== '' ? ' Umgeschaltet am ' . $when . '.' : '';
+    }
     if ($done === 'off') {
-        mute_page('ok', 'Wieder laut', 'Alarme kommen bei dir wieder mit vollem Ton an.' . $stamp);
+        mute_page('ok', $same ? 'Laut' : 'Wieder laut', 'Alarme kommen bei dir mit vollem Ton an.' . $stamp);
     }
     $volume = max(0, min(10, (int)($_GET['vol'] ?? 0)));
     $until = max(0, (int)($_GET['until'] ?? 0));
@@ -274,7 +282,15 @@ if (!MUTE_WANTS_HTML) {
 // schalten. 303 = "danach per GET weiter"; der Token-Link landet so auch
 // nicht im Verlauf-Eintrag der angezeigten Seite.
 $entry = is_array($result['entry'] ?? null) ? $result['entry'] : [];
-$query = ['done' => $wantMuted ? 'on' : 'off', 'at' => time()];
+// Hat der Aufruf nichts geändert (z.B. nur nachsehen), NICHT "jetzt
+// umgeschaltet" behaupten: Bei Stumm zählt der Beginn der bestehenden
+// Stummschaltung, bei Laut gibt es keinen gespeicherten Zeitpunkt.
+if (!empty($result['changed'])) {
+    $query = ['done' => $wantMuted ? 'on' : 'off', 'at' => time()];
+} else {
+    $query = ['done' => $wantMuted ? 'on' : 'off', 'same' => 1,
+        'at' => $wantMuted ? (int)($entry['muted_at'] ?? 0) : 0];
+}
 if ($wantMuted) {
     $maxMute = mute_max_seconds($config);
     $mutedAt = (int)($entry['muted_at'] ?? 0);

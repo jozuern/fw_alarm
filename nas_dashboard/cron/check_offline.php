@@ -26,6 +26,22 @@ if (PHP_SAPI !== 'cli') {
     require_machine_auth($config);
 }
 
+// Dauer für die Bark-Texte (ASCII): bis 2 Std in Minuten, darüber in Stunden.
+function outage_duration_text(int $minutes): string
+{
+    return $minutes >= 120 ? (int)round($minutes / 60) . ' Std' : $minutes . ' min';
+}
+
+// HINWEIS zu den Abschnitten 0 (NAS-Dashboard), 1 (Box) und 7 (Außen-Wächter):
+// Alle drei folgen denselben Regeln (CLAUDE.md, "Meldungen an den Admin"):
+// erste Meldung nur bei angenommener Zustellung, Erinnerung im eingestellten
+// Abstand, abgeschaltet fällige Meldung wird nach dem Wiedereinschalten
+// nachgeholt (*_push_pending), ohne zugestellte Ausfall-Meldung kein "wieder
+// da". Sie sind bewusst NICHT zu einer gemeinsamen Funktion zusammengelegt
+// (jede hat eigene Zustandsschlüssel, die im laufenden watchdog_state.json
+// stehen, und "Box OFFLINE" ist die wichtigste Meldung) - wer eine dieser
+// Regeln ändert, muss sie in ALLEN DREI Abschnitten ändern.
+
 // Überfällige Stummschaltungen beenden - IMMER, auch ohne Status-Key: Das
 // Sicherheitsnetz darf nicht davon abhängen, ob der Owner Meldungen bekommt.
 // (Nimmt den 'keys'-Lock; die Info-Pushs an die Betroffenen laufen am Ende.)
@@ -121,7 +137,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
             // geschrieben.
             $skipPush = empty($types['nas_web']['recovery']) || !empty($state['web_push_pending']);
             $ok = $skipPush ? true : $notify('nas_web', 'NAS-Dashboard wieder OK',
-                date('[d.m.Y H:i] ') . "Der Datenordner ist wieder beschreibbar (Stoerung ca. {$downMins} min).");
+                date('[d.m.Y H:i] ') . 'Der Datenordner ist wieder beschreibbar (Stoerung ca. ' . outage_duration_text($downMins) . ').');
             if ($ok) {
                 append_command_log($config, ['event' => 'nas_web_recovered', 'minutes' => $downMins]);
                 $state['web_fail_count'] = 0;
@@ -190,7 +206,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
             && $seenAt <= (int)($state['offline_seen_at'] ?? ($state['offline_since'] ?? 0));
         $offline = $age > $threshold || $noNewPush;
         $mins = max(1, (int)round($age / 60));
-        $duration = $mins >= 120 ? (int)round($mins / 60) . ' Std' : $mins . ' min';
+        $duration = outage_duration_text($mins);
         // Bark-Texte bewusst ASCII (keine Umlaute).
         // Scheitert gleichzeitig der Selbsttest, kann die Box ihre Pushs
         // gar nicht ablegen - dann NICHT zur Box schicken (Oktober 2026:
@@ -245,7 +261,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
             // Verlaufseintrag schreiben.
             $skipPush = empty($types['box_offline']['recovery']) || !empty($state['offline_push_pending']);
             $ok = $skipPush ? true : $notify('box_offline', 'Alarm-Box wieder ONLINE',
-                date('[d.m.Y H:i] ') . "ESP32 meldet sich wieder (Ausfall ca. {$downMins} min).");
+                date('[d.m.Y H:i] ') . 'ESP32 meldet sich wieder (Ausfall ca. ' . outage_duration_text($downMins) . ').');
             if ($ok) {
                 $state['offline_notified'] = false;
                 $state['offline_since'] = 0;
@@ -403,6 +419,12 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
         } else {
             $state['health_bad_runs'] = 0;
         }
+    } else {
+        // Abgeschaltet oder Box offline: Die Zählung "zwei Läufe IN FOLGE"
+        // beginnt danach von vorn - sonst löste der erste einzelne schwache
+        // Messwert nach dem Wiedereinschalten bzw. nach der Rückkehr der Box
+        // sofort eine Meldung aus.
+        $state['health_bad_runs'] = 0;
     }
 
     // ==== 6) Wochenbericht (nur wenn eingeschaltet) =========================
@@ -429,7 +451,14 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
     // nicht mehr gemeldet. Deshalb überwachen sich beide gegenseitig. Gleiche
     // Regeln wie bei der Box: "wieder da" erst nach einem NEUEN Aufruf, eine
     // abgeschaltet fällige Meldung wird nach dem Einschalten nachgeholt.
-    if (isset($types['outside_watcher'])) {
+    // Kann der Web-Benutzer gerade nicht in den Datenordner schreiben, kann
+    // alive.php die Aufrufe der VM nicht speichern (es antwortet trotzdem
+    // ok=1) - dann ist "verstummt" nicht zu beurteilen, und die Schuld läge
+    // beim NAS, nicht bei der VM. Wie bei "Box OFFLINE" (blocks_pushes): nichts
+    // melden, die Meldung "NAS-Dashboard DEFEKT" deckt den Fall ab.
+    if (isset($types['outside_watcher']) && !$web['ok'] && !empty($web['blocks_pushes'])) {
+        $out[] = 'WATCHER_UNKNOWN (Datenordner gestoert - Aufrufe der VM werden nicht gespeichert)';
+    } elseif (isset($types['outside_watcher'])) {
         $wt = $types['outside_watcher'];
         $watcherSeen = (int)(read_json_file(data_path($config, 'watcher_seen.json'), [])['seen_at'] ?? 0);
         // Hat sich die VM noch NIE gemeldet, zählt die Frist ab dem ersten
@@ -448,7 +477,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
             if ($watcherNotifiedAt === 0 || $watcherCatchUp
                 || ($watcherRepeat > 0 && time() - $watcherNotifiedAt > $watcherRepeat)) {
                 $since = $watcherSeen > 0
-                    ? 'seit ' . ($watcherMins >= 120 ? (int)round($watcherMins / 60) . ' Std' : $watcherMins . ' min') . ' nicht'
+                    ? 'seit ' . outage_duration_text($watcherMins) . ' nicht'
                     : 'noch nie';
                 // Bark-Texte bewusst ASCII (keine Umlaute).
                 $ok = $notify('outside_watcher',
@@ -478,7 +507,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
             $silentFrom = (int)($state['watcher_silent_seen_at'] ?? 0) ?: (int)($state['watcher_watch_since'] ?? time());
             $downMins = max(1, (int)round((time() - $silentFrom) / 60));
             $ok = $skipPush ? true : $notify('outside_watcher', 'Aussen-Waechter wieder da',
-                date('[d.m.Y H:i] ') . "Die Cloud-VM meldet sich wieder beim NAS (Pause ca. {$downMins} min).");
+                date('[d.m.Y H:i] ') . 'Die Cloud-VM meldet sich wieder beim NAS (Pause ca. ' . outage_duration_text($downMins) . ').');
             if ($ok) {
                 append_command_log($config, ['event' => 'watcher_recovered', 'minutes' => $downMins]);
                 $state['watcher_notified_at'] = 0;

@@ -105,6 +105,9 @@ if ($action === 'status') {
         $flags = important_notify_flags($config);
         $watchdog['offline_alert'] = $flags['box_offline'];
         $watchdog['web_alert'] = $flags['nas_web'];
+        if (outside_watcher_configured($config)) {
+            $watchdog['outside_alert'] = $flags['outside_watcher'];
+        }
     }
     json_response([
         'ok' => true,
@@ -190,6 +193,7 @@ if ($action === 'enqueue') {
         }
         $state['next_id'] = $id + 1;
         $state['current'] = $command;
+        remember_command_type($state, $id, $type);
         if (!write_json_file($path, $state)) {
             return ['ok' => false, 'message' => 'Befehl konnte nicht gespeichert werden (data_dir prüfen).'];
         }
@@ -288,10 +292,19 @@ if ($action === 'log_view') {
     // Filter (Alarme / Empfänger / System): Die täglichen Stumm-Wechsel der
     // Kurzbefehle verdrängen sonst die Alarme aus dem sichtbaren Fenster.
     // Unbekannte Werte zählen als "alles".
+    // 'alarm_core' = nur die Versand-Ereignisse (für "Letzter Alarm" im
+    // Held-Bereich, ohne die Befehls-Ereignisse der Demo-Alarme).
     $filter = (string)($_GET['filter'] ?? 'all');
-    $raw = in_array($filter, ['alarm', 'keys', 'system'], true)
-        ? read_command_log_filtered($config, $limit, $filter)
-        : read_command_log_tail($config, $limit);
+    if (!in_array($filter, ['alarm', 'alarm_core', 'keys', 'system'], true)) {
+        $filter = 'all';
+    }
+    // Was die Lese-Rolle nicht sehen darf, wird VOR dem Abzählen aussortiert
+    // (siehe notify_changed unten) - sonst bekäme sie weniger als $limit
+    // Einträge, und "Ältere anzeigen" verschwände.
+    $skip = dashboard_role() === 'admin' ? [] : ['notify_changed'];
+    $raw = ($filter === 'all' && $skip === [])
+        ? read_command_log_tail($config, $limit)
+        : read_command_log_filtered($config, $limit, $filter, $skip);
     $out = [];
     foreach ($raw as $entry) {
         $event = (string)($entry['event'] ?? '');
@@ -317,6 +330,7 @@ if ($action === 'log_view') {
             case 'late_ack':
                 $item['id'] = (int)($entry['id'] ?? 0);
                 $item['result'] = (string)($entry['result'] ?? '');
+                $item['type'] = (string)($entry['type'] ?? '');
                 break;
             case 'demo_enabled':
             case 'demo_disabled':
@@ -918,16 +932,17 @@ if ($action === 'notify_test') {
         json_response(['ok' => false, 'message' => 'Unbekannte Art von Meldung.']);
     }
     $settings = load_notify_settings($config);
-    $row = $settings['types'][$type];
-    $quiet = empty($row['ignore_quiet']) && notify_in_quiet_hours($settings['global']);
-    $level = $quiet ? 'passive' : (string)$row['level'];
-    // Bark-Texte ASCII - admin_notify_send() setzt Umlaute um.
+    // Bark-Texte ASCII - admin_notify_send() setzt Umlaute um. Die Antwort
+    // nennt die Dringlichkeit, mit der WIRKLICH gesendet wurde ($used) - nicht
+    // eine hier nachgerechnete, die von der Sendelogik abweichen könnte.
+    $used = [];
     $sent = admin_notify_send($config, $type, 'PROBE: ' . $known[$type]['label'],
         date('[d.m.Y H:i] ') . 'Probe-Meldung aus dem Dashboard. So kommt diese Art von Meldung bei dir an.',
-        $settings, true);
+        $settings, true, $used);
     if ($sent === 'sent') {
-        json_response(['ok' => true, 'message' => 'Probe gesendet – Dringlichkeit: ' . NOTIFY_LEVELS[$level]
-            . ($quiet ? ' (gerade Ruhezeit, deshalb leise)' : '') . '.']);
+        $level = (string)($used['level'] ?? '');
+        json_response(['ok' => true, 'message' => 'Probe gesendet – Dringlichkeit: ' . (NOTIFY_LEVELS[$level] ?? $level)
+            . (!empty($used['quiet_capped']) ? ' (gerade Ruhezeit, deshalb leise)' : '') . '.']);
     }
     json_response(['ok' => false, 'message' => $sent === 'off'
         ? 'Kein Status-Key (bark_key_status) in config.php eingetragen – es kann nichts gesendet werden.'

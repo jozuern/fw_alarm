@@ -31,9 +31,15 @@ $ok = with_lock($config, 'command', function () use ($config, $id, $result, $mes
         }
         append_command_log($config, ['event' => 'acked', 'command' => $current]);
     } else {
+        // Typ mitschreiben, soweit noch bekannt: Die verspätete ACK eines
+        // Demo-Alarms gehört in den Alarm-Verlauf (log_event_category()).
+        $type = (is_array($current) && (int)($current['id'] ?? 0) === $id)
+            ? (string)($current['type'] ?? '')
+            : (string)($state['recent_types'][(string)$id] ?? '');
         append_command_log($config, [
             'event' => 'late_ack',
             'id' => $id,
+            'type' => $type,
             'result' => $result,
             'message' => $message,
             'device_id' => $deviceId,

@@ -54,7 +54,12 @@ meldet per Bark an den Status-Key, wenn das NAS von außen nicht erreichbar ist
 nicht lief. Gegenrichtung: `alive.php` merkt sich jeden Aufruf
 (`watcher_seen.json`), der Cron-Wächter meldet eine verstummte VM (Art
 `outside_watcher`, nur vorhanden, wenn `watcher_token_sha256` gesetzt ist –
-`outside_watcher_configured()`). Regeln: eigenes Token (`watcher_token_sha256`,
+`outside_watcher_configured()`; schweigt, solange der Schreib-Selbsttest mit
+`blocks_pushes` scheitert – dann kann `alive.php` nichts speichern, und die
+Schuld läge beim NAS). Die drei Ausfall-Abläufe im Cron-Wächter (NAS-Dashboard,
+Box, Außen-Wächter) folgen denselben Regeln, sind aber bewusst getrennt
+geblieben (eigene Zustandsschlüssel, „Box OFFLINE“ zuerst) – Regeländerungen
+in allen drei Abschnitten nachziehen. Regeln: eigenes Token (`watcher_token_sha256`,
 nur POST), NIE das Maschinen-Token der Box (die VM darf weder Status fälschen
 noch Befehle abholen); `alive.php` bleibt schlicht und lauffähig mit älteren
 Ständen von `common.php` (nur `load_config`/`data_path`/`read_json_file`/
@@ -130,7 +135,12 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   aber unbrauchbares Feld wird mit 400 abgelehnt, eine leere Schnittmenge
   sendet nichts — NIE ersatzweise an alle. Dafür tragen die Sende-Ergebnisse
   und `effective_alarm_entries()` die `id` (`api/keys.php` gibt sie nicht aus);
-  im Verlauf steht `resend` = Anzahl. Der `ALARM`-Zweig in der Firmware
+  im Verlauf steht `resend` = Anzahl. Eine Nachsendung trägt wie in der
+  Firmware die Zeit des URSPRÜNGLICHEN Versands (jüngster `*_started` ohne
+  `resend` im Verlauf) plus „(verspaetet zugestellt)“
+  (`resend_stamped_body()`); das Dashboard behält die Liste der nicht
+  Erreichten (`lastUnreached`) sichtbar, bis ein neueres Ergebnis sie
+  ersetzt oder der Admin „Ausblenden“ klickt. Der `ALARM`-Zweig in der Firmware
   läuft durch dieselbe `startAlarm()`/`processPendingAlarm()`-Logik wie ein
   Relaisalarm.
   **TEST** läuft dagegen absichtlich über den ESP32 (Poll → `sendStatus()` an
@@ -283,7 +293,10 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   vorher `session_write_close()`, sonst wartet die Weiterleitung auf Bark.
   `box_restart` erkennt `api/status.php` an der gesunkenen `uptime_s` derselben
   `device_id` ODER an einem nach hinten gesprungenen Startzeitpunkt
-  (`seen_at − uptime_s`, fängt Absturz-Schleifen mit einem Push pro Start).
+  (`seen_at − uptime_s`, fängt Absturz-Schleifen mit einem Push pro Start) –
+  Letzteres nur, wenn `uptime_s` nicht länger ist als der Abstand zum vorigen
+  Push (sonst täuscht eine NTP-Korrektur der NAS-Uhr bei einer seit Wochen
+  laufenden Box einen Neustart vor).
   Regeln, die beim Umbau bleiben müssen: (1) `admin_notify_send()` liefert
   `off` NUR bei abgeschalteter Art oder leerem Status-Key — ein eingetragener,
   aber ungültiger Key ist `failed` (sonst hakt der Wächter einen Ausfall still
@@ -297,8 +310,9 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Erinnerung „weiterhin OFFLINE“ nutzt denselben Text wie die erste Meldung
   (inkl. NAS-Diagnose bei `blocks_pushes`). (6) Die Lese-Rolle erfährt nichts
   über diese Einstellungen: kein `notify_changed` in `log_view`, kein
-  `offline_alert`/`web_alert` im Status (dort liest `important_notify_flags()`
-  nur die zwei Schalter, nicht die ganze Tabelle). (7) `heartbeat_ok=0` zählt
+  `offline_alert`/`web_alert`/`outside_alert` im Status (dort liest
+  `important_notify_flags()` nur diese Schalter, nicht die ganze Tabelle).
+  (7) `heartbeat_ok=0` zählt
   nur als Fehler, wenn `last_heartbeat` nicht `nie` ist — Schwellen für
   `box_health` stehen doppelt (Cron und `app.js`), beide Stellen anpassen.
   Der Kurzbefehl-Link leitet Browser nach dem Umschalten per 303 auf
@@ -370,7 +384,13 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   `commands.log`-Zeilen per Tail-Read (`log_view` in `dashboard_api.php`;
   optional `filter=alarm|keys|system` über `log_event_category()`/
   `read_command_log_filtered()` — sonst verdrängen die täglichen Stumm-Wechsel
-  der Kurzbefehle die Alarme aus dem Fenster) und
+  der Kurzbefehle die Alarme aus dem Fenster; `filter=alarm_core` = nur die
+  Versand-Ereignisse für „Letzter Alarm“ im Held-Bereich, ohne die
+  Befehls-Ereignisse der Demo-Alarme; was die Lese-Rolle nicht sehen darf
+  (`notify_changed`) wird VOR dem Abzählen aussortiert; gefilterte Ergebnisse
+  liegen in `log_cache.json`, solange sich `commands.log`/`.1` nicht ändern
+  (Größe+mtime); ein `late_ack` trägt den Befehlstyp aus `recent_types` in
+  `command_state.json`) und
   liefert **nur serverseitig whitelistete Felder** aus (Keys stehen im Log nur
   maskiert). Dauerhaft im Verlauf landen auch: Relaisalarme (`relay_alarm` —
   `api/status.php` loggt, wenn sich `last_alarm` (oder, bei neuerer Firmware,

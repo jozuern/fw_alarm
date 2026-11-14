@@ -1,5 +1,5 @@
 [Unit]
-Description=FW-Alarm Aussen-Waechter alle 5 Minuten
+Description=FW-Alarm Außen-Wächter alle 5 Minuten
 
 [Timer]
 OnBootSec=2min
