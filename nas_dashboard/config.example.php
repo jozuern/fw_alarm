@@ -46,6 +46,10 @@ return [
     //    gesperrt wurde (jemand rüttelt am Login).
     // Leer ('') = beides aus. Sinnvoll: derselbe Key wie BARK_KEY_STATUS in
     // config.h des ESP32.
+    // WELCHE Meldungen an diesen Key gehen und wie dringend (ein/aus pro Art,
+    // Ruhezeit, Ton, Stellvertreter, Wiederholungen), stellst du im Dashboard
+    // ein: Panel "Meldungen an den Admin". Die Werte hier darunter sind nur
+    // die Standards, solange dort nichts anderes gewählt ist.
     'bark_key_status' => '',
     // Wächter-Schwelle in Sekunden (großzügiger als offline_after_seconds,
     // damit nicht jeder kurze WLAN-Schluckauf eine Meldung auslöst).
@@ -60,6 +64,17 @@ return [
     // das Dashboard NICHT unter /fw_alarm/ liegt. health.php antwortet nur
     // auf Aufrufe vom NAS selbst (127.0.0.1).
     // 'health_check_url' => 'https://127.0.0.1/fw_alarm/api/health.php',
+
+    // Außen-Wächter (optional, siehe cloud_watcher/README.md): Eine kleine
+    // Cloud-VM ruft api/alive.php alle 5 min von AUSSEN auf und meldet per
+    // Bark, wenn das NAS nicht erreichbar ist - das kann der Wächter auf dem
+    // NAS nicht, er fällt ja mit aus. Umgekehrt meldet dieser Cron-Wächter,
+    // wenn die VM verstummt. Hier steht NUR der SHA-256-Hash des Wächter-
+    // Tokens (eigenes Token, NICHT das Maschinen-Token der Box); der Klartext
+    // kommt in /etc/fw-alarm-watch.conf auf der VM. Erzeugen wie oben:
+    // php -r '$t=bin2hex(random_bytes(32)); echo $t, PHP_EOL, hash("sha256", $t), PHP_EOL;'
+    // Leer = aus (api/alive.php antwortet dann 404).
+    'watcher_token_sha256' => '',
 
     // ==== Arbeitsmodus (Stummschaltung per Kurzbefehl-Link) =================
     // Jeder Empfänger kann seinen Eintrag über einen persönlichen Link stumm

@@ -1,0 +1,24 @@
+[Unit]
+Description=FW-Alarm Aussen-Waechter: NAS von aussen pruefen
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=fwwatch
+Group=fwwatch
+ExecStart=/usr/local/bin/fw-alarm-watch
+# Zustand (Fehlerzähler, Zeitpunkte der Meldungen) unter /var/lib/fw-alarm-watch
+StateDirectory=fw-alarm-watch
+StateDirectoryMode=0700
+TimeoutStartSec=240
+# Härtung: Das Skript braucht nur Netz, seine Konfiguration und sein Zustandsverzeichnis.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes

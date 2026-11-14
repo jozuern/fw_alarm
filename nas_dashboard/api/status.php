@@ -42,7 +42,11 @@ function last_alarm_source(array $config, array $status): string
 // jedem Push erneut) und funktioniert auch, wenn ein zweites Board mit
 // demselben Token (Bastel-/Ersatz-ESP32) dazwischen pusht - latest_status.json
 // hält nur den jeweils letzten Push, egal von wem.
-$alarmInfo = with_lock($config, 'status', function () use ($config, $status) {
+// Neustart der Box erkannt? Wird im Lock gesetzt und erst NACH der Antwort
+// ausgewertet (Verlauf, optionale Admin-Meldung) - der ESP32 wartet nicht.
+$restart = null;
+
+$alarmInfo = with_lock($config, 'status', function () use ($config, $status, &$restart) {
     $path = data_path($config, 'latest_status.json');
     $previous = read_json_file($path, [], $previousStatus);
     if (!write_json_file($path, $status)) {
@@ -50,6 +54,28 @@ $alarmInfo = with_lock($config, 'status', function () use ($config, $status) {
     }
 
     $device = substr((string)($status['device_id'] ?? ''), 0, 80);
+    // Hat DIESELBE Box seit ihrem vorigen Push neu gestartet? reset_reason
+    // sagt dann, warum. Zwei Anzeichen:
+    // - die Laufzeit ist kleiner als beim vorigen Push, oder
+    // - der errechnete Startzeitpunkt (Ankunft minus Laufzeit) ist deutlich
+    //   nach hinten gesprungen. Das fängt auch eine Absturz-Schleife mit EINEM
+    //   Push pro Start, bei der die Laufzeit zufällig nicht sinkt (12 s ->
+    //   Neustart -> 13 s). Toleranz 10 s für die Laufzeit der Anfrage plus
+    //   0,1 % des Abstands für die Abweichung der Box-Uhr nach langen Pausen.
+    if ($previousStatus === 'ok' && (string)($previous['device_id'] ?? '') === (string)($status['device_id'] ?? '')
+        && isset($previous['uptime_s'], $previous['seen_at'], $status['uptime_s'])) {
+        $prevUptime = (int)$previous['uptime_s'];
+        $newUptime = (int)$status['uptime_s'];
+        $gap = max(0, (int)$status['seen_at'] - (int)$previous['seen_at']);
+        $bootShift = ((int)$status['seen_at'] - $newUptime) - ((int)$previous['seen_at'] - $prevUptime);
+        if ($newUptime < $prevUptime || $bootShift > 10 + 0.001 * $gap) {
+            $reason = (string)($status['reset_reason'] ?? '');
+            $restart = [
+                'reason' => $reason,
+                'abnormal' => in_array($reason, ['panic', 'task_wdt', 'int_wdt', 'wdt', 'brownout'], true),
+            ];
+        }
+    }
     $new = (string)($status['last_alarm'] ?? '');
     $seq = (string)($status['alarm_seq'] ?? '');   // nur neuere Firmware, sonst ''
     $seenPath = data_path($config, 'alarm_seen.json');
@@ -89,6 +115,40 @@ if (is_string($alarmInfo)) {
     ]);
 }
 $ok = ($alarmInfo !== false);
+
+// Neustart der Box: Ein Neustart nach Absturz, Watchdog oder Spannungseinbruch
+// gehört dauerhaft in den Verlauf (die Statuszeile "Letzter Neustart-Grund"
+// zeigt immer nur den jüngsten). Die Admin-Meldung dazu ist optional (Art
+// box_restart, Standard: aus) und läuft erst nach der Antwort an den ESP32.
+if ($ok && $restart !== null) {
+    if ($restart['abnormal']) {
+        append_command_log($config, [
+            'event' => 'box_restart',
+            'device_id' => (string)($status['device_id'] ?? ''),
+            'reason' => $restart['reason'],
+        ]);
+    }
+    $restartNotify = load_notify_settings($config)['types']['box_restart'];
+    if (!empty($restartNotify['enabled'])
+        && ($restart['abnormal'] || (string)$restartNotify['scope'] === 'all')) {
+        defer_after_response(static function () use ($config, $restart): void {
+            // Bark-Texte ASCII (ae/ue/oe).
+            $reasons = [
+                'panic' => 'einem ABSTURZ (Panic)',
+                'task_wdt' => 'einem WATCHDOG-Reset',
+                'int_wdt' => 'einem WATCHDOG-Reset',
+                'wdt' => 'einem WATCHDOG-Reset',
+                'brownout' => 'einem SPANNUNGSEINBRUCH (Brownout) - Netzteil/Kabel pruefen',
+                'poweron' => 'dem Einschalten',
+                'software' => 'einem Software-Neustart',
+                'external' => 'einem Reset per Taster',
+            ];
+            $why = $reasons[$restart['reason']] ?? ('unbekanntem Grund (' . $restart['reason'] . ')');
+            admin_notify_send($config, 'box_restart', 'Alarm-Box neu gestartet',
+                date('[d.m.Y H:i] ') . 'Die Box hat nach ' . $why . ' neu gestartet und meldet sich wieder.');
+        });
+    }
+}
 
 // Fehlgeschlagenes Schreiben ehrlich melden: Der ESP32 wertet nur HTTP 200 als
 // Erfolg und versucht es später erneut, statt einen stalen Status zu hinterlassen.

@@ -22,7 +22,8 @@ $user = (string)($_SESSION['user'] ?? 'dashboard');
 
 // Nur Lese-Aktionen gehen per GET; alles, was etwas ändert oder auslöst, nur
 // per POST (zusätzlich zu CSRF und Admin-Rolle).
-if (!in_array($action, ['status', 'keys_list', 'log_view'], true) && $method !== 'POST') {
+if (!in_array($action, ['status', 'keys_list', 'log_view', 'notify_list'], true) && $method !== 'POST') {
+    // (notify_list ist zwar lesend, aber dem Admin vorbehalten - siehe dort.)
     http_response_code(405);
     json_response(['ok' => false, 'message' => 'Diese Aktion ist nur per POST erlaubt.']);
 }
@@ -84,6 +85,27 @@ if ($action === 'status') {
     }
 
     $watchdogState = read_json_file(data_path($config, 'watchdog_state.json'), []);
+    $watchdog = [
+        'configured' => trim((string)($config['bark_key_status'] ?? '')) !== '',
+        'last_run' => (int)($watchdogState['last_run_at'] ?? 0),
+        'last_send_ok_at' => (int)($watchdogState['last_send_ok_at'] ?? 0),
+        'last_send_failed_at' => (int)($watchdogState['last_send_failed_at'] ?? 0),
+    ];
+    // Außen-Wächter (Cloud-VM): wann er zuletzt über api/alive.php angeklopft
+    // hat. Nur die Uhrzeit - keine Adresse, kein Token.
+    if (outside_watcher_configured($config)) {
+        $watchdog['outside_seen_at'] = (int)(read_json_file(data_path($config, 'watcher_seen.json'), [])['seen_at'] ?? 0);
+    }
+    // Hat der Admin die Ausfall-Meldungen abgeschaltet (Panel "Meldungen an
+    // den Admin")? Dann läuft der Wächter zwar, würde einen Ausfall aber nicht
+    // melden - das Dashboard weist darauf hin. NUR für den Admin: Die
+    // Einstellungen seiner Meldungen gehen die Lese-Rolle nichts an (auch
+    // notify_list ist ihr verwehrt).
+    if (dashboard_role() === 'admin') {
+        $flags = important_notify_flags($config);
+        $watchdog['offline_alert'] = $flags['box_offline'];
+        $watchdog['web_alert'] = $flags['nas_web'];
+    }
     json_response([
         'ok' => true,
         'status' => $latest,
@@ -99,12 +121,7 @@ if ($action === 'status') {
         // Selbstüberwachung des Offline-Wächters: Das Dashboard warnt, wenn
         // die DSM-Aufgabe nie oder zu lange nicht gelaufen ist - und wenn sie
         // zwar läuft, ihre Meldungen aber nicht zustellen kann.
-        'watchdog' => [
-            'configured' => trim((string)($config['bark_key_status'] ?? '')) !== '',
-            'last_run' => (int)($watchdogState['last_run_at'] ?? 0),
-            'last_send_ok_at' => (int)($watchdogState['last_send_ok_at'] ?? 0),
-            'last_send_failed_at' => (int)($watchdogState['last_send_failed_at'] ?? 0),
-        ],
+        'watchdog' => $watchdog,
         'server_time' => time(),
     ]);
 }
@@ -146,7 +163,7 @@ if ($action === 'enqueue') {
                 $deliveredAt = (int)($current['delivered_at'] ?? 0);
                 $lockSeconds = (int)($config['delivered_command_lock_seconds'] ?? 120);
                 if ($deliveredAt > 0 && time() - $deliveredAt < $lockSeconds) {
-                    return ['ok' => false, 'message' => 'Letzter Befehl wurde ausgeliefert, ACK steht noch aus.'];
+                    return ['ok' => false, 'message' => 'Der letzte Befehl wurde an die Box ausgeliefert, ihre Bestätigung steht noch aus.'];
                 }
             }
         }
@@ -268,8 +285,15 @@ if ($action === 'log_view') {
     // Auf Wunsch ältere Ereignisse nachladen ("Ältere anzeigen" im Dashboard).
     // Gedeckelt, damit niemand das komplette Log in den Browser zieht.
     $limit = max(1, min(100, (int)($_GET['limit'] ?? 25)));
+    // Filter (Alarme / Empfänger / System): Die täglichen Stumm-Wechsel der
+    // Kurzbefehle verdrängen sonst die Alarme aus dem sichtbaren Fenster.
+    // Unbekannte Werte zählen als "alles".
+    $filter = (string)($_GET['filter'] ?? 'all');
+    $raw = in_array($filter, ['alarm', 'keys', 'system'], true)
+        ? read_command_log_filtered($config, $limit, $filter)
+        : read_command_log_tail($config, $limit);
     $out = [];
-    foreach (read_command_log_tail($config, $limit) as $entry) {
+    foreach ($raw as $entry) {
         $event = (string)($entry['event'] ?? '');
         $item = ['at' => (int)($entry['log_at'] ?? 0), 'event' => $event];
         $cmd = is_array($entry['command'] ?? null) ? $entry['command'] : [];
@@ -323,15 +347,39 @@ if ($action === 'log_view') {
                 $item['permanent'] = !empty($entry['permanent']);
                 $item['source'] = (string)($entry['source'] ?? '');
                 break;
+            case 'key_test':
+                $item['by'] = (string)($entry['by'] ?? '');
+                $item['label'] = (string)($entry['label'] ?? '');
+                $item['ok'] = !empty($entry['ok']);
+                break;
+            case 'notify_changed':
+                // Nur für den Admin: Welche Meldungen er sich schicken lässt
+                // (z.B. "Anmeldung am Dashboard"), geht die Lese-Rolle nichts
+                // an - notify_list ist ihr ebenfalls verwehrt.
+                if (dashboard_role() !== 'admin') {
+                    continue 2;
+                }
+                $item['by'] = (string)($entry['by'] ?? '');
+                $item['label'] = (string)($entry['label'] ?? '');
+                $item['key'] = (string)($entry['key'] ?? '');   // 'enabled' = Art ein/aus
+                $item['option'] = (string)($entry['option'] ?? '');
+                $item['value'] = (string)($entry['value'] ?? '');
+                break;
+            case 'box_restart':
+                $item['reason'] = (string)($entry['reason'] ?? '');
+                break;
             case 'nas_alarm_started':
             case 'false_alarm_started':
                 $item['by'] = (string)($entry['by'] ?? '');
+                // > 0: Nachsendung nur an so viele (zuvor nicht erreichte) Empfänger.
+                $item['resend'] = (int)($entry['resend'] ?? 0);
                 break;
             case 'nas_alarm':
             case 'false_alarm':
                 $item['by'] = (string)($entry['by'] ?? '');
                 $item['ok'] = !empty($entry['ok']);
                 $item['message'] = (string)($entry['message'] ?? '');
+                $item['resend'] = (int)($entry['resend'] ?? 0);
                 break;
             case 'relay_alarm':
                 $item['info'] = (string)($entry['info'] ?? '');
@@ -340,6 +388,8 @@ if ($action === 'log_view') {
             case 'box_offline':
             case 'box_recovered':
             case 'nas_web_recovered':
+            case 'watcher_silent':
+            case 'watcher_recovered':
                 $item['minutes'] = (int)($entry['minutes'] ?? 0);
                 break;
             case 'nas_web_failed':
@@ -390,7 +440,7 @@ if ($action === 'demo_set') {
                 'by' => $user,
             ];
             $message = 'DEMO-MODUS aktiviert: Alarme gehen nur noch an "' . (string)($target['label'] ?? '') . '". '
-                . 'WICHTIG: Der ESP32 übernimmt das erst beim nächsten Poll - Banner oben beobachten!';
+                . 'WICHTIG: Die Box übernimmt das erst nach einigen Sekunden – Banner oben beobachten!';
         } else {
             // Ausschalten ist idempotent und erhöht IMMER die Version: So
             // lässt sich ein halb geschriebener Wechsel (Demo aus, Version
@@ -400,8 +450,8 @@ if ($action === 'demo_set') {
             $demo = ['enabled' => false, 'changed_at' => time(), 'by' => $user];
             $message = ($wasEnabled
                     ? 'LIVE-Modus aktiv: Alarme gehen wieder an ALLE Empfänger. '
-                    : 'Der Demo-Modus war bereits aus – die volle Liste wird dem ESP32 erneut angeboten. ')
-                . 'Der ESP32 übernimmt die volle Liste beim nächsten Poll.';
+                    : 'Der Demo-Modus war bereits aus – die volle Liste wird der Box erneut angeboten. ')
+                . 'Die Box übernimmt die volle Liste nach wenigen Sekunden.';
         }
 
         $version = bump_keys_version($config, $state);
@@ -465,7 +515,7 @@ if ($action === 'keys_add') {
         $state['keys'] = $keys;
         $state['next_id'] = $id + 1;
         return ['ok' => true, 'write' => true, 'bump' => true,
-            'message' => 'Empfänger hinzugefügt. Der ESP32 übernimmt die Liste beim nächsten Poll.'];
+            'message' => 'Empfänger hinzugefügt. Die Box übernimmt die Liste nach wenigen Sekunden.'];
     });
     if (!empty($result['ok'])) {
         append_command_log($config, [
@@ -511,7 +561,7 @@ if ($action === 'keys_delete') {
         }
         $state['keys'] = $remaining;
         return ['ok' => true, 'write' => true, 'bump' => true, 'entry' => $removed,
-            'message' => 'Empfänger gelöscht. Der ESP32 übernimmt die Liste beim nächsten Poll.'];
+            'message' => 'Empfänger gelöscht. Die Box übernimmt die Liste nach wenigen Sekunden.'];
     });
     if (!empty($result['ok'])) {
         $removed = $result['entry'];
@@ -562,10 +612,10 @@ if ($action === 'keys_mute') {
         }
         return ['ok' => true, 'changed' => true, 'write' => true, 'bump' => true, 'entry' => $state['keys'][$idx],
             'message' => $wantMuted
-                ? 'Empfänger stummgeschaltet (Arbeitsmodus): Alarme kommen dort nur mit der eingestellten Stumm-Lautstärke an. Der ESP32 übernimmt das beim nächsten Poll.'
+                ? 'Empfänger stummgeschaltet (Arbeitsmodus): Alarme kommen dort nur mit der eingestellten Stumm-Lautstärke an. Die Box übernimmt das nach wenigen Sekunden.'
                 : ($wasPermanent
-                    ? 'Empfänger wieder laut geschaltet – die dauerhafte Stummschaltung ist damit beendet. Der ESP32 übernimmt das beim nächsten Poll.'
-                    : 'Empfänger wieder laut geschaltet. Der ESP32 übernimmt das beim nächsten Poll.')];
+                    ? 'Empfänger wieder laut geschaltet – die dauerhafte Stummschaltung ist damit beendet. Die Box übernimmt das nach wenigen Sekunden.'
+                    : 'Empfänger wieder laut geschaltet. Die Box übernimmt das nach wenigen Sekunden.')];
     });
 
     // Log erst NACH dem Lock. Bewusst KEIN Bestätigungs-Push mehr an den
@@ -706,7 +756,7 @@ if ($action === 'keys_set_mute_volume') {
             'message' => ($volume === 0
                 ? 'Gespeichert: Stumm = komplett lautlos.'
                 : 'Gespeichert: Stumm = leise mit Lautstärke ' . $volume . '.')
-                . ' Der ESP32 übernimmt das beim nächsten Poll.'];
+                . ' Die Box übernimmt das nach wenigen Sekunden.'];
     });
 
     // Log erst NACH dem Lock; kein Push an den Betroffenen.
@@ -726,6 +776,226 @@ if ($action === 'keys_set_mute_volume') {
     json_response($result);
 }
 
+// ==== Meldungen an den Admin einstellen =====================================
+// Welche Statusmeldungen das NAS an bark_key_status schickt und wie (siehe
+// "MELDUNGEN AN DEN ADMIN" in common.php). Nur für den Admin - auch das
+// Lesen, der Lese-Benutzer bekommt das Panel gar nicht erst zu sehen.
+// Jede Einstellung ist eine Auswahl aus festen Möglichkeiten; die Oberfläche
+// baut ihre Auswahlfelder vollständig aus dieser Antwort.
+if ($action === 'notify_list') {
+    require_dashboard_admin();
+    $settings = load_notify_settings($config);
+    // [schlüssel => spec] + aktuelle Werte -> Liste für die Oberfläche. Werte
+    // gehen als Text raus (ein <select> kennt nur Text).
+    $optionList = static function (array $specs, array $values): array {
+        $out = [];
+        foreach ($specs as $key => $spec) {
+            $choices = [];
+            foreach ($spec['choices'] as $value => $text) {
+                $choices[] = ['value' => (string)$value, 'text' => (string)$text];
+            }
+            $out[] = ['key' => $key, 'label' => $spec['label'],
+                'value' => (string)($values[$key] ?? $spec['default']), 'choices' => $choices];
+        }
+        return $out;
+    };
+    $types = [];
+    foreach (admin_notify_types($config) as $key => $def) {
+        $types[] = [
+            'key' => $key,
+            'label' => $def['label'],
+            'hint' => $def['hint'],
+            'important' => $def['important'],
+            'enabled' => $settings['types'][$key]['enabled'],
+            'options' => $optionList($def['options'], $settings['types'][$key]),
+        ];
+    }
+    json_response([
+        'ok' => true,
+        // Ohne Status-Key verschickt das NAS gar nichts - dann sind die
+        // Einstellungen wirkungslos, und das Panel sagt das dazu.
+        'configured' => trim((string)($config['bark_key_status'] ?? '')) !== '',
+        'quiet_now' => notify_in_quiet_hours($settings['global']),
+        'global' => $optionList(admin_notify_global_specs($config), $settings['global']),
+        'types' => $types,
+    ]);
+}
+
+// EINE Einstellung ändern: type = Art der Meldung oder 'global', key = die
+// Einstellung ('enabled' = Art ein/aus), value = einer der angebotenen Werte.
+// Ein unbekannter Wert wird ABGELEHNT (nie stillschweigend der Standard).
+// In die Datei kommen nur ausdrücklich gesetzte Werte - alles andere folgt
+// weiter den Standards (z.B. den Schwellen aus config.php).
+if ($action === 'notify_set') {
+    require_csrf();
+    require_dashboard_admin();
+    $type = (string)($_POST['type'] ?? '');
+    $key = (string)($_POST['key'] ?? '');
+    $value = (string)($_POST['value'] ?? '');
+    $known = admin_notify_types($config);
+
+    $spec = null;
+    $scopeLabel = '';
+    if ($type === 'global') {
+        $spec = admin_notify_global_specs($config)[$key] ?? null;
+        $scopeLabel = 'Alle Meldungen';
+    } elseif (isset($known[$type])) {
+        $spec = $key === 'enabled'
+            ? ['label' => 'Meldung', 'choices' => [1 => 'eingeschaltet', 0 => 'abgeschaltet'], 'default' => 0]
+            : ($known[$type]['options'][$key] ?? null);
+        $scopeLabel = $known[$type]['label'];
+    }
+    if ($spec === null) {
+        json_response(['ok' => false, 'message' => 'Unbekannte Einstellung.']);
+    }
+    $picked = null;
+    foreach (array_keys($spec['choices']) as $choice) {
+        if ((string)$choice === $value) {
+            $picked = $choice;
+            break;
+        }
+    }
+    if ($picked === null) {
+        json_response(['ok' => false, 'message' => 'Ungültiger Wert für „' . $spec['label'] . '“ – nichts geändert.']);
+    }
+
+    $result = with_lock($config, 'notify', function () use ($config, $type, $key, $picked, $spec, $scopeLabel): array {
+        $current = load_notify_settings($config);
+        $old = $type === 'global'
+            ? $current['global'][$key]
+            : ($key === 'enabled' ? ($current['types'][$type]['enabled'] ? 1 : 0) : $current['types'][$type][$key]);
+        if ((string)$old === (string)$picked) {
+            return ['ok' => true, 'changed' => false, 'message' => 'Ist bereits so eingestellt.'];
+        }
+        $path = data_path($config, 'notify_settings.json');
+        $stored = read_json_file($path, []);
+        $stored['global'] = is_array($stored['global'] ?? null) ? $stored['global'] : [];
+        $stored['types'] = is_array($stored['types'] ?? null) ? $stored['types'] : [];
+        if ($type === 'global') {
+            $stored['global'][$key] = $picked;
+        } else {
+            $row = is_array($stored['types'][$type] ?? null) ? $stored['types'][$type] : [];
+            $row[$key] = $key === 'enabled' ? ($picked === 1) : $picked;
+            $stored['types'][$type] = $row;
+        }
+        if (!write_json_file($path, $stored)) {
+            return ['ok' => false, 'message' => 'Einstellung konnte nicht gespeichert werden (data_dir prüfen).'];
+        }
+        $text = (string)$spec['choices'][$picked];
+        if ($type !== 'global' && $key === 'enabled') {
+            return ['ok' => true, 'changed' => true, 'value_text' => $text,
+                'message' => $picked === 1
+                    ? 'Eingeschaltet: „' . $scopeLabel . '“ wird dir gemeldet.'
+                    : 'Abgeschaltet: „' . $scopeLabel . '“ wird dir nicht mehr gemeldet.'];
+        }
+        return ['ok' => true, 'changed' => true, 'value_text' => $text,
+            'message' => 'Gespeichert – ' . $scopeLabel . ', ' . $spec['label'] . ': ' . $text . '.'];
+    });
+    if (!empty($result['ok']) && !empty($result['changed'])) {
+        append_command_log($config, [
+            'event' => 'notify_changed',
+            'by' => $user,
+            'type' => $type,
+            'key' => $key,
+            'label' => $scopeLabel,
+            'option' => $spec['label'],
+            'value' => (string)($result['value_text'] ?? ''),
+        ]);
+    }
+    unset($result['value_text']);
+    json_response($result);
+}
+
+// Probe-Meldung: schickt eine Beispiel-Meldung dieser Art genau so, wie sie
+// nach den aktuellen Einstellungen ankäme (Dringlichkeit, Ruhezeit, Ton,
+// Stellvertreter) - auch wenn die Art gerade abgeschaltet ist.
+if ($action === 'notify_test') {
+    require_csrf();
+    require_dashboard_admin();
+    $type = (string)($_POST['type'] ?? '');
+    $known = admin_notify_types($config);
+    if (!isset($known[$type])) {
+        json_response(['ok' => false, 'message' => 'Unbekannte Art von Meldung.']);
+    }
+    $settings = load_notify_settings($config);
+    $row = $settings['types'][$type];
+    $quiet = empty($row['ignore_quiet']) && notify_in_quiet_hours($settings['global']);
+    $level = $quiet ? 'passive' : (string)$row['level'];
+    // Bark-Texte ASCII - admin_notify_send() setzt Umlaute um.
+    $sent = admin_notify_send($config, $type, 'PROBE: ' . $known[$type]['label'],
+        date('[d.m.Y H:i] ') . 'Probe-Meldung aus dem Dashboard. So kommt diese Art von Meldung bei dir an.',
+        $settings, true);
+    if ($sent === 'sent') {
+        json_response(['ok' => true, 'message' => 'Probe gesendet – Dringlichkeit: ' . NOTIFY_LEVELS[$level]
+            . ($quiet ? ' (gerade Ruhezeit, deshalb leise)' : '') . '.']);
+    }
+    json_response(['ok' => false, 'message' => $sent === 'off'
+        ? 'Kein Status-Key (bark_key_status) in config.php eingetragen – es kann nichts gesendet werden.'
+        : 'Probe FEHLGESCHLAGEN – Bark hat sie nicht angenommen (Status-Key und Verbindung prüfen).']);
+}
+
+// Test-Push an EINEN Empfänger: normale (nicht kritische) Mitteilung mit dem
+// Alarmton - prüft beim Einrichten Key und Ton, ohne Demo-Modus und ohne
+// echten Alarm (siehe bark_send_test). Ändert nichts an Liste oder Version
+// und läuft deshalb ohne Lock.
+if ($action === 'keys_test') {
+    require_csrf();
+    require_dashboard_admin();
+    $id = (int)($_POST['id'] ?? 0);
+    $state = load_alarm_keys($config);
+    $idx = find_key_index($state, $id);
+    if ($idx < 0) {
+        json_response(['ok' => false, 'message' => 'Empfänger nicht gefunden.']);
+    }
+    if (!function_exists('curl_init')) {
+        json_response(['ok' => false, 'message' => 'PHP-cURL fehlt. In Web Station im PHP-Profil die Erweiterung "curl" aktivieren.']);
+    }
+    $entry = $state['keys'][$idx];
+    $label = (string)($entry['label'] ?? '');
+    $sent = bark_send_test($config, trim((string)($entry['key'] ?? '')));
+    append_command_log($config, [
+        'event' => 'key_test',
+        'by' => $user,
+        'label' => $label,
+        'key' => mask_bark_key((string)($entry['key'] ?? '')),
+        'ok' => $sent['ok'],
+        'http' => $sent['http'],
+    ]);
+    if ($sent['ok']) {
+        json_response(['ok' => true, 'message' => 'Test-Push an „' . $label . '“ gesendet – Bark hat ihn angenommen. '
+            . 'Kommt er mit dem Alarmton an, ist das iPhone richtig eingerichtet.']);
+    }
+    $http = (int)$sent['http'];
+    json_response(['ok' => false, 'message' => 'Test-Push an „' . $label . '“ FEHLGESCHLAGEN ('
+        . ($http === 0 ? 'keine Verbindung zu Bark/Zeitüberschreitung' : 'HTTP ' . $http)
+        . ($http >= 400 && $http < 500 ? ' – Bark-Key prüfen' : '') . ').']);
+}
+
+// Nachsendung nach einem Teilausfall: only_ids="3,5" beschränkt REAL ALARM
+// bzw. ENTWARNUNG auf diese Empfänger-ids. Ist das Feld vorhanden, aber
+// unbrauchbar, wird ABGELEHNT - nie stillschweigend an alle gesendet.
+// null = Feld fehlt (normaler Versand an alle).
+function requested_only_ids(): ?array
+{
+    if (!isset($_POST['only_ids'])) {
+        return null;
+    }
+    $ids = [];
+    foreach (explode(',', (string)$_POST['only_ids']) as $part) {
+        $part = trim($part);
+        if ($part === '' || !ctype_digit($part) || (int)$part <= 0) {
+            $ids = [];
+            break;
+        }
+        $ids[(int)$part] = (int)$part;
+    }
+    if (count($ids) === 0 || count($ids) > MAX_ALARM_KEYS) {
+        http_response_code(400);
+        json_response(['ok' => false, 'message' => 'Ungültige Empfänger-Auswahl für die Nachsendung – es wurde NICHTS gesendet.']);
+    }
+    return array_values($ids);
+}
+
 // ENTWARNUNG (Fehlalarm): Critical Alert mit kurzem, normalem Ton an alle
 // Empfänger, dass der letzte Alarm ein Fehlalarm war. Bewusst ebenfalls
 // critical - wer schon unterwegs ist, muss die Entwarnung sicher mitbekommen.
@@ -734,16 +1004,19 @@ if ($action === 'false_alarm') {
     require_csrf();
     require_dashboard_admin();
     require_expected_mode($config);
+    $onlyIds = requested_only_ids();
+    $resend = $onlyIds === null ? 0 : count($onlyIds);
     // Start VOR dem Versand festhalten: Bricht der Request ab (Proxy-Timeout),
     // sieht man im Verlauf trotzdem, dass gesendet wurde.
-    append_command_log($config, ['event' => 'false_alarm_started', 'by' => $user]);
-    $result = bark_send_false_alarm_all($config);
+    append_command_log($config, ['event' => 'false_alarm_started', 'by' => $user, 'resend' => $resend]);
+    $result = bark_send_false_alarm_all($config, $onlyIds);
     append_command_log($config, [
         'event' => 'false_alarm',
         'by' => $user,
         'ok' => $result['ok'],
         'message' => $result['message'],
         'results' => $result['results'],
+        'resend' => $resend,
     ]);
     json_response($result);
 }
@@ -755,14 +1028,17 @@ if ($action === 'alarm') {
     require_csrf();
     require_dashboard_admin();
     require_expected_mode($config);
-    append_command_log($config, ['event' => 'nas_alarm_started', 'by' => $user]);
-    $result = bark_send_alarm_all($config);
+    $onlyIds = requested_only_ids();
+    $resend = $onlyIds === null ? 0 : count($onlyIds);
+    append_command_log($config, ['event' => 'nas_alarm_started', 'by' => $user, 'resend' => $resend]);
+    $result = bark_send_alarm_all($config, $onlyIds);
     append_command_log($config, [
         'event' => 'nas_alarm',
         'by' => $user,
         'ok' => $result['ok'],
         'message' => $result['message'],
         'results' => $result['results'],
+        'resend' => $resend,
     ]);
     json_response($result);
 }

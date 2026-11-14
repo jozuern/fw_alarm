@@ -29,6 +29,9 @@ nas_dashboard/data/*.lock
 nas_dashboard/data/*.log
 nas_dashboard/data/*.php
 
+# Außen-Wächter: die echte Konfiguration (Token + Bark-Key) lebt nur auf der VM
+cloud_watcher/*.conf
+
 # Persönliche Empfänger-Onboarding-Anleitung (enthält Name/Kontakt des Betreibers)
 bark-anleitung.html
 Bark-Anleitung-iPhone.pdf

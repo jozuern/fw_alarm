@@ -1,0 +1,35 @@
+# Konfiguration des Außen-Wächters - auf der VM als /etc/fw-alarm-watch.conf
+# ablegen (Besitzer root, Gruppe fwwatch, Rechte 640). Enthält Geheimnisse:
+# NIE ins Git, NIE in die Vorlage eintragen.
+#
+# >>> HIER STEHEN ALLE WERTE, DIE DU EDITIEREN MUSST/KANNST <<<
+
+# Öffentliche Adresse von api/alive.php (dieselbe Adresse, über die man das
+# Dashboard von unterwegs erreicht - NICHT die LAN-IP).
+NAS_ALIVE_URL="https://dein-name.synology.me/fw_alarm/api/alive.php"
+
+# Klartext des Wächter-Tokens. In config.php des NAS steht nur der SHA-256-
+# Hash davon (watcher_token_sha256). Token UND Hash in einem Schritt erzeugen:
+# php -r '$t=bin2hex(random_bytes(32)); echo $t, PHP_EOL, hash("sha256", $t), PHP_EOL;'
+WATCHER_TOKEN=""
+
+# Bark-Server und Status-Key des Admins (derselbe wie bark_key_status in
+# config.php bzw. BARK_KEY_STATUS in config.h).
+BARK_HOST="https://api.day.app"
+BARK_KEY=""
+
+# Dringlichkeit der Meldungen: passive (leise) | active (normal, mit Ton) |
+# timeSensitive (durchbricht Fokus) | critical (durchbricht auch Stummschalter).
+BARK_LEVEL="active"
+
+# Nach so vielen Fehlschlägen in Folge melden (Takt 5 min; 3 = ca. 10-15 min,
+# übersteht einen normalen NAS-Neustart ohne Fehlalarm).
+FAIL_THRESHOLD=3
+
+# Erinnern, solange das NAS weg bleibt bzw. der NAS-Wächter nicht läuft
+# (Stunden, 0 = nur einmal).
+REPEAT_HOURS=24
+
+# Ab diesem Alter (Sekunden) gilt der Cron-Wächter auf dem NAS als
+# stehengeblieben (er läuft alle 15 min; 2700 = drei ausgefallene Läufe).
+CRON_STALE_S=2700

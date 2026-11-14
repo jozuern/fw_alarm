@@ -1,0 +1,6 @@
+# Dateien für die Linux-VM des Außen-Wächters: immer LF (ein CR am
+# Zeilenende macht das Bash-Skript und die systemd-Units unbrauchbar).
+cloud_watcher/*.sh text eol=lf
+cloud_watcher/*.service text eol=lf
+cloud_watcher/*.timer text eol=lf
+cloud_watcher/*.conf.example text eol=lf

@@ -41,13 +41,84 @@ if ($isPreview) {
     text_response("ok=0\nerror=Vorschau - nichts geaendert\n");
 }
 
+// Ruft ein MENSCH den Link im Browser auf (Kurzbefehl "URL öffnen", Antippen
+// in den Notizen, Test am PC), bekommt er eine lesbare Bestätigungsseite statt
+// der rohen Zeilen "ok=1 / muted=1". Erkannt wird das an der Kennung einer
+// Seiten-Navigation (Sec-Fetch-Dest: document bzw. Accept: text/html).
+// Kurzbefehle mit "Inhalte von URL abrufen" und Skripte senden das nicht und
+// bekommen UNVERÄNDERT die Text-Antwort - an deren Format ändert sich nichts.
+define('MUTE_WANTS_HTML', $method === 'GET' && (
+    (string)($_SERVER['HTTP_SEC_FETCH_DEST'] ?? '') === 'document'
+    || stripos((string)($_SERVER['HTTP_ACCEPT'] ?? ''), 'text/html') !== false));
+
+// Antwort je nach Aufrufer: Text (Kurzbefehl/Skript) oder kleine HTML-Seite
+// (Browser). $lamp = Statuslampe der Seite: ok (grün), stale (gelb), crit (rot).
+// Die Seite nutzt das Stylesheet des Dashboards (CSP: keine Inline-Styles)
+// und enthält bewusst weder den Token noch den Bark-Key.
+function mute_answer(string $text, string $lamp, string $headline, string $detail): void
+{
+    if (!MUTE_WANTS_HTML) {
+        text_response($text);
+    }
+    mute_page($lamp, $headline, $detail);
+}
+
+function mute_page(string $lamp, string $headline, string $detail): void
+{
+    $h = static fn(string $value): string => htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
+    $css = '../assets/style.css?v=' . (int)@filemtime(dirname(__DIR__) . '/assets/style.css');
+    header('Content-Type: text/html; charset=utf-8');
+    header('Cache-Control: no-store');
+    echo '<!doctype html><html lang="de"><head><meta charset="utf-8">'
+        . '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
+        . '<meta name="theme-color" content="#14181d"><title>Alarm-Wächter – Arbeitsmodus</title>'
+        . '<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">'
+        . '<link rel="stylesheet" href="' . $h($css) . '"></head><body>'
+        . '<main class="login mute-page"><section class="panel">'
+        . '<p class="state state-' . $h($lamp) . '">' . $h($headline) . '</p>'
+        . '<p class="mute-detail">' . $h($detail) . '</p>'
+        . '<p class="hint">Alarm-Wächter, Arbeitsmodus. Diese Seite kannst du schließen.</p>'
+        . '</section></main></body></html>';
+    exit;
+}
+
+// Bestätigungsseite OHNE Wirkung: Nach einem erfolgreichen Umschalten leitet
+// ein Browser hierher um (siehe Ende der Datei). Diese Adresse enthält weder
+// Token noch Key und schaltet NICHTS. Neu laden, "Zurück" oder ein von iOS
+// wiederhergestellter Tab zeigen so nur noch einmal die Bestätigung - der
+// Empfänger wird dadurch nicht unbemerkt erneut stumm geschaltet.
+// Parameter (nur Zahlen/Schalter, nichts Persönliches): done=on|off,
+// vol=0..10, until=Zeitpunkt der automatischen Rückschaltung (0 = keine),
+// perm=1 dauerhaft stumm, at=Zeitpunkt des Umschaltens.
+$done = strtolower(trim((string)($_GET['done'] ?? '')));
+if ($method === 'GET' && ($done === 'on' || $done === 'off')) {
+    $at = max(0, (int)($_GET['at'] ?? 0));
+    $stamp = $at > 0 ? ' Umgeschaltet am ' . date('d.m.', $at) . ' um ' . date('H:i', $at) . ' Uhr.' : '';
+    if ($done === 'off') {
+        mute_page('ok', 'Wieder laut', 'Alarme kommen bei dir wieder mit vollem Ton an.' . $stamp);
+    }
+    $volume = max(0, min(10, (int)($_GET['vol'] ?? 0)));
+    $until = max(0, (int)($_GET['until'] ?? 0));
+    $detail = 'Alarme kommen bei dir weiterhin an und bleiben sichtbar, aber '
+        . ($volume === 0 ? 'lautlos' : 'nur leise (Lautstärke ' . $volume . ' von 10)') . '.';
+    if ((string)($_GET['perm'] ?? '') === '1') {
+        $detail .= ' Du bist dauerhaft stumm geschaltet: Das endet erst, wenn du oder der Admin wieder laut schaltet.';
+    } elseif ($until > 0) {
+        $detail .= ' Spätestens am ' . date('d.m.', $until) . ' um ' . date('H:i', $until)
+            . ' Uhr wird automatisch wieder laut geschaltet.';
+    }
+    mute_page('stale', 'Stumm geschaltet', $detail . $stamp);
+}
+
 $token = trim((string)($_POST['t'] ?? $_GET['t'] ?? ''));
 $key = trim((string)($_POST['key'] ?? $_GET['key'] ?? ''));
 $stateParam = strtolower(trim((string)($_POST['state'] ?? $_GET['state'] ?? '')));
 
 if (!in_array($stateParam, ['on', 'off'], true)) {
     http_response_code(400);
-    text_response("ok=0\nerror=state fehlt (on oder off)\n");
+    mute_answer("ok=0\nerror=state fehlt (on oder off)\n", 'crit', 'Link unvollständig',
+        'In diesem Link fehlt die Angabe, ob stumm oder laut geschaltet werden soll. '
+        . 'Bitte den Link im Dashboard neu kopieren. Es wurde nichts geändert.');
 }
 
 // Bremse gegen Durchprobieren: NUR Fehlversuche (ungültige/unbekannte Tokens)
@@ -66,14 +137,13 @@ function mute_reject(array $config): void
     $hit = throttle_hit($config, 'mute', MUTE_MAX_FAILURES, MUTE_FAILURE_WINDOW);
     if (!empty($hit['blocked'])) {
         http_response_code(429);
-        text_response("ok=0
-error=zu viele Fehlversuche - spaeter erneut
-");
+        mute_answer("ok=0\nerror=zu viele Fehlversuche - spaeter erneut\n", 'crit', 'Zu viele Fehlversuche',
+            'Von dieser Adresse kamen zu viele ungültige Aufrufe. Bitte später erneut versuchen.');
     }
     http_response_code(404);
-    text_response("ok=0
-error=unbekannter Empfaenger
-");
+    mute_answer("ok=0\nerror=unbekannter Empfaenger\n", 'crit', 'Unbekannter Link',
+        'Dieser Link gehört zu keinem Empfänger (mehr). Bitte beim Admin einen neuen Link holen. '
+        . 'Es wurde nichts geändert.');
 }
 
 // Gehört der Token (bzw. alt: der Bark-Key) zu diesem Listeneintrag?
@@ -145,7 +215,9 @@ $result = mutate_alarm_keys($config, function (array &$state) use ($token, $key,
 if (!empty($result['write_failed']) || (!isset($result['found']) && empty($result['ok']))) {
     // Speichern gescheitert bzw. Liste unlesbar: ehrlich melden.
     http_response_code(500);
-    text_response("ok=0\nerror=speichern fehlgeschlagen\n");
+    mute_answer("ok=0\nerror=speichern fehlgeschlagen\n", 'crit', 'Nicht gespeichert',
+        'Die Änderung konnte gerade nicht gespeichert werden. Bitte später erneut versuchen '
+        . 'oder den Admin informieren.');
 }
 if (empty($result['found'])) {
     mute_reject($config);
@@ -164,6 +236,17 @@ if (!empty($result['changed'])) {
         'key' => mask_bark_key((string)($entry['key'] ?? '')),
         'version' => (int)($result['version'] ?? 0),
     ]);
+    // Optionale Admin-Meldung (Art mute_changed, Standard: aus - sonst käme
+    // bei jedem Kurzbefehl der Kollegen ein Push). Erst NACH der Antwort,
+    // damit der Kurzbefehl nicht auf den Bark-Versand wartet.
+    if (admin_notify_enabled($config, 'mute_changed')) {
+        $changedLabel = (string)($entry['label'] ?? '?');
+        defer_after_response(static function () use ($config, $changedLabel, $wantMuted): void {
+            admin_notify_send($config, 'mute_changed', 'Arbeitsmodus',
+                date('[d.m.Y H:i] ') . $changedLabel . ' hat sich per Kurzbefehl '
+                . ($wantMuted ? 'STUMM geschaltet.' : 'wieder LAUT geschaltet.'));
+        });
+    }
     // Hat der Link eine DAUERHAFTE Stummschaltung beendet, das extra
     // festhalten - sonst wäre im Verlauf nicht zu sehen, dass eine bewusst
     // gesetzte Dauer-Einstellung nebenbei aufgehoben wurde.
@@ -180,4 +263,26 @@ if (!empty($result['changed'])) {
     }
 }
 
-text_response("ok=1\nmuted=" . ($wantMuted ? '1' : '0') . "\n");
+// Kurzbefehle und Skripte bekommen wie immer nur ok=1/muted=…
+if (!MUTE_WANTS_HTML) {
+    text_response("ok=1\nmuted=" . ($wantMuted ? '1' : '0') . "\n");
+}
+
+// Browser: NICHT hier antworten, sondern auf die wirkungslose
+// Bestätigungsseite umleiten (done=…, siehe oben). Sonst stünde die
+// umschaltende Adresse im Tab, und ein späteres Neu-Laden würde erneut
+// schalten. 303 = "danach per GET weiter"; der Token-Link landet so auch
+// nicht im Verlauf-Eintrag der angezeigten Seite.
+$entry = is_array($result['entry'] ?? null) ? $result['entry'] : [];
+$query = ['done' => $wantMuted ? 'on' : 'off', 'at' => time()];
+if ($wantMuted) {
+    $maxMute = mute_max_seconds($config);
+    $mutedAt = (int)($entry['muted_at'] ?? 0);
+    $permanent = mute_is_permanent($entry);
+    $query['vol'] = mute_volume_of($entry);
+    $query['perm'] = $permanent ? 1 : 0;
+    $query['until'] = (!$permanent && $maxMute > 0 && $mutedAt > 0) ? $mutedAt + $maxMute : 0;
+}
+header('Cache-Control: no-store');
+header('Location: mute.php?' . http_build_query($query), true, 303);
+exit;

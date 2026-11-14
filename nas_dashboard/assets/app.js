@@ -7,9 +7,12 @@
   // index.php). Leer = aus der aktuellen Adresse ableiten.
   const publicBase = (document.querySelector('meta[name="public-base"]')?.content || '').trim();
   const stateEl = document.querySelector('[data-state]');
+  const stateSubEl = document.querySelector('[data-state-sub]');
   const fieldsEl = document.querySelector('[data-fields]');
   const commandEl = document.querySelector('[data-command]');
   const updatedEl = document.querySelector('[data-updated]');
+  const heroFactsEl = document.querySelector('[data-hero-facts]');
+  const heroHintsEl = document.querySelector('[data-hero-hints]');
   const testBtn = document.querySelector('[data-command-test]');
   const alarmBtn = document.querySelector('[data-command-alarm]');
   const espAlarmBtn = document.querySelector('[data-command-esp-alarm]');
@@ -21,26 +24,37 @@
   const keysAddBtn = keysAddForm?.querySelector('button');
   const keysMsgEl = document.querySelector('[data-keys-msg]');
   const demoBannerEl = document.querySelector('[data-demo-banner]');
+  const demoChipEl = document.querySelector('[data-demo-chip]');
+  const demoDetailsEl = document.querySelector('[data-demo-details]');
+  const demoSummaryEl = document.querySelector('[data-demo-summary]');
   const demoStateEl = document.querySelector('[data-demo-state]');
   const demoTargetEl = document.querySelector('[data-demo-target]');
   const demoToggleBtn = document.querySelector('[data-demo-toggle]');
   const demoMsgEl = document.querySelector('[data-demo-msg]');
   const commandMsgEl = document.querySelector('[data-command-msg]');
-  const watchdogEl = document.querySelector('[data-watchdog]');
   const logEl = document.querySelector('[data-log]');
+  const logMoreBtn = document.querySelector('[data-log-more]');
   const miniLampEl = document.querySelector('[data-state-mini]');
+  const notifyPanelEl = document.querySelector('#meldungen');
+  const notifyListEl = document.querySelector('[data-notify-list]');
+  const notifyGlobalEl = document.querySelector('[data-notify-global]');
+  const notifyMsgEl = document.querySelector('[data-notify-msg]');
+  const notifyNoteEl = document.querySelector('[data-notify-note]');
+  const notifySummaryEl = document.querySelector('[data-notify-summary]');
 
+  // Bewusst "die Box" statt "ESP32" in allen sichtbaren Texten: So heißt sie
+  // auch im Status-Panel und in den Bark-Meldungen des Wächters.
   const STATE_LABELS = {
-    pending: 'wartet auf ESP32',
-    delivered: 'an ESP32 ausgeliefert, ACK offen',
+    pending: 'wartet auf die Box',
+    delivered: 'an die Box ausgeliefert, Bestätigung offen',
     acked: 'bestätigt',
-    expired: 'abgelaufen (ESP32 hat nicht gepollt)',
+    expired: 'abgelaufen (die Box hat ihn nicht abgeholt)',
     cancelled: 'abgebrochen'
   };
 
   // Befehls-Quittungen der Firmware sind feste englische Tokens/Sätze - hier
-  // übersetzt, damit die prominenteste Zeile der Seite nicht Denglisch ist.
-  // Unbekannte Werte (künftige Firmware) erscheinen unverändert.
+  // übersetzt, damit die Zeile nicht Denglisch ist. Unbekannte Werte
+  // (künftige Firmware) erscheinen unverändert.
   const ACK_RESULTS = {
     executed: 'ausgeführt',
     skipped_busy: 'übersprungen – Box nicht auslösebereit',
@@ -69,9 +83,11 @@
   // Zeitlimits je Anfrageart: Ohne Limit hält eine hängende Anfrage den
   // In-Flight-Guard ewig fest, und der Hero bliebe grün "Einsatzbereit".
   // REAL ALARM/ENTWARNUNG senden serverseitig an alle Empfänger (meist
-  // ~35 s, schlimmstenfalls ~60 s) - deshalb dort großzügig.
+  // ~35 s, schlimmstenfalls ~60 s) - deshalb dort großzügig. Ein einzelner
+  // Bark-Versand (Test-Push, Probe-Meldung) braucht bis ~21 s.
   const TIMEOUT_POLL_MS = 10000;
   const TIMEOUT_POST_MS = 20000;
+  const TIMEOUT_SEND_ONE_MS = 30000;
   const TIMEOUT_ALARM_MS = 120000;
   // So lange darf die letzte erfolgreiche Status-Abfrage höchstens her sein,
   // bevor der Hero auf "Status veraltet" (gelb) wechselt.
@@ -81,14 +97,20 @@
   const TZ = 'Europe/Berlin';
 
   // Große Statuslampe im Held-Bereich + Mini-Lampe in der Kopfzeile in einem
-  // Rutsch setzen. cls: 'ok' (grün), 'stale' (gelb = Aussage unsicher),
-  // 'crit' (rot, ruhig) oder 'alarm' (rot, blinkend - Alarm läuft gerade).
-  function setState(word, cls) {
+  // Rutsch setzen. cls: 'ok' (grün), 'stale' (gelb = Aussage unsicher bzw.
+  // eingeschränkt), 'crit' (rot, ruhig) oder 'alarm' (rot, blinkend - die
+  // Zustellung läuft gerade). sub = ein Satz darunter: was der Zustand
+  // bedeutet bzw. was jetzt zu tun ist.
+  function setState(word, cls, sub = '') {
     // Nur bei echter Änderung schreiben: [data-state] ist eine aria-live-Region,
     // und identischer Text alle 5 s würde Screenreader unnötig erneut ansagen.
     if (stateEl.textContent !== word) stateEl.textContent = word;
     const stateClass = 'state state-' + cls;
     if (stateEl.className !== stateClass) stateEl.className = stateClass;
+    if (stateSubEl) {
+      if (stateSubEl.textContent !== sub) stateSubEl.textContent = sub;
+      stateSubEl.hidden = sub === '';
+    }
     if (miniLampEl) {
       const miniClass = 'mini-lamp mini-' + cls;
       if (miniLampEl.className !== miniClass) miniLampEl.className = miniClass;
@@ -113,8 +135,7 @@
     return new Date(epoch * 1000).toLocaleString('de-DE', { timeZone: TZ });
   }
 
-  // Nur die Uhrzeit (HH:MM) - für "Stumm bis ~18:30". Das Datum wäre hier
-  // Rauschen, die Stummschaltung endet spätestens nach wenigen Stunden.
+  // Nur die Uhrzeit (HH:MM) - für "Stumm bis ~18:30" und den Verlauf.
   function fmtClock(epoch) {
     return new Date(epoch * 1000).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', timeZone: TZ });
   }
@@ -123,6 +144,33 @@
   // erfolgreich abgerufen um 14:03:22".
   function fmtClockMs(ms) {
     return new Date(ms).toLocaleTimeString('de-DE', { timeZone: TZ });
+  }
+
+  // Kalendertag in der Zeitzone der Wache als sortierbarer Schlüssel
+  // ("2026-11-13") - zum Gruppieren des Verlaufs und für "heute/gestern".
+  const dayKey = (epoch) => new Date(epoch * 1000).toLocaleDateString('sv-SE', { timeZone: TZ });
+
+  // Kurzes Datum + Uhrzeit ohne Komma ("13.11. 23:40") - für Fließtext.
+  function fmtDayClock(epoch) {
+    const day = new Date(epoch * 1000).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', timeZone: TZ });
+    return `${day} ${fmtClock(epoch)}`;
+  }
+
+  // Tages-Überschrift im Verlauf: "Heute", "Gestern", sonst Wochentag + Datum.
+  function fmtDayLabel(epoch, now) {
+    const key = dayKey(epoch);
+    if (key === dayKey(now)) return 'Heute';
+    if (key === dayKey(now - 86400)) return 'Gestern';
+    return new Date(epoch * 1000).toLocaleDateString('de-DE',
+      { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric', timeZone: TZ });
+  }
+
+  // "heute 21:42 Uhr" / "gestern 21:42 Uhr" / "12.11. 21:42 Uhr".
+  function fmtDayTime(epoch, now) {
+    const key = dayKey(epoch);
+    if (key === dayKey(now)) return `heute ${fmtClock(epoch)} Uhr`;
+    if (key === dayKey(now - 86400)) return `gestern ${fmtClock(epoch)} Uhr`;
+    return `${fmtDayClock(epoch)} Uhr`;
   }
 
   // Relative Zeit für junge Ereignisse ("vor 5 min"); ältere bekommen das
@@ -165,6 +213,9 @@
   // Anfrage läuft, bleiben REAL ALARM, ENTWARNUNG und DEMO-ALARM gesperrt -
   // unabhängig davon, was andere Aktionen am Zähler machen.
   let alarmInFlight = false;
+  // "Nur an die nicht Erreichten erneut senden" im Ergebnis-Kasten - wird wie
+  // die Alarm-Knöpfe gesperrt, solange etwas läuft.
+  let retryBtn = null;
 
   function applyBusy() {
     const busy = busyCount > 0;
@@ -176,7 +227,7 @@
     });
     // Den Demo-Knopf erst freigeben, wenn der Demo-Zustand bekannt ist.
     if (demoToggleBtn) demoToggleBtn.disabled = busy || !demoInfo;
-    [alarmBtn, espAlarmBtn, falseAlarmBtn].forEach((btn) => {
+    [alarmBtn, espAlarmBtn, falseAlarmBtn, retryBtn].forEach((btn) => {
       if (btn) btn.disabled = busy || alarmInFlight;
     });
   }
@@ -186,7 +237,7 @@
     applyBusy();
   }
 
-  // Flag-Werte kommen vom ESP32 als '0'/'1'-Strings.
+  // Flag-Werte kommen von der Box als '0'/'1'-Strings.
   const flagged = (v) => v === '1' || v === 1;
 
   // innerHTML nur ersetzen, wenn sich wirklich etwas geändert hat: Sonst
@@ -209,7 +260,7 @@
     const find = (key) => el.querySelector(`[data-fkey="${CSS.escape(key)}"]`);
     openTips.forEach((key) => { const help = find(key); if (help) setTipOpen(help, true); });
     // <details> VOR dem Fokus öffnen: In einem zugeklappten <details> lässt
-    // sich nichts fokussieren (z.B. die Kurzbefehl-Link-Chips).
+    // sich nichts fokussieren.
     openDetails.forEach((key) => { const d = find(key); if (d) d.open = true; });
     if (focusKey) {
       const target = find(focusKey);
@@ -217,10 +268,80 @@
     }
   }
 
+  // setHtml() überspringen lassen gilt nur, solange niemand außer setHtml()
+  // den Inhalt verändert hat. Hat die Person ein Bedienelement umgestellt und
+  // das Speichern ist gescheitert, muss trotz gleichem HTML neu gezeichnet
+  // werden (null statt undefined: undefined heißt "noch nie geladen").
+  function forceRedraw(el, render) {
+    if (el) el.__lastHtml = null;
+    render();
+  }
+
+  // ==== Rückmeldungen =======================================================
+  // EIN Muster für alle Aktionen: Die Meldung steht direkt bei dem, was sie
+  // ausgelöst hat, und zeigt per Farbe UND Zeichen (✓ ✕ !, siehe style.css),
+  // wie es ausging: 'ok' = geklappt, 'error' = nicht ausgeführt, 'warn' =
+  // unklar (z.B. Zeitüberschreitung), 'info' = läuft noch. Erfolg verschwindet
+  // nach kurzer Zeit von selbst - Fehler und Unklares bleiben stehen, bis die
+  // nächste Aktion sie ersetzt. Früher standen alle Meldungen grau am Panel-
+  // Ende (teils außer Sicht) und blieben für immer stehen.
+
+  // Lesezeit: mindestens 8 s, bei langen Texten entsprechend mehr.
+  const lingerMs = (text) => Math.max(8000, String(text).trim().split(/\s+/).length * 450);
+
+  function showMsg(el, text, kind = 'info') {
+    if (!el) return;
+    clearTimeout(el.__msgTimer);
+    el.textContent = text || '';
+    el.className = 'msg' + (text ? ' msg-' + kind : '');
+    if (text && kind === 'ok') {
+      el.__msgTimer = setTimeout(() => {
+        el.textContent = '';
+        el.className = 'msg';
+      }, lingerMs(text));
+    }
+  }
+
+  // Art der Rückmeldung aus einer Server-Antwort bzw. einem Fehler ableiten.
+  const kindOf = (data) => (data && data.ok ? 'ok' : 'error');
+  const errorKind = (err) => (err instanceof ApiError && err.kind === 'timeout' ? 'warn' : 'error');
+
+  // Rückmeldung an EINER Listenzeile (Empfänger, Art von Meldung): Die Listen
+  // werden per innerHTML neu aufgebaut, deshalb lebt die Meldung als Zustand
+  // und wird beim Zeichnen über html(id) mit eingesetzt.
+  function makeRowMsg(container, render) {
+    let current = null;
+    let timer = null;
+    return {
+      html(id) {
+        return current && current.id === String(id)
+          ? `<p class="msg msg-${current.kind}" role="status">${escapeHtml(current.text)}</p>` : '';
+      },
+      set(id, text, kind) {
+        clearTimeout(timer);
+        current = text ? { id: String(id), text, kind } : null;
+        render();
+        if (current && kind === 'ok') {
+          const clear = () => {
+            // Offene Bestätigungsfrage in der Liste? Dann nicht dazwischen
+            // neu zeichnen (sie würde kommentarlos verschwinden).
+            if (container.querySelector('.arm-confirm')) {
+              timer = setTimeout(clear, 2000);
+              return;
+            }
+            current = null;
+            render();
+          };
+          timer = setTimeout(clear, lingerMs(text));
+        }
+      }
+    };
+  }
+
   // ==== Statusfelder: Formatierung + Erklärungen ============================
-  // Die Rohwerte kommen 1:1 vom ESP32 (0/1, open/closed, Sekunden). Hier werden
-  // sie in verständliche Anzeigen übersetzt; das ?-Symbol zeigt beim Überfahren
-  // die Erklärung zu jedem Wert.
+  // Die Rohwerte kommen 1:1 von der Box (0/1, open/closed, Sekunden). Hier
+  // werden sie in verständliche Anzeigen übersetzt; das ?-Symbol zeigt beim
+  // Überfahren bzw. Antippen die Erklärung zu jedem Wert.
 
   const na = (v) => v === undefined || v === null || v === '';
   const show = (v) => na(v) ? 'n/a' : String(v);
@@ -247,7 +368,7 @@
     return `${dbm} dBm (${quality})`;
   }
 
-  // Neustart-Gründe des ESP32 (esp_reset_reason). Watchdog/Absturz/Brownout
+  // Neustart-Gründe der Box (esp_reset_reason). Watchdog/Absturz/Brownout
   // sind Warnzeichen - Einschalten und Software-Neustart sind normal.
   const RESET_REASONS = {
     poweron: 'Einschalten (normal)',
@@ -275,11 +396,17 @@
   const HEAP_WARN = 50000;
   const MAX_ALLOC_WARN = 30000;
   const lowBytes = (v, limit) => { const b = parseInt(v, 10); return !isNaN(b) && b < limit; };
+  const weakWifi = (s) => { const dbm = parseInt(s.rssi, 10); return !isNaN(dbm) && dbm <= -80; };
+  // heartbeat_ok=0 heißt nur dann "gescheitert", wenn es schon einen Versuch
+  // gab: Nach einem Neustart meldet die Box 0 und "nie", bis der erste
+  // Heartbeat fällig ist - das ist kein Fehler (gleiche Regel im Wächter-Cron).
+  const heartbeatFailed = (s) => !na(s.heartbeat_ok) && !flagged(s.heartbeat_ok)
+    && !na(s.last_heartbeat) && s.last_heartbeat !== 'nie';
 
   // Woher kam der letzte Alarm? (Feld alarm_source neuerer Firmware)
   const ALARM_SOURCES = {
     relay: 'Melder-Relais',
-    remote: 'DEMO-Alarm über ESP32 (Dashboard-Befehl)'
+    remote: 'DEMO-Alarm über die Box (Dashboard-Befehl)'
   };
 
   // Alles, was die Box meldet, wird angezeigt - aber VERDICHTET: Die 22
@@ -287,6 +414,9 @@
   // Gruppen zusammengefasst (z.B. Signalstärke + IP = eine WLAN-Zeile).
   // value() baut den Anzeigetext, cls() liefert ''/'warn'/'crit' für die
   // Warnfarbe; ctx = { offline, seenAge } für Sonderfälle (Offline-Anzeige).
+  // hint(s) = true: Die Auffälligkeit gehört zusätzlich als Hinweis in den
+  // Held-Bereich ganz oben - sonst sähe man sie nur, wenn man dieses Panel
+  // Zeile für Zeile liest.
   const ROWS = [
     { group: 'Alarmkette', label: 'Melder-Kontakt',
       tip: 'Zustand des Relaiskontakts am Swissphone-Lader: "offen" = Ruhe, "GESCHLOSSEN" = Alarmkontakt liegt an. Klemmt der Kontakt ungewöhnlich lange, meldet die Box einmalig "Kontakt klemmt?" an den Status-Empfänger.',
@@ -318,14 +448,14 @@
       },
       cls: (s) => flagged(s.alarm_pending) ? 'crit' : '' },
     { group: 'Alarmkette', label: 'Letzter Alarm',
-      tip: 'Zeitpunkt und Text des letzten ausgelösten Alarms (aus Sicht des ESP32, seit dem letzten Neustart) und – bei neuerer Firmware – woher er kam: Melder-Relais oder DEMO-Alarm per Dashboard-Befehl. "nie" heißt: kein Alarm seit dem letzten Einschalten.',
+      tip: 'Zeitpunkt und Text des letzten ausgelösten Alarms aus Sicht der Box (seit ihrem letzten Neustart) und – bei neuerer Firmware – woher er kam: Melder-Relais oder DEMO-Alarm per Dashboard-Befehl. "nie" heißt: kein Alarm seit dem letzten Einschalten. Den dauerhaften Verlauf führt das NAS (Panel "Verlauf").',
       value: (s) => {
         const text = show(s.last_alarm);
         if (na(s.alarm_source) || na(s.last_alarm) || s.last_alarm === 'nie') return text;
         return `${text} · ${ALARM_SOURCES[s.alarm_source] || String(s.alarm_source)}`;
       } },
     { group: 'Verbindung & Abgleich', label: 'WLAN',
-      tip: 'Empfangsstärke des ESP32 im WLAN des Magazins und seine aktuelle Adresse. Näher an 0 dBm ist besser: ab ca. -67 gut, unter ca. -80 unzuverlässig – dann Box oder Router umstellen. Ohne WLAN kann die Box weder Bark-Alarme senden noch das NAS erreichen.',
+      tip: 'Empfangsstärke der Box im WLAN des Magazins und ihre aktuelle Adresse. Näher an 0 dBm ist besser: ab ca. -67 gut, unter ca. -80 unzuverlässig – dann Box oder Router umstellen. Ohne WLAN kann die Box weder Bark-Alarme senden noch das NAS erreichen.',
       value: (s) => {
         if (s.wifi === 'down') return 'GETRENNT';
         if (na(s.rssi)) return 'n/a';
@@ -333,11 +463,11 @@
       },
       cls: (s) => {
         if (s.wifi === 'down') return 'crit';
-        const dbm = parseInt(s.rssi, 10);
-        return !isNaN(dbm) && dbm <= -80 ? 'warn' : '';
-      } },
+        return weakWifi(s) ? 'warn' : '';
+      },
+      hint: (s) => s.wifi === 'down' || weakWifi(s) },
     { group: 'Verbindung & Abgleich', label: 'Empfängerliste (Box)',
-      tip: 'Empfängerliste, wie sie der ESP32 gespeichert hat: Anzahl, davon stumm (Arbeitsmodus) und die Listen-Version. Stimmt die Version mit dem NAS überein, ist die Liste (auch ein Demo-Wechsel) angekommen. Im Demo-Modus steht hier genau 1 Empfänger.',
+      tip: 'Empfängerliste, wie sie die Box gespeichert hat: Anzahl, davon stumm (Arbeitsmodus) und die Listen-Version. Stimmt die Version mit dem NAS überein, ist die Liste (auch ein Demo-Wechsel) angekommen. Im Demo-Modus steht hier genau 1 Empfänger.',
       value: (s) => {
         if (na(s.keys_count)) return 'n/a';
         let text = `${s.keys_count} Empfänger`;
@@ -359,12 +489,12 @@
       tip: 'Die Box meldet sich 1x täglich leise beim Status-Empfänger ("Ich lebe noch"). Hier steht der letzte Versuch; schlug er fehl, probiert die Box es automatisch erneut.',
       value: (s) => {
         if (na(s.last_heartbeat)) return 'n/a';
-        const failed = !na(s.heartbeat_ok) && !flagged(s.heartbeat_ok);
-        return String(s.last_heartbeat) + (failed ? ' – letzter Versuch fehlgeschlagen' : '');
+        return String(s.last_heartbeat) + (heartbeatFailed(s) ? ' – letzter Versuch fehlgeschlagen' : '');
       },
-      cls: (s) => (!na(s.heartbeat_ok) && !flagged(s.heartbeat_ok)) ? 'warn' : '' },
+      cls: (s) => heartbeatFailed(s) ? 'warn' : '',
+      hint: (s) => heartbeatFailed(s) },
     { group: 'Verbindung & Abgleich', label: 'Befehls-Quittung',
-      tip: 'Hat die Box einen NAS-Befehl ausgeführt, dessen Bestätigung (ACK) noch nicht beim NAS angekommen ist? Normalerweise "keine offen" – ein Rückstand wird automatisch nachgereicht.',
+      tip: 'Hat die Box einen Befehl aus dem Dashboard ausgeführt, dessen Bestätigung noch nicht beim NAS angekommen ist? Normalerweise "keine offen" – ein Rückstand wird automatisch nachgereicht.',
       value: (s) => na(s.ack_pending) ? 'n/a'
         : (flagged(s.ack_pending) ? 'offen – wird nachgereicht' : 'keine offen'),
       cls: (s) => flagged(s.ack_pending) ? 'warn' : '' },
@@ -375,31 +505,44 @@
     { group: 'Box & Wartung', liveWhenOffline: true,
       label: (ctx) => ctx.offline ? 'Offline seit' : 'Läuft seit',
       tip: (ctx) => ctx.offline
-        ? 'Zeit seit dem letzten Lebenszeichen des ESP32 beim NAS. Mögliche Ursachen: Stromausfall, WLAN weg oder NAS nicht erreichbar.'
-        : 'Zeit seit dem letzten Neustart des ESP32. Ein unerwarteter Sprung auf wenige Minuten bedeutet: Die Box hat neu gestartet (z.B. Stromausfall oder Watchdog).',
+        ? 'Zeit seit dem letzten Lebenszeichen der Box beim NAS. Mögliche Ursachen: Stromausfall, WLAN weg oder NAS nicht erreichbar.'
+        : 'Zeit seit dem letzten Neustart der Box. Ein unerwarteter Sprung auf wenige Minuten bedeutet: Die Box hat neu gestartet (z.B. Stromausfall oder Watchdog).',
       value: (s, ctx) => ctx.offline
         ? (Number.isFinite(ctx.seenAge) ? fmtUptime(ctx.seenAge) : 'unbekannt (noch nie gemeldet)')
         : (na(s.uptime_s) ? 'n/a' : fmtUptime(s.uptime_s)),
       cls: (s, ctx) => ctx.offline ? 'crit' : '' },
     { group: 'Box & Wartung', label: 'Letzter Neustart-Grund',
-      tip: 'Warum der ESP32 zuletzt neu gestartet ist. "Einschalten"/"Software-Neustart" sind normal. Watchdog/Absturz deuten auf ein Firmware-Problem, Brownout auf ein Netzteil-/Kabelproblem hin.',
+      tip: 'Warum die Box zuletzt neu gestartet ist. "Einschalten"/"Software-Neustart" sind normal. Watchdog/Absturz deuten auf ein Firmware-Problem, Brownout auf ein Netzteil-/Kabelproblem hin.',
       value: (s) => na(s.reset_reason) ? 'n/a' : (RESET_REASONS[s.reset_reason] || String(s.reset_reason)),
-      cls: (s) => RESET_WARN.includes(String(s.reset_reason)) ? 'warn' : '' },
+      cls: (s) => RESET_WARN.includes(String(s.reset_reason)) ? 'warn' : '',
+      // Oben nur am ersten Tag nach dem Neustart - der Grund bleibt sonst
+      // wochenlang stehen und würde als Dauer-Hinweis nur noch übersehen.
+      hint: (s) => RESET_WARN.includes(String(s.reset_reason)) && parseInt(s.uptime_s, 10) < 86400 },
     { group: 'Box & Wartung', label: 'Freier Speicher',
-      tip: 'Freier Arbeitsspeicher (Heap) des ESP32. Normal sind grob 150–250 kB. Sinkt der Wert über Tage stetig, deutet das auf ein Speicherleck hin; unter ~50 kB wird es kritisch. "Größter Block" (neuere Firmware) ist das größte zusammenhängende freie Stück – unter ~30 kB können HTTPS-Verbindungen scheitern, obwohl in Summe noch genug frei ist.',
+      tip: 'Freier Arbeitsspeicher (Heap) der Box. Normal sind grob 150–250 kB. Sinkt der Wert über Tage stetig, deutet das auf ein Speicherleck hin; unter ~50 kB wird es kritisch. "Größter Block" (neuere Firmware) ist das größte zusammenhängende freie Stück – unter ~30 kB können HTTPS-Verbindungen scheitern, obwohl in Summe noch genug frei ist.',
       value: (s) => {
         if (na(s.free_heap)) return 'n/a';
         const maxAlloc = parseInt(s.max_alloc_heap, 10);
         return fmtHeap(s.free_heap) + (isNaN(maxAlloc) ? '' : ` · größter Block ${Math.round(maxAlloc / 1024)} kB`);
       },
-      cls: (s) => (lowBytes(s.free_heap, HEAP_WARN) || lowBytes(s.max_alloc_heap, MAX_ALLOC_WARN)) ? 'warn' : '' },
+      cls: (s) => (lowBytes(s.free_heap, HEAP_WARN) || lowBytes(s.max_alloc_heap, MAX_ALLOC_WARN)) ? 'warn' : '',
+      hint: (s) => lowBytes(s.free_heap, HEAP_WARN) || lowBytes(s.max_alloc_heap, MAX_ALLOC_WARN) },
     // NAS-seitig, nicht Box-seitig: Der Wächter (DSM-Aufgabe) muss auch dann
-    // laufen, wenn die Box offline ist - deshalb liveWhenOffline.
+    // laufen, wenn die Box offline ist - deshalb liveWhenOffline. Sein
+    // Hinweis für den Held-Bereich kommt direkt aus watchdogState().
     { group: 'Box & Wartung', label: 'Offline-Wächter (NAS)', liveWhenOffline: true,
-      tip: 'Die DSM-Aufgabe auf dem NAS prüft alle 15 Minuten, ob die Box sich noch meldet, und schickt sonst eine Bark-Warnung. Hier steht, ob diese Aufgabe selbst noch läuft – der Wächter darf nicht unbemerkt ausfallen.',
+      tip: 'Die DSM-Aufgabe auf dem NAS prüft alle 15 Minuten, ob die Box sich noch meldet, und schickt sonst eine Bark-Warnung. Hier steht, ob diese Aufgabe selbst noch läuft – der Wächter darf nicht unbemerkt ausfallen. Welche Meldungen er schickt, stellt der Admin im Panel "Meldungen an den Admin" ein.',
       value: (s, ctx) => ctx.watchdog ? ctx.watchdog.text : 'n/a',
-      cls: (s, ctx) => ctx.watchdog && ctx.watchdog.warn ? 'warn' : '' }
+      cls: (s, ctx) => ctx.watchdog && ctx.watchdog.warn ? 'warn' : '' },
+    // Der Gegenpart von außen: eine Cloud-VM prüft alle 5 min, ob das NAS
+    // erreichbar ist. Bewertet in outsideState(), hängt an ctx.watchdog.
+    { group: 'Box & Wartung', label: 'Außen-Wächter (Cloud)', liveWhenOffline: true,
+      tip: 'Eine kleine Cloud-VM ruft das NAS alle 5 Minuten von außen auf und meldet per Bark, wenn es nicht erreichbar ist (Strom oder Internet am Standort weg, Router, Zertifikat) oder wenn die DSM-Aufgabe nicht mehr läuft. Das NAS selbst kann seinen eigenen Ausfall nicht melden. Hier steht, wann sich die VM zuletzt gemeldet hat.',
+      value: (s, ctx) => ctx.watchdog && ctx.watchdog.outside ? ctx.watchdog.outside.text : 'nicht eingerichtet',
+      cls: (s, ctx) => ctx.watchdog && ctx.watchdog.outside && ctx.watchdog.outside.warn ? 'warn' : '' }
   ];
+
+  const rowLabel = (row, ctx) => (typeof row.label === 'function' ? row.label(ctx) : row.label);
 
   // nasNote: gesetzt, wenn das NAS selbst gerade keine aktuellen Daten
   // liefert (nicht erreichbar/Störung/veraltet) - dann ist ALLES nur der
@@ -414,7 +557,7 @@
         current = { name: row.group, rows: [] };
         groups.push(current);
       }
-      const label = typeof row.label === 'function' ? row.label(ctx) : row.label;
+      const label = rowLabel(row, ctx);
       const tip = typeof row.tip === 'function' ? row.tip(ctx) : row.tip;
       const value = row.value(status, ctx);
       const cls = row.cls ? (row.cls(status, ctx) || '') : '';
@@ -426,9 +569,11 @@
       // liest ein Screenreader ihn über aria-describedby auch wirklich vor.
       // Die tipId hängt nur an der (festen) Position in ROWS und dient
       // zugleich als data-fkey, damit setHtml() offene Blase/Fokus erhält.
+      // .help ist die (auf dem Handy 44 px große) Tippfläche, .help-dot der
+      // sichtbare kleine Kreis darin.
       const tipId = `tip-${groups.length}-${current.rows.length}`;
       current.rows.push(`<div class="tele-row${cls ? ' tele-' + cls : ''}${liveCls}">
-        <span class="tele-label">${escapeHtml(label)} <span class="help" data-fkey="${tipId}" tabindex="0" role="button" aria-expanded="false" aria-label="Erklärung zu „${escapeHtml(label)}“" aria-describedby="${tipId}"><span aria-hidden="true">?</span><span class="tip-bubble" id="${tipId}" role="tooltip">${escapeHtml(tip)}</span></span></span>
+        <span class="tele-label">${escapeHtml(label)} <span class="help" data-fkey="${tipId}" tabindex="0" role="button" aria-expanded="false" aria-label="Erklärung zu „${escapeHtml(label)}“" aria-describedby="${tipId}"><span class="help-dot" aria-hidden="true">?</span><span class="tip-bubble" id="${tipId}" role="tooltip">${escapeHtml(tip)}</span></span></span>
         <span class="tele-value">${escapeHtml(value)}</span>
       </div>`);
     });
@@ -449,7 +594,12 @@
   // lange anzeigen, danach ausblenden – sonst steht der letzte Befehl ewig da.
   const COMMAND_LINGER_S = 600;
 
+  // Zeile zum laufenden/letzten Box-Befehl (TEST, DEMO-ALARM). Beim Admin
+  // steht sie direkt unter den Knöpfen, bei der Lese-Rolle im Held-Bereich.
+  // Ohne Befehl ist sie ganz ausgeblendet: "Kein Befehl aktiv." war der
+  // Normalfall und belegte dauerhaft den wichtigsten Platz der Seite.
   function renderCommand(command, serverTime) {
+    if (!commandEl) return;
     if (command && serverTime) {
       const finishedAt = {
         acked: command.acked_at,
@@ -459,10 +609,8 @@
       if (finishedAt && serverTime - finishedAt > COMMAND_LINGER_S) command = null;
     }
     if (!command) {
-      // Leerzustand gedimmt (Klasse weg = muted-Grundfarbe): "Kein Befehl
-      // aktiv" ist der Normalfall und soll nicht wie eine Meldung wirken.
-      commandEl.textContent = 'Kein Befehl aktiv.';
-      commandEl.classList.remove('command-active');
+      commandEl.hidden = true;
+      if (commandEl.textContent !== '') commandEl.textContent = '';
       if (cancelBtn) cancelBtn.hidden = true;
       return;
     }
@@ -477,16 +625,17 @@
     if (command.state === 'cancelled' && command.cancel_reason) {
       text += ` – ${command.cancel_reason}`;
     }
-    commandEl.textContent = text;
-    commandEl.classList.add('command-active');
+    if (commandEl.textContent !== text) commandEl.textContent = text;
+    commandEl.hidden = false;
+    // Nur was noch läuft, bekommt die volle Textfarbe.
+    commandEl.classList.toggle('cmd-done', !['pending', 'delivered'].includes(command.state));
     if (cancelBtn) cancelBtn.hidden = command.state !== 'pending';
   }
 
   // Selbstüberwachung des Offline-Wächters: Der Wächter, der das Schweigen
   // der Box melden soll, darf nicht selbst unbemerkt schweigen. Der Zustand
-  // wird EINMAL bewertet und zweifach genutzt: als ruhige Statuszeile in
-  // "Box & Wartung" (immer) und als Warnzeile im Hero (NUR im Warnfall -
-  // "läuft normal" wäre dort Dauerrauschen im wichtigsten Panel).
+  // wird EINMAL bewertet und zweifach genutzt: als Statuszeile in "Box &
+  // Wartung" (immer) und im Warnfall als Hinweis im Held-Bereich.
   function watchdogState(info, serverTime) {
     if (!info) return null;
     if (!info.configured) {
@@ -509,82 +658,264 @@
     if (sendFailed > sendOk) {
       return { warn: true, text: `läuft, kann aber nicht melden (Bark-Versand fehlgeschlagen ${fmtRelTime(sendFailed, serverTime)}) – Status-Key/cURL prüfen` };
     }
+    // Läuft und könnte melden - aber der Admin hat genau die Ausfall-Meldung
+    // abgeschaltet (Panel "Meldungen an den Admin"). Das ist seine
+    // Entscheidung, soll aber nicht in Vergessenheit geraten.
+    if (info.offline_alert === false) {
+      return { warn: true, text: 'läuft, aber die Meldung „Box offline“ ist abgeschaltet – ein Ausfall der Box würde nicht gemeldet' };
+    }
+    if (info.web_alert === false) {
+      return { warn: true, text: 'läuft, aber die Meldung „NAS-Dashboard defekt“ ist abgeschaltet' };
+    }
     return { warn: false, text: `läuft (zuletzt ${age < 60 ? 'gerade eben' : 'vor ' + fmtUptime(age)})` };
   }
 
-  function renderWatchdog(state) {
-    if (!watchdogEl) return;
-    const warn = !!(state && state.warn);
-    watchdogEl.textContent = warn ? `Offline-Wächter: ${state.text}` : '';
-    watchdogEl.classList.toggle('warn-text', warn);
+  // Außen-Wächter (Cloud-VM): Sie klopft alle 5 min über api/alive.php an.
+  // Gewarnt wird erst nach 30 min Stille (sechs ausgefallene Läufe) - die
+  // Bark-Meldung des Cron-Wächters hat ihre eigene, einstellbare Frist.
+  // null = nicht eingerichtet (die Zeile zeigt dann "nicht eingerichtet").
+  const OUTSIDE_SILENT_S = 1800;
+  function outsideState(info, serverTime) {
+    if (!info || info.outside_seen_at === undefined) return null;
+    const seen = Number(info.outside_seen_at) || 0;
+    if (!seen) return { warn: true, text: 'eingerichtet, hat sich aber noch nie gemeldet – läuft die VM?' };
+    const age = Math.max(0, serverTime - seen);
+    if (age > OUTSIDE_SILENT_S) {
+      return { warn: true, text: `meldet sich seit ${fmtUptime(age)} nicht – VM in der Oracle-Konsole prüfen (gestoppt?)` };
+    }
+    return { warn: false, text: `meldet sich (zuletzt ${age < 60 ? 'gerade eben' : 'vor ' + fmtUptime(age)})` };
+  }
+
+  // ==== Held-Bereich: Fakten und Hinweise ===================================
+  // Die große Lampe sagt, ob die Kette der Box arbeitet. Ob im Ernstfall auch
+  // jemand etwas HÖRT und was zuletzt passiert ist, stand früher verstreut in
+  // drei Panels - jetzt daneben: wer alarmiert wird (und wie viele stumm
+  // sind) und wann der letzte Alarm war. Darunter alles, was gerade auffällig
+  // ist. Gefüttert aus drei Abfragen (Status, Empfängerliste, Alarm-Verlauf);
+  // jede ruft nach ihrem Eintreffen renderHeroExtras() auf.
+
+  let keysSummary = null;     // { total, muted, permanent } aus keys_list
+  let alarmInfo;              // undefined = noch nicht geladen, null = nichts im Verlauf
+  let serverOffset = 0;       // Server-Zeit minus Browser-Zeit (s)
+  let mismatchSince = 0;      // seit wann (ms) die Box eine andere Listen-Version meldet
+  const serverNow = () => Date.now() / 1000 + serverOffset;
+
+  // Ein Alarm gilt so lange als "frisch" (rot hervorgehoben, mit "vor X min").
+  const ALARM_RECENT_S = 3600;
+  const ALARM_KINDS = {
+    relay: 'Relaisalarm (Melder)',
+    demo_box: 'Demo-Alarm über die Box',
+    manual: 'manueller Alarm (Dashboard)',
+    manual_demo: 'Demo-Alarm (Dashboard)',
+    manual_open: 'manueller Alarm – Ergebnis offen'
+  };
+
+  // Jüngsten Alarm aus den Verlaufs-Einträgen (neueste zuerst) ableiten.
+  // Nachsendungen zählen nicht als eigener Alarm. Eine Entwarnung, die NACH
+  // dem Alarm kam (steht also weiter oben), wird mit angezeigt - aber ehrlich:
+  // - Eine Entwarnung, die nur an den Demo-Empfänger ging, entwarnt keinen
+  //   echten Alarm (sie wird dann nicht angerechnet).
+  // - clearedOk sagt, ob die Entwarnung ALLE erreicht hat (ggf. erst mit der
+  //   Nachsendung). Sonst bleibt der Alarm rot und die Zeile sagt es dazu.
+  function deriveAlarmInfo(entries) {
+    const isDemo = (e) => /^DEMO-MODUS/.test(e.message || '');
+    let cleared = null;        // jüngste Entwarnung nach dem Alarm: { at, ok, demo }
+    let clearResent = null;    // Ergebnis der jüngsten Entwarnungs-Nachsendung
+    let resent = null;         // Ergebnis der jüngsten Alarm-Nachsendung
+    const finish = (info, alarmIsDemo) => {
+      if (cleared && (alarmIsDemo || !cleared.demo)) {
+        info.clearedAt = cleared.at;
+        info.clearedOk = cleared.ok || clearResent === true;
+      }
+      return info;
+    };
+    for (const e of entries) {
+      if (e.resend) {
+        if (e.event === 'nas_alarm' && resent === null) resent = !!e.ok;
+        if (e.event === 'false_alarm' && clearResent === null && !cleared) clearResent = !!e.ok;
+        continue;
+      }
+      if (e.event === 'false_alarm') {
+        if (!cleared) cleared = { at: e.at, ok: !!e.ok, demo: isDemo(e) };
+      } else if (e.event === 'relay_alarm') {
+        const demo = e.source === 'remote';
+        return finish({ kind: demo ? 'demo_box' : 'relay', at: e.at }, demo);
+      } else if (e.event === 'nas_alarm') {
+        const demo = isDemo(e);
+        return finish({ kind: demo ? 'manual_demo' : 'manual', at: e.at, ok: e.ok, resent }, demo);
+      } else if (e.event === 'nas_alarm_started') {
+        return finish({ kind: 'manual_open', at: e.at }, false);
+      }
+    }
+    return null;
+  }
+
+  function lastAlarmFact() {
+    if (alarmInfo === undefined) return ['…', ''];
+    if (!alarmInfo) {
+      // Nichts im NAS-Verlauf: ersatzweise die Sicht der Box seit ihrem
+      // letzten Neustart.
+      const raw = lastStatus && !na(lastStatus.last_alarm) && lastStatus.last_alarm !== 'nie'
+        ? String(lastStatus.last_alarm) : '';
+      return [raw || 'keiner aufgezeichnet', ''];
+    }
+    const now = serverNow();
+    const age = now - alarmInfo.at;
+    const recent = age >= 0 && age < ALARM_RECENT_S;
+    let text = recent
+      ? `${fmtRelTime(alarmInfo.at, now)} (${fmtClock(alarmInfo.at)} Uhr)`
+      : fmtDayTime(alarmInfo.at, now);
+    text += `, ${ALARM_KINDS[alarmInfo.kind] || 'Alarm'}`;
+    if (alarmInfo.kind === 'manual' && alarmInfo.ok === false) {
+      text += alarmInfo.resent ? ' – nicht alle erreicht, Nachsendung zugestellt' : ' – nicht alle erreicht';
+    }
+    if (alarmInfo.clearedAt) {
+      text += alarmInfo.clearedOk
+        ? `. Entwarnung um ${fmtClock(alarmInfo.clearedAt)} Uhr gesendet`
+        : `. Entwarnung um ${fmtClock(alarmInfo.clearedAt)} Uhr – NICHT alle erreicht`;
+    }
+    // Gelb erst, wenn die Entwarnung wirklich alle erreicht hat.
+    return [text, recent ? (alarmInfo.clearedAt && alarmInfo.clearedOk ? 'warn' : 'crit') : ''];
+  }
+
+  function recipientsFact() {
+    if (demoInfo && demoInfo.enabled) {
+      return [`nur ${demoInfo.label || 'der Test-Empfänger'} (Demo-Modus)`, 'warn'];
+    }
+    if (!keysSummary) return ['…', ''];
+    const { total, muted, permanent } = keysSummary;
+    if (total === 0) return ['keine eingetragen – die Box nutzt ihre Startliste', 'warn'];
+    if (muted === 0) return [`${total}, alle laut`, ''];
+    if (muted === total) return [`${total}, ALLE stumm`, 'warn'];
+    return [`${total}, davon ${muted} stumm${permanent ? ` (${permanent} dauerhaft)` : ''}`, ''];
+  }
+
+  function renderHeroExtras() {
+    if (heroFactsEl) {
+      const rows = [['Empfänger', ...recipientsFact()], ['Letzter Alarm', ...lastAlarmFact()]];
+      setHtml(heroFactsEl, rows.map(([label, text, cls]) =>
+        `<div class="fact${cls ? ' fact-' + cls : ''}"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(text)}</dd></div>`).join(''));
+    }
+    if (!heroHintsEl) return;
+    const hints = [];
+    // Bei einer NAS-Störung sind alle Werte alt - dann keine Hinweise daraus.
+    if (!statusProblem && lastStatus) {
+      const demoOn = !!(demoInfo && demoInfo.enabled);
+      if (!demoOn && keysSummary && keysSummary.total > 0 && keysSummary.muted === keysSummary.total) {
+        hints.push(`Alle ${keysSummary.total} Empfänger sind stumm geschaltet – ein Alarm käme bei niemandem mit vollem Ton an.`);
+      }
+      if (lastWd && lastWd.warn) hints.push(`Offline-Wächter (NAS): ${lastWd.text}`);
+      if (lastWd && lastWd.outside && lastWd.outside.warn) hints.push(`Außen-Wächter (Cloud): ${lastWd.outside.text}`);
+      if (!lastOffline) {
+        const ctx = { offline: false, seenAge: lastSeenAge, watchdog: lastWd };
+        ROWS.forEach((row) => {
+          if (row.hint && row.hint(lastStatus)) hints.push(`${rowLabel(row, ctx)}: ${row.value(lastStatus, ctx)}`);
+        });
+        // Kurz nach jeder Änderung ist die Abweichung normal (die Box holt
+        // die Liste beim nächsten Abgleich) - erst melden, wenn sie anhält.
+        if (mismatchSince && Date.now() - mismatchSince > 60000) {
+          hints.push(`Empfängerliste: Die Box hat den aktuellen Stand seit ${fmtUptime((Date.now() - mismatchSince) / 1000)} nicht übernommen.`);
+        }
+      }
+    }
+    heroHintsEl.hidden = hints.length === 0;
+    setHtml(heroHintsEl, hints.map((hint) => `<li>${escapeHtml(hint)}</li>`).join(''));
   }
 
   // ==== Demo-Modus ==========================================================
-  // Der Wechsel greift auf dem ESP32 erst nach dessen nächstem Poll. Deshalb
-  // vergleicht das Banner die Listen-Version des ESP32 mit der des NAS und
+  // Der Wechsel greift auf der Box erst nach deren nächstem Abgleich. Deshalb
+  // vergleicht das Banner die Listen-Version der Box mit der des NAS und
   // sagt klar, ob man schon gefahrlos testen kann.
 
+  let prevDemoEnabled = null;
+
+  // Beschriftung der Auslöse-Knöpfe: Im Demo-Modus steht dran, wohin es geht.
+  function setLabel(btn, text) {
+    if (btn && btn.textContent !== text) btn.textContent = text;
+  }
+
   // syncUnknown: Das NAS liefert gerade keine aktuellen Daten - dann lässt
-  // sich NICHT sagen, ob der ESP32 die Demo-Liste übernommen hat (eine alte
+  // sich NICHT sagen, ob die Box die Demo-Liste übernommen hat (eine alte
   // "übernommen"-Aussage stehen zu lassen, wäre gefährlich).
   function renderDemo(status, offline, syncUnknown) {
-    if (!demoBannerEl) return;
+    const enabled = !!(demoInfo && demoInfo.enabled);
+    const target = enabled ? (demoInfo.label || 'Test-Empfänger') : '';
     const espVersion = status.keys_version;
     const synced = !offline && espVersion !== undefined && nasKeysVersion !== null
       && String(espVersion) === String(nasKeysVersion);
 
-    if (demoInfo && demoInfo.enabled) {
-      let syncText;
-      if (syncUnknown) {
-        syncText = 'Sync-Status unbekannt – keine aktuelle Antwort vom NAS. Nicht davon ausgehen, dass gefahrlos getestet werden kann!';
-      } else if (offline) {
-        syncText = 'Achtung: Der ESP32 ist OFFLINE – ein Relaisalarm würde noch mit der ALTEN Liste senden!';
-      } else if (synced) {
-        syncText = 'Der ESP32 hat die Demo-Liste übernommen – du kannst jetzt gefahrlos testen.';
+    if (demoBannerEl) {
+      if (enabled) {
+        let syncText;
+        if (syncUnknown) {
+          syncText = 'Sync-Status unbekannt – keine aktuelle Antwort vom NAS. Nicht davon ausgehen, dass gefahrlos getestet werden kann!';
+        } else if (offline) {
+          syncText = 'Achtung: Die Box ist OFFLINE – ein Relaisalarm würde noch mit der ALTEN Liste senden!';
+        } else if (synced) {
+          // Die Lese-Rolle kann nichts auslösen - für sie nur die Tatsache.
+          syncText = readOnly
+            ? 'Die Box hat die Demo-Liste übernommen.'
+            : 'Die Box hat die Demo-Liste übernommen – du kannst jetzt gefahrlos testen.';
+        } else {
+          syncText = 'Achtung: Die Box hat die Demo-Liste NOCH NICHT übernommen (das dauert einige Sekunden) – ein Relaisalarm würde noch an ALLE gehen!';
+        }
+        demoBannerEl.hidden = false;
+        setHtml(demoBannerEl, `<strong>DEMO-MODUS AKTIV</strong> – Alarme gehen NUR an
+          <strong>${escapeHtml(target)}</strong>
+          (<code>${escapeHtml(demoInfo.key_masked || '')}</code>), seit ${escapeHtml(formatTime(demoInfo.changed_at))}.<br>${syncText}`);
       } else {
-        syncText = 'Achtung: Der ESP32 hat die Demo-Liste NOCH NICHT übernommen (wartet auf den nächsten Poll) – ein Relaisalarm würde noch an ALLE gehen!';
+        demoBannerEl.hidden = true;
       }
-      demoBannerEl.hidden = false;
-      setHtml(demoBannerEl, `<strong>DEMO-MODUS AKTIV</strong> – Alarme gehen NUR an
-        <strong>${escapeHtml(demoInfo.label || 'Test-Empfänger')}</strong>
-        (<code>${escapeHtml(demoInfo.key_masked || '')}</code>), seit ${escapeHtml(formatTime(demoInfo.changed_at))}.<br>${syncText}`);
-    } else {
-      demoBannerEl.hidden = true;
+    }
+    // Chip in der klebenden Kopfzeile: Das Banner scrollt weg, der Chip nicht.
+    // Auf schmalen Bildschirmen steht nur "Demo" (der Name wird per CSS
+    // ausgeblendet), sonst bräche die Kopfzeile in zwei Zeilen um.
+    if (demoChipEl) {
+      demoChipEl.hidden = !enabled;
+      setHtml(demoChipEl, enabled
+        ? `Demo<span class="chip-long">: nur ${escapeHtml(target)}</span>` : 'Demo-Modus');
     }
 
-    if (demoStateEl && demoInfo) {
-      if (demoInfo.enabled) {
-        setHtml(demoStateEl, `Aktuell: <strong class="mode-demo">DEMO-MODUS</strong> – Test-Empfänger:
-          <strong>${escapeHtml(demoInfo.label || '?')}</strong>`);
-      } else {
-        setHtml(demoStateEl, 'Aktuell: <strong class="mode-live">LIVE</strong> – Alarme gehen an alle Empfänger.');
-      }
+    if (!demoInfo) return;
+    if (demoStateEl) {
+      setHtml(demoStateEl, enabled
+        ? `Aktuell: <strong class="mode-demo">DEMO-MODUS</strong> – Test-Empfänger: <strong>${escapeHtml(target)}</strong>`
+        : 'Aktuell: <strong class="mode-live">LIVE</strong> – Alarme gehen an alle Empfänger.');
     }
-    if (demoToggleBtn && demoInfo) {
+    if (demoSummaryEl) {
+      setLabel(demoSummaryEl, enabled ? `AKTIV – nur ${target}` : 'aus (LIVE)');
+      demoSummaryEl.classList.toggle('is-on', enabled);
+    }
+    // Beim Einschalten (auch aus einer anderen Sitzung) klappt der Block auf,
+    // damit der Schalter zum Beenden sichtbar ist. Danach bleibt er, wie die
+    // Person ihn lässt.
+    if (demoDetailsEl && enabled && prevDemoEnabled !== true) demoDetailsEl.open = true;
+    prevDemoEnabled = enabled;
+
+    if (demoToggleBtn) {
       demoToggleBtn.disabled = busyCount > 0;
-      demoToggleBtn.textContent = demoInfo.enabled
-        ? 'Demo-Modus beenden (zurück zu LIVE)'
-        : 'Demo-Modus einschalten';
+      setLabel(demoToggleBtn, enabled ? 'Demo-Modus beenden (zurück zu LIVE)' : 'Demo-Modus einschalten');
       // Rot markiert den Wechsel zurück zu LIVE (danach sind Alarme wieder "scharf").
-      demoToggleBtn.classList.toggle('danger', demoInfo.enabled);
+      demoToggleBtn.classList.toggle('danger', enabled);
     }
     if (demoTargetEl) {
       // Auswahl nur zeigen, solange sie gebraucht wird (zum Einschalten).
-      demoTargetEl.hidden = !!(demoInfo && demoInfo.enabled);
+      demoTargetEl.hidden = enabled;
     }
-    // Der ESP32-Testalarm ist ein reines Demo-Werkzeug - im LIVE-Modus wäre er
-    // ein echter Alarm an alle (der Server blockt das zusätzlich serverseitig).
+    setLabel(alarmBtn, enabled ? `ALARM (Demo: nur ${target})` : 'REAL ALARM');
+    setLabel(falseAlarmBtn, enabled ? `ENTWARNUNG (Demo: nur ${target})` : 'ENTWARNUNG (Fehlalarm)');
+    // Der Alarm über die Box ist ein reines Demo-Werkzeug - im LIVE-Modus wäre
+    // er ein echter Alarm an alle (der Server blockt das zusätzlich).
     if (espAlarmBtn) {
-      const showEspAlarm = !!(demoInfo && demoInfo.enabled);
       if (armedBtn === espAlarmBtn) {
         // Seine Inline-Bestätigung ist gerade offen (der Knopf selbst ist
         // versteckt): Endet der Demo-Modus währenddessen, wird entschärft.
-        if (!showEspAlarm) {
+        if (!enabled) {
           disarm();
           espAlarmBtn.hidden = true;
         }
       } else {
-        espAlarmBtn.hidden = !showEspAlarm;
+        espAlarmBtn.hidden = !enabled;
       }
     }
   }
@@ -602,12 +933,7 @@
     demoInfo = next;
     if (armedExpect !== null && expectDemoOf(demoInfo) !== armedExpect) {
       disarm();
-      if (alarmResultEl) {
-        alarmResultEl.hidden = false;
-        alarmResultEl.classList.remove('result-fail');
-        alarmResultEl.classList.add('result-warn');
-        alarmResultEl.textContent = 'Der Demo-/LIVE-Modus hat sich gerade geändert – Bestätigung zurückgesetzt. Bitte Lage prüfen und bei Bedarf neu auslösen.';
-      }
+      showResultNote('Der Demo-/LIVE-Modus hat sich gerade geändert – Bestätigung zurückgesetzt. Bitte Lage prüfen und bei Bedarf neu auslösen.', 'warn');
     }
   }
 
@@ -618,16 +944,18 @@
     if (!err || err.kind !== 'mode_changed' || !err.data || !err.data.demo) return;
     updateDemoInfo(err.data.demo);
     renderDemo(lastStatus || {}, lastOffline, !!statusProblem);
+    renderKeys();
+    renderHeroExtras();
   }
 
   async function performDemoSet(fields) {
     setBusy(true);
     try {
       const data = await post(fields);
-      if (demoMsgEl) demoMsgEl.textContent = data.message || 'Fehler.';
+      showMsg(demoMsgEl, data.message || 'Fehler.', kindOf(data));
       if (data.ok && data.demo) updateDemoInfo(data.demo);
     } catch (err) {
-      if (demoMsgEl) demoMsgEl.textContent = errorText(err);
+      showMsg(demoMsgEl, errorText(err), errorKind(err));
     } finally {
       setBusy(false);
       refresh();
@@ -649,7 +977,7 @@
     }
     const id = demoTargetEl?.value || '';
     if (!id) {
-      if (demoMsgEl) demoMsgEl.textContent = 'Bitte zuerst einen Empfänger in der Liste anlegen und als Test-Empfänger auswählen.';
+      showMsg(demoMsgEl, 'Bitte zuerst einen Empfänger in der Liste anlegen und als Test-Empfänger auswählen.', 'error');
       return;
     }
     const label = demoTargetEl.selectedOptions[0]?.textContent || '?';
@@ -817,6 +1145,7 @@
   let lastOffline = false;
   let lastSeenAge = NaN;
   let lastWd = null;
+  let lastAlarmMark = null;    // woran ein neuer Alarm erkannt wird (siehe refresh)
 
   const refresh = makePoller(async () => {
     try {
@@ -828,38 +1157,81 @@
       statusProblem = null;
       problemRenderKey = null;
       lastOkAt = Date.now();
-      // Ampel-Logik der Statuslampe: ein laufender Alarm (Zustellung noch
-      // offen) übersteuert das grüne "Einsatzbereit" - der wichtigste
-      // Zustand gewinnt. Offline schlägt alles.
-      const alarmActive = !data.offline && flagged(status.alarm_pending);
+      const serverTime = Number(data.server_time);
+      if (Number.isFinite(serverTime) && serverTime > 0) serverOffset = serverTime - Date.now() / 1000;
+      const offline = !!data.offline;
+
+      // Ampel-Logik der Statuslampe - der wichtigste Zustand gewinnt:
+      // Offline schlägt alles. Danach die Alarm-Zustände, dann die
+      // Einschränkungen (Kontakt klemmt, Demo-Modus), sonst grün.
+      const alarmActive = !offline && flagged(status.alarm_pending);
       // Klemmender Kontakt: Die Box ist zwar online, kann aber keinen NEUEN
-      // Alarm erkennen (wartet auf Kontakt-Öffnung) - das ist NICHT
-      // einsatzbereit. Maßgeblich ist allein stuck_warned: Das setzt die Box
-      // erst, wenn der Kontakt UNGEWÖHNLICH lange zu bleibt (30 min). Direkt
-      // nach jedem Alarm ist "Kontakt zu + wartet auf Öffnung" dagegen der
-      // Normalzustand (bis der Melder quittiert ist) - das darf nicht als
-      // Störung erscheinen. Ein reiner Cooldown bleibt ebenfalls grün.
-      const stuck = !data.offline && flagged(status.stuck_warned);
-      if (data.offline) setState('Box offline', 'crit');
-      else if (alarmActive) setState('Alarm aktiv', 'alarm');
-      else if (stuck) setState('Kontakt klemmt – keine neuen Alarme erkennbar', 'stale');
-      else setState('Einsatzbereit', 'ok');
+      // Alarm erkennen. Maßgeblich ist allein stuck_warned: Das setzt die Box
+      // erst, wenn der Kontakt UNGEWÖHNLICH lange zu bleibt (30 min).
+      const stuck = !offline && flagged(status.stuck_warned);
+      // Zustellung durch, Kontakt noch geschlossen: Der Melder steht weiter
+      // auf Alarm. Das ist nach jedem Alarm normal (bis der Melder quittiert
+      // ist) und KEINE Störung - aber eben auch nicht "alles ruhig": Früher
+      // stand hier grün "Einsatzbereit", während zwei Zeilen tiefer rot
+      // "GESCHLOSSEN (Alarm!)" stand.
+      const alarmStanding = !offline && !alarmActive && !stuck && status.relay === 'closed';
+      const demoOn = !!(demoInfo && demoInfo.enabled);
+      let icon;
+      if (offline) {
+        setState('Box offline', 'crit', readOnly
+          ? 'Relaisalarme kommen gerade NICHT an. Bitte einen Admin verständigen – er kann manuell alarmieren.'
+          : 'Relaisalarme kommen gerade NICHT an. Manuell alarmieren geht weiterhin: „REAL ALARM“ direkt hier darunter.');
+        icon = '\u{1F534} ';
+      } else if (alarmActive) {
+        setState('Alarm aktiv', 'alarm', `Die Box stellt gerade zu – bisher ${show(status.key_progress)} erreicht.`);
+        icon = '\u{1F6A8} ';
+      } else if (stuck) {
+        setState('Kontakt klemmt', 'stale',
+          'Der Melder-Kontakt ist ungewöhnlich lange geschlossen. Solange erkennt die Box keinen neuen Alarm – Melder und Lader prüfen.');
+        icon = '⚠️ ';
+      } else if (alarmStanding) {
+        setState('Alarm ausgelöst', 'crit',
+          `Zustellung abgeschlossen (${show(status.key_progress)} erreicht). Der Melder-Kontakt ist noch geschlossen – ein neuer Alarm wird erst erkannt, wenn er wieder offen war.`);
+        icon = '\u{1F6A8} ';
+      } else if (demoOn) {
+        setState('Demo-Modus', 'stale',
+          `Alarme gehen NUR an ${demoInfo.label || 'den Test-Empfänger'} – alle anderen werden gerade nicht alarmiert.`);
+        icon = '\u{1F7E1} ';
+      } else {
+        setState('Einsatzbereit', 'ok');
+        icon = '\u{1F7E2} ';
+      }
       // Status auch im Tab-Titel: so sieht man ohne Tab-Wechsel, ob alles läuft.
-      document.title = (alarmActive ? '\u{1F6A8} ' : data.offline ? '\u{1F534} ' : stuck ? '⚠️ ' : '\u{1F7E2} ') + PAGE_TITLE;
+      document.title = icon + PAGE_TITLE;
       // seen_age_seconds ist null, wenn sich die Box noch NIE gemeldet hat
       // (Number(null) wäre 0 und würde "Offline seit 0 Min" anzeigen).
       const seenAge = data.seen_age_seconds == null ? NaN : Number(data.seen_age_seconds);
       const ageText = fmtAgeShort(seenAge);
       updatedEl.textContent = `Letzter Status: ${formatTime(status.seen_at)}${ageText ? ` (${ageText})` : ''}`;
-      const wdState = watchdogState(data.watchdog, Number(data.server_time));
+      const wdState = watchdogState(data.watchdog, serverTime);
+      if (wdState) wdState.outside = outsideState(data.watchdog, serverTime);
+      // Hält die Abweichung der Listen-Version an? (Hinweis im Held-Bereich)
+      const versionsDiffer = !offline && !na(status.keys_version) && nasKeysVersion !== null
+        && String(status.keys_version) !== String(nasKeysVersion);
+      if (!versionsDiffer) mismatchSince = 0;
+      else if (!mismatchSince) mismatchSince = Date.now();
       lastStatus = status;
-      lastOffline = !!data.offline;
+      lastOffline = offline;
       lastSeenAge = seenAge;
       lastWd = wdState;
-      renderFields(status, !!data.offline, seenAge, wdState, null);
-      renderCommand(data.command, Number(data.server_time));
-      renderWatchdog(wdState);
-      renderDemo(status, !!data.offline, false);
+      renderFields(status, offline, seenAge, wdState, null);
+      renderCommand(data.command, serverTime);
+      renderDemo(status, offline, false);
+      renderHeroExtras();
+      // Neuer Alarm aus Sicht der Box (anderer Text oder Zustellung
+      // begonnen/beendet)? Dann den Alarm-Verlauf sofort nachladen, statt bis
+      // zu eine Minute auf den Takt zu warten.
+      const mark = `${status.last_alarm}|${status.alarm_pending}|${status.alarm_seq}`;
+      if (lastAlarmMark !== null && mark !== lastAlarmMark) {
+        refreshAlarmInfo();
+        refreshLog();
+      }
+      lastAlarmMark = mark;
     } catch (err) {
       if (err instanceof ApiError && err.kind === 'auth') return;   // handleAuthLoss() übernimmt
       statusProblem = err || new ApiError('http', '', 0, null);
@@ -867,7 +1239,7 @@
     }
   });
 
-  // Das NAS liefert gerade keine aktuellen Daten: NICHT dasselbe wie "ESP32
+  // Das NAS liefert gerade keine aktuellen Daten: NICHT dasselbe wie "Box
   // offline", deshalb eigene (gelbe) Zustände:
   //   - Netzwerk/Zeitlimit -> "NAS nicht erreichbar"
   //   - HTTP-Fehler        -> "NAS-Störung" + Server-Meldung
@@ -908,7 +1280,7 @@
       demoInfo ? `${demoInfo.enabled}:${demoInfo.key_id}` : ''].join('|');
     if (renderKey === problemRenderKey) return;
     problemRenderKey = renderKey;
-    setState(word, 'stale');
+    setState(word, 'stale', 'Das Dashboard bekommt gerade keine frischen Daten. Die Alarmierung der Box über Bark läuft davon unabhängig weiter.');
     document.title = '⚠️ ' + PAGE_TITLE;
     const note = `Keine aktuellen Daten vom NAS – die gedimmten Werte sind der letzte bekannte Stand${lastOkAt ? ` (abgerufen um ${fmtClockMs(lastOkAt)} Uhr)` : ''}.`;
     if (lastStatus) {
@@ -918,6 +1290,7 @@
       setHtml(fieldsEl, `<p class="stale-note">${escapeHtml(note)}</p>`);
     }
     renderDemo(lastStatus || {}, lastOffline, true);
+    renderHeroExtras();
   }
 
   // Sekündlicher Ticker (nur bei sichtbarem Tab): Kam zu lange keine
@@ -939,76 +1312,170 @@
     }, timeoutMs);
   }
 
-  // Ergebnis inline statt per alert(): alert() blockiert die ganze Seite
-  // (inklusive des 5-s-Pollings), bis jemand auf OK klickt.
-  function showCommandMsg(text) {
-    if (commandMsgEl) commandMsgEl.textContent = text;
-  }
+  // ==== Auslösen & Testen ===================================================
 
-  async function enqueueTest() {
+  // Befehl an die Box (TEST bzw. im Demo-Modus ALARM): landet in der
+  // Warteschlange, die Box holt ihn beim nächsten Abgleich ab. Die
+  // Rückmeldung und der Fortschritt stehen direkt unter den Knöpfen.
+  async function enqueue(fields) {
     setBusy(true);
     try {
-      const data = await post({ action: 'enqueue', type: 'TEST' });
-      showCommandMsg(data.message || (data.ok ? 'Befehl angelegt.' : 'Fehler.'));
-    } catch (err) {
-      showCommandMsg(errorText(err));
-    } finally {
-      setBusy(false);
-      refresh();
-      refreshLog();
-    }
-  }
-
-  // DEMO-Alarm über den ESP32: legt einen ALARM-Befehl in die Warteschlange,
-  // den die Box beim nächsten Poll abholt und wie einen echten Relaisalarm
-  // ausführt (startAlarm + Nachsende-Puffer). Der Server erlaubt das NUR im
-  // Demo-Modus und nur, wenn der ESP32 die Demo-Liste schon übernommen hat.
-  // expect_demo geht zusätzlich mit (der Server darf es prüfen, muss aber nicht).
-  async function enqueueEspAlarm(expectDemo) {
-    alarmInFlight = true;
-    setBusy(true);
-    try {
-      const data = await post({ action: 'enqueue', type: 'ALARM', expect_demo: expectDemo });
-      showCommandMsg(data.message || (data.ok ? 'Befehl angelegt.' : 'Fehler.'));
+      const data = await post(fields);
+      // Die Fortschrittszeile darüber zeigt den Befehl ab jetzt - "Befehl
+      // angelegt." allein wäre nur eine Doppelung.
+      showMsg(commandMsgEl, data.ok ? '' : (data.message || 'Fehler.'), 'error');
     } catch (err) {
       applyModeChanged(err);
-      showCommandMsg(errorText(err));
+      showMsg(commandMsgEl, errorText(err), errorKind(err));
     } finally {
-      alarmInFlight = false;
       setBusy(false);
       refresh();
       refreshLog();
     }
   }
+
+  const enqueueTest = () => enqueue({ action: 'enqueue', type: 'TEST' });
+
+  // DEMO-Alarm über die Box: wie ein echter Relaisalarm (startAlarm +
+  // Nachsende-Puffer). Der Server erlaubt das NUR im Demo-Modus und nur,
+  // wenn die Box die Demo-Liste schon übernommen hat.
+  async function enqueueEspAlarm(expectDemo) {
+    alarmInFlight = true;
+    applyBusy();
+    try {
+      await enqueue({ action: 'enqueue', type: 'ALARM', expect_demo: expectDemo });
+    } finally {
+      alarmInFlight = false;
+      applyBusy();
+    }
+  }
+
+  async function cancelCommand() {
+    setBusy(true);
+    try {
+      const data = await post({ action: 'cancel' });
+      showMsg(commandMsgEl, data.message || 'Fehler.', kindOf(data));
+    } catch (err) {
+      showMsg(commandMsgEl, errorText(err), errorKind(err));
+    } finally {
+      setBusy(false);
+      refresh();
+      refreshLog();
+    }
+  }
+
+  // ---- Ergebnis-Kasten für REAL ALARM / ENTWARNUNG -------------------------
+  // Unter Stress zählt EINE Frage: Wer wurde NICHT erreicht? Deshalb stehen
+  // die nicht Erreichten als eigene Liste zuerst (früher: eine Klammerzeile
+  // mit allen Namen), dazu die Uhrzeit des Versands und ein Knopf, der
+  // gezielt nur an sie nachsendet. Alles per DOM-Knoten/textContent gebaut.
+
+  const el = (tag, cls, text) => {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
 
   // Grund eines fehlgeschlagenen Empfängers: http 0 heißt beim NAS-Versand
   // "keine Verbindung zu Bark bzw. Zeitüberschreitung" - nicht "HTTP 0".
   const failReason = (r) => (Number(r.http) === 0 ? 'keine Verbindung/Timeout' : `HTTP ${r.http}`);
 
+  function clearResult() {
+    if (!alarmResultEl) return;
+    if (armedBtn && alarmResultEl.contains(armedBtn)) disarm();
+    retryBtn = null;
+    alarmResultEl.hidden = true;
+    alarmResultEl.className = 'result';
+    alarmResultEl.replaceChildren();
+  }
+
+  function dismissButton() {
+    const btn = el('button', 'ghost-button', 'Ausblenden');
+    btn.type = 'button';
+    btn.addEventListener('click', clearResult);
+    return btn;
+  }
+
+  // Einfache Meldung im Ergebnis-Kasten (Versand läuft, Fehler, Hinweis).
+  // kind: '' (läuft), 'fail' oder 'warn'.
+  function showResultNote(text, kind) {
+    if (!alarmResultEl) return;
+    if (armedBtn && alarmResultEl.contains(armedBtn)) disarm();
+    retryBtn = null;
+    alarmResultEl.hidden = false;
+    alarmResultEl.className = 'result' + (kind ? ' result-' + kind : '');
+    const nodes = [el('p', 'result-head', text)];
+    if (kind) {
+      const row = el('div', 'actions result-actions');
+      row.append(dismissButton());
+      nodes.push(row);
+    }
+    alarmResultEl.replaceChildren(...nodes);
+  }
+
+  function showSendResult(action, what, data) {
+    const results = Array.isArray(data.results) ? data.results : [];
+    const failed = results.filter((r) => !r.ok);
+    const reached = results.filter((r) => r.ok);
+    const name = (r) => r.label || r.key || '?';
+    retryBtn = null;
+    alarmResultEl.hidden = false;
+    alarmResultEl.className = 'result ' + (data.ok === false ? 'result-fail' : 'result-ok');
+    const nodes = [el('p', 'result-head',
+      `${fmtClockMs(Date.now())} Uhr, ${what}: ${data.message || (data.ok ? 'Gesendet.' : 'Fehler.')}`)];
+    if (failed.length) {
+      nodes.push(el('p', 'result-label', 'NICHT erreicht – bitte anders verständigen (Telefon):'));
+      const list = el('ul', 'result-list');
+      failed.forEach((r) => list.append(el('li', '', `${name(r)} (${failReason(r)})`)));
+      nodes.push(list);
+      if (reached.length) nodes.push(el('p', 'result-reached', `Erreicht: ${reached.map(name).join(', ')}`));
+    }
+    const row = el('div', 'actions result-actions');
+    // Nachsenden geht nur an Einträge der gepflegten Liste (mit id) - nicht
+    // an die Not-Liste aus config.php.
+    const retry = failed.filter((r) => Number(r.id) > 0);
+    if (retry.length) {
+      const ids = retry.map((r) => Number(r.id));
+      const btn = el('button', '', retry.length === 1
+        ? `Nur an ${name(retry[0])} erneut senden`
+        : `Nur an die ${retry.length} nicht Erreichten erneut senden`);
+      btn.type = 'button';
+      btn.addEventListener('click', () => {
+        if (alarmInFlight || btn.disabled) return;
+        // Auch die Nachsendung bestätigt den Modus, der JETZT angezeigt wird;
+        // der Server sendet nur, wenn er noch stimmt, und nur an Empfänger,
+        // die noch in der aktuellen Liste stehen.
+        const expect = expectDemoOf(demoInfo);
+        armInline(btn, `${what} erneut senden – NUR an: ${retry.map(name).join(', ')}?`,
+          'Ja, erneut senden', () => sendNasAlarm(action, expect, ids), expect);
+      });
+      retryBtn = btn;
+      row.append(btn);
+    }
+    row.append(dismissButton());
+    nodes.push(row);
+    alarmResultEl.replaceChildren(...nodes);
+    applyBusy();
+  }
+
   // REAL ALARM und ENTWARNUNG gehen direkt vom NAS an Bark - parallel an
   // alle Empfänger, meist ~35 s, schlimmstenfalls ~60 s. Währenddessen
-  // bleiben alle Alarm-Knöpfe gesperrt (alarmInFlight), und das Ergebnis
-  // erscheint pro Empfänger. Im Fehlerfall entscheidet die Fehlerart über
-  // die Aussage: "NICHT gesendet" nur dann, wenn das sicher ist - sonst
-  // "Antwort unklar", damit niemand blind ein zweites Mal alarmiert.
-  async function sendNasAlarm(action, expectDemo) {
+  // bleiben alle Alarm-Knöpfe gesperrt (alarmInFlight). Im Fehlerfall
+  // entscheidet die Fehlerart über die Aussage: "NICHT gesendet" nur dann,
+  // wenn das sicher ist - sonst "Antwort unklar", damit niemand blind ein
+  // zweites Mal alarmiert. onlyIds = Nachsendung nur an diese Empfänger.
+  async function sendNasAlarm(action, expectDemo, onlyIds = null) {
     if (!alarmResultEl) return;
-    const what = action === 'alarm' ? 'Alarm' : 'Entwarnung';
+    const what = action === 'alarm' ? 'REAL ALARM' : 'ENTWARNUNG';
     alarmInFlight = true;
     setBusy(true);
-    alarmResultEl.hidden = false;
-    alarmResultEl.classList.remove('result-fail', 'result-warn');
-    alarmResultEl.textContent = `${what} wird gesendet… (kann bis zu einer Minute dauern – Seite nicht schließen)`;
+    showResultNote(`${what} wird gesendet… (kann bis zu einer Minute dauern – Seite nicht schließen)`, '');
     try {
-      const data = await post({ action, expect_demo: expectDemo }, TIMEOUT_ALARM_MS);
-      // Namen statt maskierter Keys: Unter Stress zählt, WER fehlt.
-      const lines = (data.results || []).map((r) =>
-        `${r.label || r.key} ${r.ok ? 'OK' : `FEHLER (${failReason(r)})`}`);
-      alarmResultEl.textContent = `${data.message || (data.ok ? 'Gesendet.' : 'Fehler.')}` +
-        (lines.length ? ` [${lines.join(', ')}]` : '');
-      // Teil-/Totalausfall rot hervorheben - wer nicht erreicht wurde, muss
-      // anders (Telefon) benachrichtigt werden.
-      alarmResultEl.classList.toggle('result-fail', data.ok === false);
+      const fields = { action, expect_demo: expectDemo };
+      if (onlyIds) fields.only_ids = onlyIds.join(',');
+      const data = await post(fields, TIMEOUT_ALARM_MS);
+      showSendResult(action, what, data);
     } catch (err) {
       const kind = err instanceof ApiError ? err.kind : 'network';
       let text;
@@ -1034,8 +1501,7 @@
         else if (kind === 'http') detail = `HTTP ${err.status}${err.message ? `: ${err.message}` : ''}`;
         text = `Antwort unklar (${detail}) – ${what} wurde evtl. gesendet. Erst Verlauf prüfen, nicht sofort erneut auslösen!`;
       }
-      alarmResultEl.textContent = text;
-      alarmResultEl.classList.add(unclear ? 'result-warn' : 'result-fail');
+      showResultNote(text, unclear ? 'warn' : 'fail');
       // Der Verlauf zeigt nach ein paar Sekunden, ob der Versand gestartet
       // bzw. abgeschlossen wurde (nas_alarm_started / nas_alarm).
       if (unclear) [5000, 40000].forEach((ms) => setTimeout(refreshLog, ms));
@@ -1044,6 +1510,7 @@
       setBusy(false);
       refresh();
       refreshLog();
+      refreshAlarmInfo();
     }
   }
 
@@ -1051,24 +1518,105 @@
   // direkt vom NAS. Muss durchdringen, damit niemand umsonst losfährt.
   const sendFalseAlarm = (expectDemo) => sendNasAlarm('false_alarm', expectDemo);
 
-  // REAL ALARM: bewusst direkt vom NAS (auch bei toter ESP32-Kette).
+  // REAL ALARM: bewusst direkt vom NAS (auch bei toter Kette der Box).
   const sendRealAlarm = (expectDemo) => sendNasAlarm('alarm', expectDemo);
 
-  async function cancelCommand() {
-    setBusy(true);
-    try {
-      const data = await post({ action: 'cancel' });
-      showCommandMsg(data.message || 'Fehler.');
-    } catch (err) {
-      showCommandMsg(errorText(err));
-    } finally {
-      setBusy(false);
-      refresh();
-      refreshLog();
-    }
-  }
-
   // ==== Empfängerliste (Bark-Keys) ==========================================
+  // Eine Zeile pro Person: Name, Zustand und EIN dreiteiliger Schalter
+  // Laut | Stumm | Dauerhaft stumm (früher zwei Knöpfe mit wechselnder
+  // Beschriftung für diese drei Zustände). Selten Gebrauchtes -
+  // Stumm-Lautstärke, Kurzbefehl-Links, Test-Push, Löschen - liegt hinter
+  // "Mehr". So bleibt die Liste auch mit zehn Personen überschaubar.
+
+  let keyTestInFlight = false;    // läuft gerade ein Test-Push?
+  let lastKeys = null;            // letzte Antwort von keys_list
+  const openRows = new Set();     // ids (als Text) mit aufgeklapptem "Mehr"
+  const keysRowMsg = makeRowMsg(keysListEl, () => renderKeys());
+
+  const volWords = (vol) => (vol === 0 ? 'lautlos' : `leise (Lautstärke ${vol} von 10)`);
+
+  function renderKeys() {
+    const data = lastKeys;
+    if (!data || !keysListEl) return;
+    const demoOn = !!(demoInfo && demoInfo.enabled);
+    if (!data.keys.length) {
+      setHtml(keysListEl, '<p class="keys-empty">Noch keine Empfänger eingetragen – die Box nutzt solange ihre fest eingebaute Startliste.</p>');
+      return;
+    }
+    const note = demoOn
+      ? `<p class="keys-note">Demo-Modus: Alarmiert wird gerade nur <strong>${escapeHtml(demoInfo.label || 'der Test-Empfänger')}</strong> – alle anderen pausieren.</p>`
+      : '';
+    setHtml(keysListEl, note + data.keys.map((entry) => {
+      // id kommt als Zahl vom Server - trotzdem escaped (Grundregel).
+      // data-fkey macht die Bedienelemente für setHtml() wiedererkennbar.
+      const id = escapeHtml(String(entry.id));
+      const label = escapeHtml(entry.label);
+      // Stumm-Lautstärke (0 = lautlos): gilt, sobald der Eintrag stumm ist.
+      const vol = Number(entry.mute_volume) || 0;
+      // Zeitpunkt der automatischen Laut-Rückschaltung (Sicherheitsnetz).
+      const until = Number(entry.mute_until) || 0;
+      const permanent = !!entry.mute_permanent;
+      const state = !entry.muted ? 'loud' : (permanent ? 'permanent' : 'muted');
+      const isDemoTarget = demoOn && Number(entry.id) === Number(demoInfo.key_id);
+
+      let badge = '';
+      if (state === 'permanent') {
+        badge = '<span class="badge-muted badge-permanent">Dauerhaft stumm</span>';
+      } else if (state === 'muted') {
+        badge = `<span class="badge-muted">Stumm${until ? ` bis ~${escapeHtml(fmtClock(until))}` : ''}</span>`;
+      }
+      if (isDemoTarget) badge += '<span class="badge-demo">Demo-Empfänger</span>';
+
+      // Was "stumm" für diese Person gerade heißt - als lesbare Zeile (stand
+      // früher nur im Maus-Tooltip des Badges und war am Handy unerreichbar).
+      let sub = '';
+      if (state !== 'loud') {
+        const since = entry.muted_at ? ` Stumm seit ${fmtDayClock(entry.muted_at)} Uhr` : '';
+        let tail = '';
+        if (state === 'permanent') tail = `${since ? ',' : ''} keine automatische Rückschaltung`;
+        else if (until) tail = `${since ? ',' : ''} automatisch wieder laut um ~${fmtClock(until)} Uhr`;
+        sub = `<p class="keys-sub">${escapeHtml(`Alarme kommen ${volWords(vol)} an.${since}${tail}${since || tail ? '.' : ''}`)}</p>`;
+      }
+
+      let controls = '';
+      let more = '';
+      if (!readOnly) {
+        const open = openRows.has(String(entry.id));
+        const seg = (value, text) =>
+          `<button type="button" class="seg-btn${state === value ? ' is-on' : ''}" aria-pressed="${state === value}" data-fkey="st-${value}-${id}" data-key-state="${value}" data-key-current="${state}" data-key-id="${id}" data-key-label="${label}" data-key-vol="${vol}">${text}</button>`;
+        controls = `<div class="seg" role="group" aria-label="Alarmton für ${label}">${seg('loud', 'Laut')}${seg('muted', 'Stumm')}${seg('permanent', 'Dauerhaft stumm')}</div>
+          <button type="button" class="more-btn" data-fkey="more-${id}" data-key-more="${id}" aria-expanded="${open}">${open ? 'Weniger' : 'Mehr'}</button>`;
+        if (open) {
+          const volOptions = Array.from({ length: 11 }, (_, v) =>
+            `<option value="${v}"${v === vol ? ' selected' : ''}>${v === 0 ? '0 (lautlos)' : v}</option>`).join('');
+          // Persönliche Kurzbefehl-Links (Geheim-Token, nur der Admin sieht
+          // sie): einmal kopieren, in der Kurzbefehle-App hinterlegen.
+          const links = entry.mute_token
+            ? `<div class="keys-links"><span>Kurzbefehl-Link kopieren:</span>
+                 <button type="button" class="chip-link" data-fkey="link-on-${id}" data-key-link="${escapeHtml(entry.mute_token)}" data-key-link-state="on" data-key-id="${id}" data-key-label="${label}">Stumm</button>
+                 <button type="button" class="chip-link" data-fkey="link-off-${id}" data-key-link="${escapeHtml(entry.mute_token)}" data-key-link-state="off" data-key-id="${id}" data-key-label="${label}">Laut</button>
+               </div>`
+            : '';
+          more = `<div class="keys-more">
+              <label class="keys-volume">Stumm-Lautstärke
+                <select data-fkey="vol-${id}" data-key-volume="${id}">${volOptions}</select>
+              </label>
+              ${links}
+              <div class="keys-more-actions">
+                <button type="button" data-fkey="test-${id}" data-key-test="${id}" data-key-label="${label}">Test-Push senden</button>
+                <button type="button" class="btn-delete" data-fkey="del-${id}" data-key-delete="${id}" data-key-label="${label}">Löschen</button>
+              </div>
+            </div>`;
+        }
+      }
+      return `<div class="keys-row${state !== 'loud' ? ' muted' : ''}${demoOn && !isDemoTarget ? ' paused' : ''}">
+          <div class="keys-head">
+            <div class="keys-id"><strong>${label}</strong><code>${escapeHtml(entry.key_masked)}</code>${badge}</div>
+            ${controls}
+          </div>${sub}${keysRowMsg.html(entry.id)}${more}
+        </div>`;
+    }).join(''));
+  }
 
   const refreshKeys = makePoller(async () => {
     try {
@@ -1076,70 +1624,17 @@
       if (!data.ok) return;
       updateDemoInfo(data.demo);
       nasKeysVersion = data.version ?? nasKeysVersion;
-      // Offene "Kurzbefehl-Links"-Aufklapper, Fokus und Auswahl bleiben bei
-      // einem Neu-Rendern erhalten: setHtml() merkt sie sich über data-fkey.
-      if (!data.keys.length) {
-        setHtml(keysListEl, '<em>Noch keine Empfänger – der ESP32 nutzt seine config.h-Startliste.</em>');
-      } else {
-        setHtml(keysListEl, data.keys.map((entry) => {
-          // Stumm-Lautstärke (0 = lautlos): gilt, sobald der Eintrag stumm ist.
-          const vol = Number(entry.mute_volume) || 0;
-          const volText = vol === 0 ? '0 (lautlos)' : `${vol} von 10`;
-          // "bis ~HH:MM": Zeitpunkt der automatischen Laut-Rückschaltung
-          // (Sicherheitsnetz) - so überrascht sie später niemanden.
-          const until = Number(entry.mute_until) || 0;
-          // Dauerhaft stumm: Das Sicherheitsnetz (automatische Rückschaltung)
-          // ist für diesen Eintrag abgeschaltet - deshalb ein eigener, klar
-          // unterscheidbarer Badge OHNE Endzeit. Nur ein Mensch beendet das.
-          const permanent = !!entry.mute_permanent;
-          let badge = '';
-          if (entry.muted && permanent) {
-            badge = `<span class="badge-muted badge-permanent" title="DAUERHAFT stumm: Alarme kommen mit Stumm-Lautstärke ${volText} an (sichtbar, aber ohne vollen Ton). Stumm seit ${escapeHtml(formatTime(entry.muted_at))}. Die automatische Rückschaltung ist hier abgeschaltet – das bleibt so, bis es jemand von Hand beendet.">Dauerhaft stumm</span>`;
-          } else if (entry.muted) {
-            badge = `<span class="badge-muted" title="Arbeitsmodus: Alarme kommen mit Stumm-Lautstärke ${volText} an. Stumm seit ${escapeHtml(formatTime(entry.muted_at))}${until ? `; spätestens um ${escapeHtml(fmtClock(until))} Uhr schaltet die Box automatisch wieder laut` : ''}.">Stumm${until ? ` bis ~${escapeHtml(fmtClock(until))}` : ''}</span>`;
-          }
-          let actions = '';
-          if (!readOnly) {
-            // id kommt als Zahl vom Server - trotzdem escaped (Grundregel).
-            // data-fkey macht die Bedienelemente für setHtml() wiedererkennbar.
-            const id = escapeHtml(String(entry.id));
-            const volOptions = Array.from({ length: 11 }, (_, v) =>
-              `<option value="${v}"${v === vol ? ' selected' : ''}>${v === 0 ? '0 (lautlos)' : v}</option>`).join('');
-            // Persönliche Kurzbefehl-Links (Geheim-Token, nur der Admin sieht
-            // sie): einmal kopieren, in der Kurzbefehle-App hinterlegen.
-            // Bewusst EINGEKLAPPT unter den Aktionen - sie werden nur einmal
-            // pro Person gebraucht und sollen die Liste danach nicht länger
-            // verbreitern (weniger Knöpfe pro Zeile = ruhigeres Bild).
-            const linkRow = entry.mute_token
-              ? `<details class="keys-more" data-keys-more="${id}" data-fkey="more-${id}">
-                   <summary data-fkey="more-sum-${id}">Kurzbefehl-Links</summary>
-                   <div class="keys-links">
-                     <button type="button" class="chip-link" title="Stumm-Link kopieren" data-fkey="link-on-${id}" data-key-link="${escapeHtml(entry.mute_token)}" data-key-link-state="on" data-key-label="${escapeHtml(entry.label)}">Stumm</button>
-                     <button type="button" class="chip-link" title="Laut-Link kopieren" data-fkey="link-off-${id}" data-key-link="${escapeHtml(entry.mute_token)}" data-key-link-state="off" data-key-label="${escapeHtml(entry.label)}">Laut</button>
-                   </div>
-                 </details>`
-              : '';
-            actions = `<div class="keys-actions">
-               <label class="keys-volume">Stumm-Lautstärke
-                 <select data-fkey="vol-${id}" data-key-volume="${id}" data-key-label="${escapeHtml(entry.label)}">${volOptions}</select>
-               </label>
-               <button type="button" data-fkey="mute-${id}" data-key-mute="${id}" data-key-muted="${entry.muted ? '1' : '0'}" data-key-label="${escapeHtml(entry.label)}">${entry.muted ? 'Laut schalten' : 'Stumm schalten'}</button>
-               <button type="button" data-fkey="perm-${id}" data-key-permanent="${id}" data-key-is-permanent="${permanent ? '1' : '0'}" data-key-label="${escapeHtml(entry.label)}" title="${permanent ? 'Dauer-Stummschaltung beenden: Der Empfänger bleibt zunächst stumm, wird aber wieder automatisch laut geschaltet.' : 'Dauerhaft stumm schalten: Die automatische Rückschaltung wird für diesen Empfänger abgeschaltet. Alarme kommen weiterhin sichtbar an, aber ohne vollen Ton.'}">${permanent ? 'Dauer beenden' : 'Dauerhaft stumm'}</button>
-               <button type="button" class="btn-delete" data-fkey="del-${id}" data-key-delete="${id}" data-key-label="${escapeHtml(entry.label)}">Löschen</button>
-             </div>${linkRow}`;
-          }
-          return `<div class="keys-row${entry.muted ? ' muted' : ''}">
-             <div class="keys-head">
-               <strong>${escapeHtml(entry.label)}</strong>
-               <code>${escapeHtml(entry.key_masked)}</code>
-               ${badge}
-             </div>
-             ${actions}
-           </div>`;
-        }).join('') +
-          `<p class="hint">Listen-Version auf dem NAS: ${escapeHtml(data.version)} – der ESP32 zeigt seine übernommene Version oben in der Status-Zeile „Empfängerliste (Box)“.<br>
-           „Kurzbefehl-Links“ kopieren den persönlichen Stumm-/Laut-Link der Person (für iPhone-Kurzbefehle, z.&nbsp;B. automatisch beim Betreten/Verlassen der Arbeit).</p>`);
-      }
+      lastKeys = data;
+      keysSummary = {
+        total: data.keys.length,
+        muted: data.keys.filter((entry) => entry.muted).length,
+        permanent: data.keys.filter((entry) => entry.muted && entry.mute_permanent).length
+      };
+      // Zeilen, die es nicht mehr gibt, nicht als "aufgeklappt" mitschleppen.
+      const ids = new Set(data.keys.map((entry) => String(entry.id)));
+      openRows.forEach((id) => { if (!ids.has(id)) openRows.delete(id); });
+      renderKeys();
+      renderHeroExtras();
       // Dropdown für die Demo-Empfänger-Auswahl aus derselben Liste füllen.
       if (demoTargetEl) {
         const selected = demoTargetEl.value;
@@ -1156,14 +1651,379 @@
       // Nur wenn noch nie etwas geladen wurde, erscheint der Fehler direkt.
       if (err instanceof ApiError && err.kind === 'auth') return;
       if (keysListEl.__lastHtml === undefined) {
-        setHtml(keysListEl, '<em>Empfängerliste konnte nicht geladen werden – neuer Versuch läuft automatisch.</em>');
+        setHtml(keysListEl, '<p class="keys-empty">Empfängerliste konnte nicht geladen werden – neuer Versuch läuft automatisch.</p>');
       }
     }
   });
 
-  // ==== Verlauf (letzte Ereignisse aus dem NAS-Protokoll) ===================
+  // Eine Aktion an EINEM Empfänger: Die Rückmeldung erscheint in seiner Zeile.
+  // opts.listOnOk: Bei Erfolg gibt es die Zeile nicht mehr (Löschen) - dann
+  // steht die Meldung unter der Liste. opts.pending: Zwischenstand, solange
+  // die Anfrage läuft (Bark-Versand dauert ein paar Sekunden).
+  async function keyAction(id, fields, opts = {}) {
+    setBusy(true);
+    if (opts.pending) keysRowMsg.set(id, opts.pending, 'info');
+    let failed = false;
+    try {
+      const data = await post(fields, opts.timeoutMs || TIMEOUT_POST_MS);
+      const text = data.message || (data.ok ? 'Gespeichert.' : 'Fehler.');
+      failed = !data.ok;
+      if (opts.listOnOk && data.ok) {
+        keysRowMsg.set(id, '', 'ok');
+        showMsg(keysMsgEl, text, 'ok');
+      } else {
+        keysRowMsg.set(id, text, kindOf(data));
+      }
+    } catch (err) {
+      failed = true;
+      keysRowMsg.set(id, errorText(err), errorKind(err));
+    } finally {
+      setBusy(false);
+      // Nach einem Fehlschlag zeigt ein umgestelltes Bedienelement (z.B. die
+      // Lautstärke-Auswahl) noch den NICHT gespeicherten Wert: Die Person hat
+      // es verändert, nicht setHtml() - bei gleichem HTML würde deshalb nicht
+      // neu gezeichnet. Neuzeichnen erzwingen, damit wieder der Stand des
+      // Servers dasteht.
+      if (failed) forceRedraw(keysListEl, renderKeys);
+      refreshKeys();
+      refreshLog();
+    }
+  }
+
+  // Basis-Adresse für die Kurzbefehl-Links: bevorzugt die öffentliche
+  // Adresse aus config.php (meta public-base) - wer das Dashboard intern
+  // über die NAS-IP öffnet, soll trotzdem einen Link bekommen, der auch
+  // unterwegs auf dem iPhone funktioniert. Immer GENAU ein "/" am Ende,
+  // egal ob die Konfiguration einen hat; ungültig/leer -> aktuelle Adresse.
+  function muteLinkBase() {
+    if (publicBase) {
+      try {
+        const base = new URL(publicBase, location.href);
+        base.pathname = base.pathname.replace(/\/*$/, '/');
+        base.search = '';
+        base.hash = '';
+        return base;
+      } catch (err) {
+        // ungültige Konfiguration -> Fallback unten
+      }
+    }
+    return new URL('./', location.href);
+  }
+
+  keysListEl?.addEventListener('click', async (event) => {
+    // Dreiteiliger Schalter Laut | Stumm | Dauerhaft stumm. Bestätigt wird
+    // nur die Richtung, in der jemand weniger hört; "lauter" geht direkt.
+    const segBtn = event.target.closest('[data-key-state]');
+    if (segBtn) {
+      const want = segBtn.dataset.keyState;
+      const current = segBtn.dataset.keyCurrent;
+      const id = segBtn.dataset.keyId;
+      const name = segBtn.dataset.keyLabel;
+      if (want === current) return;
+      if (want === 'loud') {
+        keyAction(id, { action: 'keys_mute', id, muted: '0' });
+        return;
+      }
+      if (want === 'muted' && current === 'permanent') {
+        // Zurück von "dauerhaft" auf zeitlich begrenzt: Das Sicherheitsnetz
+        // greift wieder - die sichere Richtung, also ohne Rückfrage.
+        keyAction(id, { action: 'keys_set_mute_permanent', id, permanent: '0' });
+        return;
+      }
+      // Die Frage nennt die TATSÄCHLICHE Stumm-Lautstärke dieses Eintrags:
+      // "OHNE Ton" stimmt nur bei 0 - sonst kommt der Alarm leise an.
+      const vol = parseInt(segBtn.dataset.keyVol, 10) || 0;
+      const how = vol === 0 ? 'OHNE Ton' : `nur noch leise (Stumm-Lautstärke ${vol} von 10)`;
+      // Die Frage erscheint unter der Kopfzeile des Eintrags; der Schalter
+      // bleibt sichtbar (er zeigt weiter den aktuellen Zustand).
+      const place = { after: segBtn.closest('.keys-head'), hide: null };
+      if (want === 'muted') {
+        armInline(segBtn,
+          `"${name}" stumm schalten (Arbeitsmodus)? Alarme kommen dort dann ${how} an (aber weiterhin sichtbar).`,
+          'Ja, stumm schalten',
+          () => keyAction(id, { action: 'keys_mute', id, muted: '1' }), null, place);
+      } else {
+        armInline(segBtn,
+          `"${name}" DAUERHAFT stumm schalten? Alarme kommen dort weiterhin sichtbar an, aber ${how} – und die automatische Rückschaltung greift nicht mehr, bis das hier wieder beendet wird.`,
+          'Ja, dauerhaft stumm',
+          () => keyAction(id, { action: 'keys_set_mute_permanent', id, permanent: '1' }), null, place);
+      }
+      return;
+    }
+
+    const moreBtn = event.target.closest('[data-key-more]');
+    if (moreBtn) {
+      const id = moreBtn.dataset.keyMore;
+      if (openRows.has(id)) openRows.delete(id);
+      else openRows.add(id);
+      renderKeys();
+      return;
+    }
+
+    // Persönlichen Kurzbefehl-Link (Geheim-Token) in die Zwischenablage
+    // kopieren - der Link schaltet den Eintrag stumm (state=on) bzw. laut.
+    const linkBtn = event.target.closest('[data-key-link]');
+    if (linkBtn) {
+      const url = new URL('api/mute.php', muteLinkBase());
+      url.searchParams.set('t', linkBtn.dataset.keyLink);
+      url.searchParams.set('state', linkBtn.dataset.keyLinkState);
+      const what = linkBtn.dataset.keyLinkState === 'on' ? 'Stumm' : 'Laut';
+      const id = linkBtn.dataset.keyId;
+      const fkey = linkBtn.dataset.fkey;
+      try {
+        await navigator.clipboard.writeText(url.toString());
+        keysRowMsg.set(id, `„${what}“-Link für ${linkBtn.dataset.keyLabel} kopiert – im iPhone-Kurzbefehl unter „Inhalte von URL abrufen“ einfügen.`, 'ok');
+        // Erfolg auch direkt am Chip zeigen. Die Liste wurde durch die
+        // Meldung gerade neu gezeichnet - den Chip deshalb neu suchen.
+        const chip = keysListEl.querySelector(`[data-fkey="${CSS.escape(fkey)}"]`);
+        if (chip) {
+          chip.classList.add('copied');
+          chip.textContent = 'kopiert';
+          setTimeout(() => {
+            chip.classList.remove('copied');
+            chip.textContent = what;
+          }, 1600);
+        }
+      } catch (err) {
+        // Zwischenablage kann blockiert sein (alter Browser, fehlende
+        // Berechtigung) - dann den Link zum manuellen Kopieren anzeigen.
+        keysRowMsg.set(id, `Kopieren nicht möglich – Link („${what}“): ${url.toString()}`, 'warn');
+      }
+      return;
+    }
+
+    // Test-Push: normale, nicht kritische Mitteilung mit dem Alarmton -
+    // prüft einen neuen Key (und den Ton auf dem iPhone) ohne echten Alarm.
+    // Mit Rückfrage: Auf dem iPhone der Person spielt dabei der ALARMTON -
+    // das soll nicht mit einem einzelnen (versehentlichen) Tipp passieren.
+    const testPushBtn = event.target.closest('[data-key-test]');
+    if (testPushBtn) {
+      const id = testPushBtn.dataset.keyTest;
+      const name = testPushBtn.dataset.keyLabel;
+      armInline(testPushBtn,
+        `Test-Push an "${name}" senden? Auf dem iPhone dort spielt einmal der ALARMTON – als normale Mitteilung, kein Alarm (bei Stummschalter oder Fokus bleibt sie leise). Am besten vorher Bescheid geben.`,
+        'Ja, Test-Push senden',
+        () => {
+          // Solange ein Test-Push unterwegs ist, keinen zweiten hinterherschicken.
+          if (keyTestInFlight) return;
+          keyTestInFlight = true;
+          keyAction(id, { action: 'keys_test', id },
+            { pending: `Test-Push an ${name} wird gesendet…`, timeoutMs: TIMEOUT_SEND_ONE_MS })
+            .finally(() => { keyTestInFlight = false; });
+        });
+      return;
+    }
+
+    const delBtn = event.target.closest('[data-key-delete]');
+    if (!delBtn) return;
+    const id = delBtn.dataset.keyDelete;
+    armInline(delBtn,
+      `Empfänger "${delBtn.dataset.keyLabel}" wirklich löschen? Er bekommt dann KEINE Alarme mehr!`,
+      'Ja, löschen',
+      () => keyAction(id, { action: 'keys_delete', id }, { listOnOk: true }));
+  });
+
+  // Stumm-Lautstärke pro Empfänger (0 = lautlos): wirkt, sobald der Eintrag
+  // stumm geschaltet ist - für beide Alarmwege.
+  keysListEl?.addEventListener('change', (event) => {
+    const sel = event.target.closest('[data-key-volume]');
+    if (!sel) return;
+    const id = sel.dataset.keyVolume;
+    keyAction(id, { action: 'keys_set_mute_volume', id, volume: sel.value });
+  });
+
+  keysAddForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const label = keysAddForm.elements.label.value.trim();
+    const key = keysAddForm.elements.key.value.trim();
+    setBusy(true);
+    try {
+      const data = await post({ action: 'keys_add', label, key });
+      showMsg(keysMsgEl, data.message || 'Fehler.', kindOf(data));
+      if (data.ok) keysAddForm.reset();
+    } catch (err) {
+      showMsg(keysMsgEl, errorText(err), errorKind(err));
+    } finally {
+      setBusy(false);
+      refreshKeys();
+      refreshLog();
+    }
+  });
+
+  // ==== Meldungen an den Admin ==============================================
+  // Welche Statusmeldungen das NAS dem Admin schickt und wie. Arten,
+  // Beschriftungen und ALLE Auswahlmöglichkeiten kommen vom Server
+  // (notify_list) - hier wird nur gezeichnet und jede Änderung einzeln
+  // gespeichert (notify_set). Das Panel gibt es nur für den Admin.
+
+  let notifyData = null;
+  const openNotify = new Set();   // Arten mit aufgeklappten Einstellungen
+  // Läuft gerade eine Probe-Meldung? Dann sind alle "Probe senden"-Knöpfe
+  // gesperrt - der Versand dauert bis ~20 s, und ein zweiter Klick schickte
+  // sonst eine zweite (evtl. kritische) Meldung hinterher.
+  let probeInFlight = false;
+  const notifyRowMsg = notifyListEl ? makeRowMsg(notifyListEl, () => renderNotify()) : null;
+
+  const selectHtml = (opt, type, fkey) =>
+    `<label class="opt"><span class="opt-label">${escapeHtml(opt.label)}</span>
+       <select data-fkey="${fkey}" data-notify-type="${escapeHtml(type)}" data-notify-opt="${escapeHtml(opt.key)}">${opt.choices.map((c) =>
+    `<option value="${escapeHtml(c.value)}"${c.value === opt.value ? ' selected' : ''}>${escapeHtml(c.text)}</option>`).join('')}</select>
+     </label>`;
+
+  function renderNotify() {
+    const data = notifyData;
+    if (!data || !notifyListEl) return;
+    if (notifyNoteEl) {
+      notifyNoteEl.hidden = !!data.configured;
+      notifyNoteEl.textContent = data.configured ? ''
+        : 'In config.php ist kein Status-Empfänger eingetragen (bark_key_status) – das NAS verschickt deshalb gerade gar keine Meldungen. Die Einstellungen hier greifen, sobald der Key gesetzt ist.';
+    }
+    // Zusammenfassung an der eingeklappten Liste: wie viele Arten an sind.
+    if (notifySummaryEl) {
+      const on = data.types.filter((t) => t.enabled).length;
+      const summary = `${on} von ${data.types.length} Meldungen eingeschaltet – anzeigen und einstellen`;
+      if (notifySummaryEl.textContent !== summary) notifySummaryEl.textContent = summary;
+    }
+    setHtml(notifyListEl, data.types.map((t) => {
+      const key = escapeHtml(t.key);
+      const open = openNotify.has(t.key);
+      // Eingestellte Dringlichkeit als kleines Etikett - aber nur, wenn sie
+      // vom leisen Normalfall abweicht.
+      const level = t.options.find((o) => o.key === 'level');
+      const levelText = level ? ((level.choices.find((c) => c.value === level.value) || {}).text || '') : '';
+      const badge = t.enabled && level && level.value !== 'passive'
+        ? `<span class="badge-level">${escapeHtml(levelText.replace(/\s*\(.*$/, ''))}</span>` : '';
+      const more = open
+        ? `<div class="notify-more">
+             ${t.options.map((o) => selectHtml(o, t.key, `nopt-${key}-${escapeHtml(o.key)}`)).join('')}
+             <button type="button" data-fkey="ntest-${key}" data-notify-test="${key}"${probeInFlight ? ' disabled' : ''}>Probe senden</button>
+           </div>`
+        : '';
+      return `<div class="notify-row${t.enabled ? '' : ' is-off'}">
+          <div class="notify-head">
+            <label class="notify-main">
+              <input type="checkbox" class="switch" role="switch" data-fkey="nsw-${key}" data-notify-switch="${key}" data-notify-label="${escapeHtml(t.label)}" data-notify-important="${t.important ? '1' : '0'}"${t.enabled ? ' checked' : ''}>
+              <span class="notify-text"><strong>${escapeHtml(t.label)}</strong>${badge}<span class="notify-hint">${escapeHtml(t.hint)}</span></span>
+            </label>
+            <button type="button" class="more-btn" data-fkey="nmore-${key}" data-notify-more="${key}" aria-expanded="${open}">${open ? 'Weniger' : 'Einstellen'}</button>
+          </div>${notifyRowMsg.html(t.key)}${more}
+        </div>`;
+    }).join(''));
+    if (notifyGlobalEl) {
+      setHtml(notifyGlobalEl, data.global.map((o) => selectHtml(o, 'global', `ngl-${escapeHtml(o.key)}`)).join('')
+        + (data.quiet_now ? '<p class="notify-quiet">Gerade ist Ruhezeit.</p>' : ''));
+    }
+  }
+
+  const refreshNotify = makePoller(async () => {
+    if (!notifyListEl) return;
+    try {
+      const data = await api('dashboard_api.php?action=notify_list', {}, TIMEOUT_POLL_MS);
+      if (!data.ok) return;
+      notifyData = data;
+      renderNotify();
+    } catch (err) {
+      if (err instanceof ApiError && err.kind === 'auth') return;
+      if (notifyListEl.__lastHtml === undefined) {
+        setHtml(notifyListEl, '<p class="keys-empty">Einstellungen konnten nicht geladen werden – neuer Versuch läuft automatisch.</p>');
+      }
+    }
+  });
+
+  // Rückmeldung zu einer Art steht in ihrer Zeile, zu "Für alle Meldungen"
+  // direkt unter diesem Block.
+  function notifyMsg(type, text, kind) {
+    if (type === 'global') showMsg(notifyMsgEl, text, kind);
+    else notifyRowMsg.set(type, text, kind);
+  }
+
+  async function notifySet(type, key, value) {
+    setBusy(true);
+    let failed = false;
+    try {
+      const data = await post({ action: 'notify_set', type, key, value });
+      failed = !data.ok;
+      notifyMsg(type, data.message || (data.ok ? 'Gespeichert.' : 'Fehler.'), kindOf(data));
+    } catch (err) {
+      failed = true;
+      notifyMsg(type, errorText(err), errorKind(err));
+    } finally {
+      setBusy(false);
+      // Nicht gespeichert: Schalter bzw. Auswahl stehen noch auf dem Wert,
+      // den die Person gewählt hat - der Server hat aber den alten. Beide
+      // Bereiche zwingend neu zeichnen, sonst sähe z.B. eine Meldung
+      // eingeschaltet aus, die es nicht ist.
+      if (failed) {
+        if (notifyGlobalEl) notifyGlobalEl.__lastHtml = null;
+        forceRedraw(notifyListEl, renderNotify);
+      }
+      refreshNotify();
+      refreshLog();
+      refresh();   // der Wächter-Hinweis hängt an zwei dieser Einstellungen
+    }
+  }
+
+  notifyPanelEl?.addEventListener('change', (event) => {
+    const sw = event.target.closest('[data-notify-switch]');
+    if (sw) {
+      const type = sw.dataset.notifySwitch;
+      if (!sw.checked && sw.dataset.notifyImportant === '1') {
+        // Sicherheitsrelevante Meldung abschalten: erst nachfragen. Bis zur
+        // Bestätigung springt der Schalter zurück auf "ein".
+        sw.checked = true;
+        armInline(sw,
+          `Meldung „${sw.dataset.notifyLabel}“ wirklich abschalten? Das würde dir dann NICHT mehr gemeldet.`,
+          'Ja, abschalten',
+          () => notifySet(type, 'enabled', '0'), null, { after: sw.closest('.notify-head'), hide: null });
+        return;
+      }
+      notifySet(type, 'enabled', sw.checked ? '1' : '0');
+      return;
+    }
+    const sel = event.target.closest('[data-notify-opt]');
+    if (sel) notifySet(sel.dataset.notifyType, sel.dataset.notifyOpt, sel.value);
+  });
+
+  notifyPanelEl?.addEventListener('click', async (event) => {
+    const moreBtn = event.target.closest('[data-notify-more]');
+    if (moreBtn) {
+      const type = moreBtn.dataset.notifyMore;
+      if (openNotify.has(type)) openNotify.delete(type);
+      else openNotify.add(type);
+      renderNotify();
+      return;
+    }
+    const testBtnEl = event.target.closest('[data-notify-test]');
+    if (!testBtnEl) return;
+    if (probeInFlight) return;
+    const type = testBtnEl.dataset.notifyTest;
+    probeInFlight = true;
+    setBusy(true);
+    notifyRowMsg.set(type, 'Probe-Meldung wird gesendet…', 'info');
+    try {
+      const data = await post({ action: 'notify_test', type }, TIMEOUT_SEND_ONE_MS);
+      notifyRowMsg.set(type, data.message || (data.ok ? 'Gesendet.' : 'Fehler.'), kindOf(data));
+    } catch (err) {
+      notifyRowMsg.set(type, errorText(err), errorKind(err));
+    } finally {
+      probeInFlight = false;
+      setBusy(false);
+      renderNotify();   // Knöpfe wieder freigeben
+    }
+  });
+
+  // ==== Verlauf (Ereignisse aus dem NAS-Protokoll) ==========================
   // Anders als "Letzter Alarm" im Status überlebt dieser Verlauf einen
-  // ESP32-Neustart, weil er auf dem NAS liegt (commands.log).
+  // Neustart der Box, weil er auf dem NAS liegt (commands.log).
+
+  // Die Box schickt als Alarm-Info "[13.11. 21:42] <Bark-Text>" (ASCII, weil
+  // derselbe Text an Bark geht). Für den Verlauf zählt daraus nur die Zeit,
+  // zu der die BOX den Alarm erkannt hat.
+  function boxAlarmTime(info) {
+    const match = /^\[([^\]]+)\]/.exec(String(info || ''));
+    if (match) return ` (von der Box erkannt: ${match[1]})`;
+    return info ? `: ${info}` : '';
+  }
 
   function describeLogEntry(entry) {
     const who = entry.by ? ` – von ${entry.by}` : '';
@@ -1172,11 +2032,11 @@
       case 'created':
         return { text: `${cmd} angelegt${who}`, cls: '' };
       case 'delivered':
-        return { text: `${cmd} an ESP32 ausgeliefert`, cls: '' };
+        return { text: `${cmd} an die Box ausgeliefert`, cls: '' };
       case 'acked':
         return { text: `${cmd} bestätigt${entry.result ? `: ${fmtAckResult(entry.result)}` : ''}${entry.message ? ` (${fmtAckMessage(entry.message)})` : ''}`, cls: '' };
       case 'expired':
-        return { text: `${cmd} abgelaufen (ESP32 hat nicht gepollt)`, cls: 'log-warn' };
+        return { text: `${cmd} abgelaufen (die Box hat ihn nicht abgeholt)`, cls: 'log-warn' };
       case 'cancelled':
         // Mit Grund (entry.message) hat die Sicherung im NAS den Befehl
         // verworfen, z.B. weil der Demo-Modus inzwischen gewechselt hat.
@@ -1211,13 +2071,27 @@
           ? { text: `Empfänger "${entry.label}" DAUERHAFT stumm geschaltet (keine automatische Rückschaltung mehr)${src}`, cls: 'log-warn' }
           : { text: `Dauerhafte Stummschaltung für "${entry.label}" beendet (läuft wieder automatisch aus)${src}`, cls: '' };
       }
+      case 'key_test':
+        return entry.ok
+          ? { text: `Test-Push an "${entry.label}" gesendet${who}`, cls: '' }
+          : { text: `Test-Push an "${entry.label}" FEHLGESCHLAGEN${who}`, cls: 'log-warn' };
+      case 'notify_changed':
+        // key 'enabled' = eine Art von Meldung wurde ein- bzw. abgeschaltet;
+        // sonst wurde eine einzelne Einstellung geändert.
+        return entry.key === 'enabled'
+          ? { text: `Meldung an den Admin "${entry.label}" ${entry.value}${who}`, cls: entry.value === 'abgeschaltet' ? 'log-warn' : '' }
+          : { text: `Meldungen an den Admin, ${entry.label} – ${entry.option}: ${entry.value}${who}`, cls: '' };
       // *_started wird VOR dem Versand geschrieben: Steht danach kein
       // Abschluss-Eintrag (nas_alarm/false_alarm) im Verlauf, ist der Versand
       // abgebrochen - wichtig nach einer "Antwort unklar"-Meldung.
       case 'nas_alarm_started':
-        return { text: `REAL ALARM gestartet${who}`, cls: 'log-alarm' };
+        return { text: entry.resend
+          ? `REAL ALARM: Nachsendung an ${entry.resend} Empfänger gestartet${who}`
+          : `REAL ALARM gestartet${who}`, cls: 'log-alarm' };
       case 'false_alarm_started':
-        return { text: `ENTWARNUNG gestartet${who}`, cls: 'log-warn' };
+        return { text: entry.resend
+          ? `ENTWARNUNG: Nachsendung an ${entry.resend} Empfänger gestartet${who}`
+          : `ENTWARNUNG gestartet${who}`, cls: 'log-warn' };
       case 'nas_alarm':
         return { text: `REAL ALARM direkt vom NAS: ${entry.message || ''}${who}`, cls: 'log-alarm' };
       case 'false_alarm':
@@ -1225,16 +2099,22 @@
       case 'relay_alarm':
         // source 'remote' = per Dashboard-Befehl ausgelöster DEMO-Alarm (kein Melder).
         return entry.source === 'remote'
-          ? { text: `DEMO-Alarm über den ESP32 ausgelöst (Dashboard-Befehl): ${entry.info || ''}`, cls: 'log-warn' }
-          : { text: `RELAISALARM über den ESP32 ausgelöst: ${entry.info || ''}`, cls: 'log-alarm' };
+          ? { text: `DEMO-Alarm über die Box ausgelöst (Dashboard-Befehl)${boxAlarmTime(entry.info)}`, cls: 'log-warn' }
+          : { text: `RELAISALARM – der Melder hat ausgelöst${boxAlarmTime(entry.info)}`, cls: 'log-alarm' };
       case 'box_offline':
-        return { text: `ESP32 OFFLINE gemeldet (kein Status seit ${entry.minutes} min)`, cls: 'log-warn' };
+        return { text: `Box OFFLINE gemeldet (kein Status seit ${entry.minutes} min)`, cls: 'log-warn' };
       case 'box_recovered':
-        return { text: `ESP32 wieder online (Ausfall ca. ${entry.minutes} min)`, cls: '' };
+        return { text: `Box wieder online (Ausfall ca. ${entry.minutes} min)`, cls: '' };
+      case 'box_restart':
+        return { text: `Box neu gestartet – Grund: ${RESET_REASONS[entry.reason] || entry.reason || 'unbekannt'}`, cls: 'log-warn' };
       case 'nas_web_failed':
         return { text: `NAS-Dashboard gestört: ${entry.detail || 'Selbsttest fehlgeschlagen'}`, cls: 'log-alarm' };
       case 'nas_web_recovered':
         return { text: `NAS-Dashboard wieder in Ordnung (Störung ca. ${entry.minutes} min)`, cls: '' };
+      case 'watcher_silent':
+        return { text: `Außen-Wächter (Cloud) meldet sich nicht (seit ${entry.minutes} min)`, cls: 'log-warn' };
+      case 'watcher_recovered':
+        return { text: `Außen-Wächter (Cloud) wieder da (Pause ca. ${entry.minutes} min)`, cls: '' };
       default:
         return { text: String(entry.event || '?'), cls: '' };
     }
@@ -1245,202 +2125,86 @@
   const LOG_STEP = 25;
   const LOG_MAX = 100;
   let logLimit = LOG_STEP;
-  const logMoreBtn = document.querySelector('[data-log-more]');
+  // Filter: Die täglichen Stumm-Wechsel der Kurzbefehle verdrängen sonst die
+  // Alarme aus dem sichtbaren Fenster.
+  let logFilter = 'all';
+  const LOG_EMPTY = {
+    all: 'Noch keine Ereignisse aufgezeichnet.',
+    alarm: 'Keine Alarme im Verlauf.',
+    keys: 'Keine Änderungen an den Empfängern im Verlauf.',
+    system: 'Keine System-Ereignisse im Verlauf.'
+  };
 
   const refreshLog = makePoller(async () => {
     if (!logEl) return;
+    const filter = logFilter;
     try {
-      const data = await api(`dashboard_api.php?action=log_view&limit=${logLimit}`, {}, TIMEOUT_POLL_MS);
-      if (!data.ok) return;
+      const data = await api(`dashboard_api.php?action=log_view&limit=${logLimit}&filter=${filter}`, {}, TIMEOUT_POLL_MS);
+      // Filter inzwischen gewechselt: Diese Antwort gehört zum alten - die
+      // Abfrage für den neuen läuft schon hinterher (makePoller).
+      if (!data.ok || filter !== logFilter) return;
       const entries = data.entries || [];
       // Knopf nur zeigen, wenn es voraussichtlich noch mehr gibt (die Seite
       // kam "voll" zurück) und der Deckel noch nicht erreicht ist.
       if (logMoreBtn) logMoreBtn.hidden = logLimit >= LOG_MAX || entries.length < logLimit;
       if (!entries.length) {
-        setHtml(logEl, '<li class="log-plain"><em>Noch keine Ereignisse aufgezeichnet.</em></li>');
+        setHtml(logEl, `<p class="log-plain">${escapeHtml(LOG_EMPTY[filter] || LOG_EMPTY.all)}</p>`);
         return;
       }
-      const serverTime = Number(data.server_time) || Math.floor(Date.now() / 1000);
-      setHtml(logEl, entries.map((entry) => {
+      const now = Number(data.server_time) || Math.floor(Date.now() / 1000);
+      // Pro Tag eine Überschrift, in der Zeile die genaue Uhrzeit. Früher
+      // stand dort "vor 3 Std" - gerundet, und die genaue Zeit nur im
+      // Maus-Tooltip (am Handy unerreichbar).
+      let html = '';
+      let lastDay = null;
+      entries.forEach((entry) => {
+        const day = dayKey(entry.at);
+        if (day !== lastDay) {
+          if (lastDay !== null) html += '</ol>';
+          html += `<h3 class="log-day">${escapeHtml(fmtDayLabel(entry.at, now))}</h3><ol class="log-list">`;
+          lastDay = day;
+        }
         const { text, cls } = describeLogEntry(entry);
-        return `<li class="log-row${cls ? ' ' + cls : ''}">
+        html += `<li class="log-row${cls ? ' ' + cls : ''}">
           <span class="log-dot" aria-hidden="true"></span>
-          <span class="log-time" title="${escapeHtml(formatTime(entry.at))}">${escapeHtml(fmtRelTime(entry.at, serverTime))}</span>
+          <time class="log-time" datetime="${escapeHtml(new Date(entry.at * 1000).toISOString())}">${escapeHtml(fmtClock(entry.at))}</time>
           <span class="log-text">${escapeHtml(text)}</span>
         </li>`;
-      }).join(''));
+      });
+      html += '</ol>';
+      setHtml(logEl, html);
     } catch (err) {
       if (err instanceof ApiError && err.kind === 'auth') return;
       // Wie bei der Empfängerliste: letzten bekannten Stand stehen lassen.
       if (logEl.__lastHtml === undefined) {
-        setHtml(logEl, '<li class="log-plain"><em>Verlauf konnte nicht geladen werden – neuer Versuch läuft automatisch.</em></li>');
+        setHtml(logEl, '<p class="log-plain">Verlauf konnte nicht geladen werden – neuer Versuch läuft automatisch.</p>');
       }
     }
   });
 
-  // Basis-Adresse für die Kurzbefehl-Links: bevorzugt die öffentliche
-  // Adresse aus config.php (meta public-base) - wer das Dashboard intern
-  // über die NAS-IP öffnet, soll trotzdem einen Link bekommen, der auch
-  // unterwegs auf dem iPhone funktioniert. Immer GENAU ein "/" am Ende,
-  // egal ob die Konfiguration einen hat; ungültig/leer -> aktuelle Adresse.
-  function muteLinkBase() {
-    if (publicBase) {
-      try {
-        const base = new URL(publicBase, location.href);
-        base.pathname = base.pathname.replace(/\/*$/, '/');
-        base.search = '';
-        base.hash = '';
-        return base;
-      } catch (err) {
-        // ungültige Konfiguration -> Fallback unten
-      }
-    }
-    return new URL('./', location.href);
-  }
-
-  keysListEl?.addEventListener('click', async (event) => {
-    // Persönlichen Kurzbefehl-Link (Geheim-Token) in die Zwischenablage
-    // kopieren - der Link schaltet den Eintrag stumm (state=on) bzw. laut.
-    const linkBtn = event.target.closest('[data-key-link]');
-    if (linkBtn) {
-      const url = new URL('api/mute.php', muteLinkBase());
-      url.searchParams.set('t', linkBtn.dataset.keyLink);
-      url.searchParams.set('state', linkBtn.dataset.keyLinkState);
-      const what = linkBtn.dataset.keyLinkState === 'on' ? 'Stumm' : 'Laut';
-      try {
-        await navigator.clipboard.writeText(url.toString());
-        keysMsgEl.textContent = `„${what}“-Link für ${linkBtn.dataset.keyLabel} kopiert – im iPhone-Kurzbefehl unter „URL öffnen“ / „Inhalte von URL abrufen“ einfügen.`;
-        // Erfolg auch direkt am Chip zeigen - die Meldung unten übersieht
-        // man leicht. Der Grundtext ist fest ("Stumm"/"Laut"), deshalb kann
-        // die Rücksetzung ihn gefahrlos wiederherstellen.
-        linkBtn.classList.add('copied');
-        linkBtn.textContent = 'kopiert';
-        setTimeout(() => {
-          linkBtn.classList.remove('copied');
-          linkBtn.textContent = what;
-        }, 1600);
-      } catch (err) {
-        // Zwischenablage kann blockiert sein (alter Browser, fehlende
-        // Berechtigung) - dann den Link zum manuellen Kopieren anzeigen.
-        keysMsgEl.textContent = `Kopieren nicht möglich – Link („${what}“, ${linkBtn.dataset.keyLabel}): ${url.toString()}`;
-      }
-      return;
-    }
-    // Arbeitsmodus-Umschalter (Stumm/Laut) - Inline-Bestätigung nur beim
-    // Stummschalten (lauter machen ist immer die "sichere" Richtung).
-    const muteBtn = event.target.closest('[data-key-mute]');
-    if (muteBtn) {
-      const toMuted = muteBtn.dataset.keyMuted !== '1';
-      const doMute = async () => {
-        setBusy(true);
-        try {
-          const data = await post({ action: 'keys_mute', id: muteBtn.dataset.keyMute, muted: toMuted ? '1' : '0' });
-          keysMsgEl.textContent = data.message || 'Fehler.';
-        } catch (err) {
-          keysMsgEl.textContent = errorText(err);
-        } finally {
-          setBusy(false);
-          refreshKeys();
-          refreshLog();
-        }
-      };
-      if (toMuted) {
-        armInline(muteBtn,
-          `"${muteBtn.dataset.keyLabel}" stumm schalten (Arbeitsmodus)? Alarme kommen dort dann OHNE Ton an (aber weiterhin sichtbar).`,
-          'Ja, stumm schalten', doMute);
-      } else {
-        doMute();
-      }
-      return;
-    }
-
-    // Dauerhaft stumm: schaltet für EINEN Empfänger das Sicherheitsnetz ab
-    // (keine automatische Rückschaltung mehr). Einschalten ist die riskante
-    // Richtung -> Inline-Bestätigung; Beenden geht direkt.
-    const permBtn = event.target.closest('[data-key-permanent]');
-    if (permBtn) {
-      const toPermanent = permBtn.dataset.keyIsPermanent !== '1';
-      const doPermanent = async () => {
-        setBusy(true);
-        try {
-          const data = await post({
-            action: 'keys_set_mute_permanent',
-            id: permBtn.dataset.keyPermanent,
-            permanent: toPermanent ? '1' : '0',
-          });
-          keysMsgEl.textContent = data.message || 'Fehler.';
-        } catch (err) {
-          keysMsgEl.textContent = errorText(err);
-        } finally {
-          setBusy(false);
-          refreshKeys();
-          refreshLog();
-        }
-      };
-      if (toPermanent) {
-        armInline(permBtn,
-          `"${permBtn.dataset.keyLabel}" DAUERHAFT stumm schalten? Alarme kommen dort weiterhin sichtbar an, aber ohne vollen Ton – und die automatische Rückschaltung greift nicht mehr, bis du das hier wieder beendest.`,
-          'Ja, dauerhaft stumm', doPermanent);
-      } else {
-        doPermanent();
-      }
-      return;
-    }
-
-    const btn = event.target.closest('[data-key-delete]');
-    if (!btn) return;
-    armInline(btn,
-      `Empfänger "${btn.dataset.keyLabel}" wirklich löschen? Er bekommt dann KEINE Alarme mehr!`,
-      'Ja, löschen',
-      async () => {
-        setBusy(true);
-        try {
-          const data = await post({ action: 'keys_delete', id: btn.dataset.keyDelete });
-          keysMsgEl.textContent = data.message || 'Fehler.';
-        } catch (err) {
-          keysMsgEl.textContent = errorText(err);
-        } finally {
-          setBusy(false);
-          refreshKeys();
-          refreshLog();
-        }
-      });
-  });
-
-  // Stumm-Lautstärke pro Empfänger (0 = lautlos): wirkt, sobald der Eintrag
-  // stumm geschaltet ist - für beide Alarmwege.
-  keysListEl?.addEventListener('change', async (event) => {
-    const sel = event.target.closest('[data-key-volume]');
-    if (!sel) return;
-    setBusy(true);
+  // Jüngster Alarm für den Held-Bereich: eigene kleine Abfrage mit dem
+  // Alarm-Filter - unabhängig davon, was im Verlaufs-Panel gerade gefiltert
+  // oder von Stumm-Wechseln verdrängt ist.
+  const refreshAlarmInfo = makePoller(async () => {
     try {
-      const data = await post({ action: 'keys_set_mute_volume', id: sel.dataset.keyVolume, volume: sel.value });
-      keysMsgEl.textContent = data.message || 'Fehler.';
+      const data = await api('dashboard_api.php?action=log_view&limit=12&filter=alarm', {}, TIMEOUT_POLL_MS);
+      if (!data.ok) return;
+      alarmInfo = deriveAlarmInfo(data.entries || []);
+      renderHeroExtras();
     } catch (err) {
-      keysMsgEl.textContent = errorText(err);
-    } finally {
-      setBusy(false);
-      refreshKeys();
-      refreshLog();
+      // Die Fakten-Zeile behält den letzten bekannten Stand.
     }
   });
 
-  keysAddForm?.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const label = keysAddForm.elements.label.value.trim();
-    const key = keysAddForm.elements.key.value.trim();
-    setBusy(true);
-    try {
-      const data = await post({ action: 'keys_add', label, key });
-      keysMsgEl.textContent = data.message || 'Fehler.';
-      if (data.ok) keysAddForm.reset();
-    } catch (err) {
-      keysMsgEl.textContent = errorText(err);
-    } finally {
-      setBusy(false);
-      refreshKeys();
+  document.querySelectorAll('[data-log-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.logFilter === logFilter) return;
+      logFilter = btn.dataset.logFilter;
+      logLimit = LOG_STEP;
+      document.querySelectorAll('[data-log-filter]').forEach((other) =>
+        other.setAttribute('aria-pressed', other === btn ? 'true' : 'false'));
       refreshLog();
-    }
+    });
   });
 
   testBtn?.addEventListener('click', enqueueTest);
@@ -1450,19 +2214,31 @@
     logLimit = Math.min(LOG_MAX, logLimit + LOG_STEP);
     refreshLog();
   });
+  // Demo-Chip in der Kopfzeile: springt zum Demo-Schalter - der Block muss
+  // dafür aufgeklappt sein (der Sprung selbst ist der normale Anker-Link).
+  demoChipEl?.addEventListener('click', () => {
+    if (demoDetailsEl) demoDetailsEl.open = true;
+  });
 
   // ==== Zweistufige Inline-Bestätigung für Aktionen mit Folgen ==============
   // Ein natives confirm() ist mit einem einzigen (auch versehentlichen)
   // Enter-Druck bestätigt und blockiert obendrein das 5-s-Polling. Stattdessen:
-  // Der 1. Klick "schärft" nur - anstelle des Knopfs erscheint die Frage mit
-  // separatem Bestätigungsknopf, die sich nach ARM_TIMEOUT_S von selbst wieder
-  // entschärft. Gilt für ALLE bestätigungspflichtigen Aktionen (Alarm/Entwarnung,
-  // Demo-Wechsel, Stummschalten, Löschen), damit sich die Seite überall gleich
-  // anfühlt. Der Bestätigungsknopf bekommt bewusst KEINEN Auto-Fokus: Wer Enter
-  // auf dem Auslöse-Knopf drückt, kann nicht blind doppelt bestätigen - der
-  // Fokus landet stattdessen auf "Abbrechen" (die sichere Richtung).
+  // Der 1. Klick "schärft" nur - es erscheint die Frage mit separatem
+  // Bestätigungsknopf, die sich nach einer Frist von selbst wieder entschärft.
+  // Gilt für ALLE bestätigungspflichtigen Aktionen (Alarm/Entwarnung,
+  // Demo-Wechsel, Stummschalten, Löschen, wichtige Meldung abschalten), damit
+  // sich die Seite überall gleich anfühlt. Der Bestätigungsknopf bekommt
+  // bewusst KEINEN Auto-Fokus: Wer Enter auf dem Auslöse-Knopf drückt, kann
+  // nicht blind doppelt bestätigen - der Fokus landet stattdessen auf
+  // "Abbrechen" (die sichere Richtung).
 
-  const ARM_TIMEOUT_S = 10;
+  // Frist: mindestens 10 s, bei langen Fragen mehr - sonst lief die Zeit ab,
+  // bevor man eine der längeren Fragen (ca. 40 Wörter) zu Ende gelesen hatte.
+  const ARM_TIMEOUT_MIN_S = 10;
+  const ARM_TIMEOUT_MAX_S = 25;
+  const armTimeoutFor = (text) => Math.min(ARM_TIMEOUT_MAX_S, Math.max(ARM_TIMEOUT_MIN_S,
+    Math.round(4 + String(text).trim().split(/\s+/).length * 0.4)));
+
   let armedBtn = null;      // höchstens EIN geschärfter Knopf gleichzeitig
   let disarmFn = null;
   // Nur bei Alarm-Knöpfen gesetzt: der Modus (expect_demo), den die offene
@@ -1474,16 +2250,21 @@
     if (disarmFn) disarmFn();
   }
 
-  // Schärft einen konkreten Knopf: versteckt ihn und zeigt an seiner Stelle
-  // Frage + Bestätigen/Abbrechen. Funktioniert auch für Knöpfe, die per
-  // Ereignis-Delegation behandelt werden (Empfängerliste): Wird die Liste
-  // währenddessen neu gerendert, verschwindet die Frage einfach mit - es kann
-  // nichts unbeabsichtigt ausgelöst werden.
+  // Schärft einen konkreten Knopf und zeigt Frage + Bestätigen/Abbrechen.
+  // Normalfall: Die Frage ersetzt den Knopf (er wird versteckt). opts.after =
+  // anderes Element, hinter dem die Frage erscheinen soll; opts.hide = was
+  // währenddessen versteckt wird (null = nichts - z.B. bleibt der dreiteilige
+  // Stumm-Schalter sichtbar). Funktioniert auch für Knöpfe in neu gezeichneten
+  // Listen: Wird die Liste währenddessen neu aufgebaut, verschwindet die
+  // Frage einfach mit - es kann nichts unbeabsichtigt ausgelöst werden.
   // Der Countdown rechnet gegen eine feste Frist (Date.now()) statt Ticks zu
-  // zählen: iOS pausiert Timer im Hintergrund - eine "10-s-Bestätigung" darf
-  // nach der Rückkehr nicht noch minutenlang scharf sein.
-  function armInline(btn, questionText, confirmLabel, onConfirm, expectDemo = null) {
+  // zählen: iOS pausiert Timer im Hintergrund - eine Bestätigung darf nach
+  // der Rückkehr nicht noch minutenlang scharf sein.
+  function armInline(btn, questionText, confirmLabel, onConfirm, expectDemo = null, opts = {}) {
     disarm();
+    const anchor = opts.after || btn;
+    const hideEl = opts.hide === undefined ? btn : opts.hide;
+    const timeoutS = armTimeoutFor(questionText);
     const box = document.createElement('div');
     box.className = 'arm-confirm';
     const question = document.createElement('span');
@@ -1498,12 +2279,12 @@
     cancel.textContent = 'Abbrechen';
     const countdown = document.createElement('span');
     countdown.className = 'arm-count';
-    const deadline = Date.now() + ARM_TIMEOUT_S * 1000;
+    const deadline = Date.now() + timeoutS * 1000;
     const secondsLeft = () => Math.ceil((deadline - Date.now()) / 1000);
-    countdown.textContent = `${ARM_TIMEOUT_S} s`;
+    countdown.textContent = `${timeoutS} s`;
     box.append(question, yes, cancel, countdown);
-    btn.hidden = true;
-    btn.after(box);
+    if (hideEl) hideEl.hidden = true;
+    anchor.after(box);
     const timer = setInterval(() => {
       const left = secondsLeft();
       if (left <= 0) {
@@ -1520,8 +2301,8 @@
       // zurück auf den Auslöse-Knopf statt ins Leere auf <body>.
       const hadFocus = box.contains(document.activeElement);
       box.remove();
-      btn.hidden = false;
-      if (hadFocus) btn.focus();
+      if (hideEl) hideEl.hidden = false;
+      if (hadFocus && btn.isConnected) btn.focus();
       armedBtn = null;
       armedExpect = null;
       disarmFn = null;
@@ -1535,7 +2316,7 @@
       if (!expired) onConfirm();
     });
     // Fokus auf "Abbrechen": Tastatur-Nutzer verlieren den Fokus nicht (der
-    // Auslöse-Knopf ist jetzt versteckt), und ein blindes Enter bricht ab.
+    // Auslöse-Knopf ist evtl. versteckt), und ein blindes Enter bricht ab.
     cancel.focus();
   }
 
@@ -1558,7 +2339,7 @@
     'Ja, Alarm auslösen', sendRealAlarm);
 
   armButton(espAlarmBtn, (info) =>
-      `DEMO-MODUS: Alarm über den ESP32 auslösen? Er durchläuft die komplette Alarm-Kette der Box und geht an "${info?.label || 'Test-Empfänger'}". Danach greift der normale 5-Minuten-Cooldown der Box.`,
+      `DEMO-MODUS: Alarm über die Box auslösen? Er durchläuft die komplette Alarm-Kette der Box und geht an "${info?.label || 'Test-Empfänger'}". Danach greift der normale 5-Minuten-Cooldown der Box.`,
     'Ja, Demo-Alarm auslösen', enqueueEspAlarm);
 
   armButton(falseAlarmBtn, (info) => info && info.enabled
@@ -1607,30 +2388,33 @@
   // Ein tagelang im Hintergrund offener Tab würde das NAS sonst rund um die
   // Uhr alle 5 s abfragen. Beim Zurückwechseln wird sofort aktualisiert.
 
-  let refreshTimer = null;
-  let keysTimer = null;
-  let logTimer = null;
-  let tickTimer = null;
+  let timers = [];
 
   function startPolling() {
-    if (authLost || refreshTimer !== null) return;
+    if (authLost || timers.length) return;
     refresh();
     refreshKeys();
     refreshLog();
+    refreshAlarmInfo();
+    refreshNotify();
     // .tick: Der Timer überspringt einen Takt, solange die vorige Abfrage
     // noch läuft (siehe makePoller).
-    refreshTimer = setInterval(refresh.tick, 5000);
-    keysTimer = setInterval(refreshKeys.tick, 30000);
-    logTimer = setInterval(refreshLog.tick, 30000);
-    tickTimer = setInterval(tick, 1000);
+    timers = [
+      setInterval(refresh.tick, 5000),
+      setInterval(refreshKeys.tick, 30000),
+      setInterval(refreshLog.tick, 30000),
+      setInterval(refreshAlarmInfo.tick, 60000),
+      setInterval(refreshNotify.tick, 60000),
+      setInterval(tick, 1000),
+      // Zeitangaben im Held-Bereich ("vor 12 min") laufen auch ohne neue
+      // Daten weiter.
+      setInterval(renderHeroExtras, 30000)
+    ];
   }
 
   function stopPolling() {
-    clearInterval(refreshTimer);
-    clearInterval(keysTimer);
-    clearInterval(logTimer);
-    clearInterval(tickTimer);
-    refreshTimer = keysTimer = logTimer = tickTimer = null;
+    timers.forEach(clearInterval);
+    timers = [];
   }
 
   // Tab im Hintergrund: Polling aus UND jede offene Bestätigung entschärfen -

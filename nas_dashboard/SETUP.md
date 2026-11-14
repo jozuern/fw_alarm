@@ -180,6 +180,32 @@ Das Skript ist auch per HTTPS aufrufbar (POST mit dem Maschinen-Token wie bei
 `bark_key_status` aktiviert außerdem eine Meldung, wenn eine IP wegen zu
 vieler Login-Fehlversuche gesperrt wurde.
 
+**Welche Meldungen du bekommst und wie**, stellst du im Dashboard ein (Panel
+„Meldungen an den Admin“, nur Admin) – ohne etwas an `config.php` zu ändern:
+
+- pro Art von Meldung: ein/aus, Dringlichkeit (leise / normal / dringend /
+  kritisch), Verhalten in der Ruhezeit und „Probe senden“;
+- je nach Art zusätzlich: nach wie vielen Minuten die Box als offline gilt,
+  ob und wie oft erinnert wird, ob auch „wieder online“ bzw. „wieder OK“
+  gemeldet wird;
+- für alle Meldungen: Ruhezeit (dann kommt alles nur leise an, außer den
+  Arten, die du davon ausnimmst), Ton, Lautstärke kritischer Meldungen und ein
+  Stellvertreter aus der Empfängerliste, der die Meldungen zusätzlich bekommt.
+
+Ohne Änderung bleibt alles wie bisher: die bekannten Meldungen sind an und
+leise, die Werte kommen aus `config.php`. Die zusätzlichen Arten (Anmeldung am
+Dashboard, Stumm-/Laut-Wechsel per Kurzbefehl, automatisch beendete
+Stummschaltung, Neustart der Box, Auffälligkeiten an der Box, Wochenbericht)
+sind aus, bis du sie einschaltest. Schaltest du „Box offline“ oder
+„NAS-Dashboard defekt“ ab, fragt das Dashboard nach und zeigt es danach als
+Hinweis an. Steht im Ergebnis der DSM-Aufgabe `OHNE_PUSH (…)`, war eine
+Meldung fällig, aber im Dashboard abgeschaltet.
+
+Nicht einstellbar sind die Meldungen, die die Box selbst verschickt (täglicher
+Heartbeat, Start-Meldung, „Kontakt klemmt?“, Warnung bei nicht zustellbarem
+Alarm, Übernahme der Empfängerliste, Antwort auf TEST) – sie kommen aus der
+Firmware.
+
 Der Wächter übernimmt noch drei weitere Aufgaben:
 
 - **Selbsttest des Dashboards**: Der Wächter läuft als `root` und würde es
@@ -192,21 +218,33 @@ Der Wächter übernimmt noch drei weitere Aufgaben:
   die das Dashboard an Ort und Stelle beschreibt (Verlauf, Lock-Dateien,
   Sicherungen; die Meldung nennt dann die betroffene Datei). Ab **zwei Fehlschlägen in
   Folge** kommt die Bark-Meldung „NAS-Dashboard DEFEKT“, danach alle 24 h
-  erneut, bis es wieder geht (dann einmal „wieder OK“). Abhilfe meist:
+  erneut, bis es wieder geht (dann einmal „wieder OK“; Abstand und „wieder OK“
+  sind im Dashboard einstellbar). Abhilfe meist:
   File Station → `fw_alarm_data` → Eigenschaften → Berechtigung → Gruppe
   `http` Lesen + Schreiben. `health.php` antwortet nur auf Aufrufe vom NAS
   selbst, alle anderen bekommen 404.
 
 - **Demo-Modus-Erinnerung**: Bleibt der Demo-Modus länger als
   `demo_reminder_after_seconds` (Default 4 h) aktiv, erinnert er leise per
-  Bark daran (danach max. 1× pro Tag) – im Demo-Modus erreichen echte Alarme
-  nur den Test-Empfänger.
+  Bark daran (danach max. 1× pro Tag; beides im Dashboard einstellbar) – im
+  Demo-Modus erreichen echte Alarme nur den Test-Empfänger.
 - **Selbstüberwachung**: Jeder Lauf wird protokolliert; das Dashboard zeigt
   „Offline-Wächter: zuletzt gelaufen vor X min" und warnt, wenn die Aufgabe
   nie oder seit mehr als 35 Minuten nicht gelaufen ist – also mehr als zwei
   verpasste 15-Minuten-Läufe (z. B. weil sie im Aufgabenplaner deaktiviert
   wurde) – und auch, wenn sie zwar läuft, Bark ihre letzte Meldung aber
   abgelehnt hat.
+
+### Außen-Wächter (optional)
+
+Der Wächter oben läuft AUF dem NAS – fällt das NAS selbst aus (Strom oder
+Internet am Standort, Router, DDNS, Zertifikat), meldet er nichts. Dafür gibt es
+den Außen-Wächter: eine kleine kostenlose Cloud-VM, die `api/alive.php` alle
+5 Minuten von außen aufruft und per Bark meldet, wenn das NAS nicht erreichbar
+ist oder die DSM-Aufgabe nicht mehr läuft. Umgekehrt meldet der Wächter oben,
+wenn die VM verstummt. Einrichtung: [`cloud_watcher/README.md`](../cloud_watcher/README.md);
+auf dem NAS braucht es nur `api/alive.php` und `watcher_token_sha256` in
+`config.php`.
 
 ### Backup der Laufzeitdaten
 
@@ -283,13 +321,21 @@ abbrechen.
 
 Über das Command-Protokoll laufen **TEST** (leise Bark-Meldung vom ESP32 an den
 Status-Empfänger – testet WLAN, NAS-Anbindung und Bark-Versand der Box) und der
-**DEMO-ALARM über ESP32** (nur im Demo-Modus; das NAS prüft beim Anlegen UND
+**DEMO-ALARM über die Box** (nur im Demo-Modus; das NAS prüft beim Anlegen UND
 beim Ausliefern, dass der ESP32 nachweislich die Demo-Liste mit genau einem
 Empfänger hat – sonst wird der Befehl verworfen). Der manuelle **REAL ALARM**
 wird direkt vom NAS per cURL an Bark gesendet (`level=critical`, an alle
 Empfänger parallel, pro Key isoliert mit Retry, HTTP 4xx ohne Retry): Manuelle
 Alarmierung muss gerade dann funktionieren, wenn die ESP32-Kette klemmt. Sie
-hängt auch nicht am Schreibrecht auf den `data_dir`.
+hängt auch nicht am Schreibrecht auf den `data_dir`. Wurde jemand nicht
+erreicht, nennt das Dashboard ihn zuerst und bietet an, **nur an die nicht
+Erreichten** nachzusenden (das gilt genauso für die ENTWARNUNG).
+
+Zum Einrichten eines neuen Empfängers gibt es unter „Mehr“ den **Test-Push**:
+eine normale, nicht kritische Mitteilung mit dem Alarmton. Kommt sie mit dem
+Alarmton an, stimmen Key und Ton auf dem iPhone – ganz ohne Demo-Modus und
+ohne echten Alarm. Das Dashboard fragt vorher nach, weil dabei der Alarmton
+spielt.
 
 Die **Empfängerliste** liegt versioniert in `alarm_keys.json.php` im `data_dir`
 und wird im Dashboard verwaltet. `poll.php` meldet dem ESP32 bei jedem Poll die
@@ -302,7 +348,7 @@ Owner per Statusmeldung, sobald sich die Empfänger selbst geändert haben
 überfällige Stummschaltungen – so erreicht das 12-h-Sicherheitsnetz den
 Relaisweg auch ohne Cron-Wächter.
 
-Der **Demo-Modus** (Panel „Betriebsmodus", nur Admin) leitet ALLE Alarme –
+Der **Demo-Modus** (im Panel „Auslösen & Testen“ aufklappbar, nur Admin) leitet ALLE Alarme –
 Relaisalarm über den ESP32 und REAL ALARM vom NAS – auf genau einen
 Test-Empfänger aus der Liste um. Er nutzt denselben Mechanismus: `demo_mode.json.php`
 im `data_dir` merkt sich den Zustand, `api/keys.php` liefert im Demo-Modus nur
