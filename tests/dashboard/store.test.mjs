@@ -1222,3 +1222,34 @@ test('useStore: neu zeichnen nur bei Änderung des gewählten Werts', async () =
   await h.store.keyMute(1, false);
   assert.equal(renders, 2);                 // abgemeldet
 });
+
+test('Verlauf: „Ältere laden“ ist während des Ladens gesperrt (Doppeltipp = nur +25), Fehler wird gemeldet', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  const page = (n) => Array.from({ length: n }, (_, i) => ({ at: T0 - i, event: 'key_added', label: `K${i}`, key: 'abc', id: i }));
+  h.routes.log_view = (f) => reply(200, { ok: true, entries: page(Number(f.limit)), server_time: T0, filter: f.filter });
+  h.store.setRoute('verlauf');
+  await settle();
+  assert.equal(h.s().log.limit, 25);
+  assert.equal(h.s().log.more, true);
+  let release;
+  h.routes.log_view = (f) => new Promise((resolve) => { release = () => resolve(reply(200, { ok: true, entries: page(Number(f.limit)), server_time: T0, filter: f.filter })); });
+  h.store.loadMoreLog();
+  h.store.loadMoreLog();   // Doppeltipp
+  assert.equal(h.s().log.limit, 50);
+  assert.equal(h.s().log.loadingMore, true);
+  await settle();
+  assert.equal(h.gets('log_view', 'all').filter((r) => r.fields.limit === '50').length, 1);
+  release();
+  await settle();
+  assert.equal(h.s().log.loadingMore, false);
+  assert.equal(h.s().log.limit, 50);
+  assert.equal(h.s().log.entries.length, 50);
+  // Fehlschlag: Sperre löst sich, Fehlertext steht da, Einträge bleiben.
+  h.routes.log_view = () => reply(500, 'kaputt');
+  h.store.loadMoreLog();
+  await settle();
+  assert.equal(h.s().log.loadingMore, false);
+  assert.match(h.s().log.error, /Ältere Einträge/);
+  assert.equal(h.s().log.entries.length, 50);
+});

@@ -78,7 +78,7 @@
       keysCorrupt: '',          // Meldung: Liste samt Sicherung unlesbar
       keysError: '',            // Liste konnte noch nie geladen werden
       alarmInfo: undefined,     // undefined = noch nicht geladen, null = nichts im Verlauf
-      log: { filter: 'all', limit: L.LOG_STEP, entries: null, more: false, error: '', query: '', serverTime: 0 },
+      log: { filter: 'all', limit: L.LOG_STEP, entries: null, more: false, error: '', query: '', serverTime: 0, loadingMore: false },
       recent: { entries: null, serverTime: 0 },   // "Letzte Ereignisse" der breiten Übersicht
       notify: null,
       notifyError: '',
@@ -378,13 +378,19 @@
     }
   });
 
+  const LOG_MORE_ERROR = 'Ältere Einträge konnten nicht geladen werden – bitte noch einmal versuchen.';
+
   async function loadLog() {
     const { filter, limit } = state.log;
     try {
       const data = await api.get('log_view', { limit, filter }, api.TIMEOUT.POLL);
       // Filter/Umfang inzwischen gewechselt: Diese Antwort gehört zum alten
       // Stand - die Abfrage für den neuen läuft schon hinterher (Poller).
-      if (!data.ok || filter !== state.log.filter || limit !== state.log.limit) return;
+      if (filter !== state.log.filter || limit !== state.log.limit) return;
+      if (!data.ok) {
+        if (state.log.loadingMore) setLog({ loadingMore: false, error: LOG_MORE_ERROR });
+        return;
+      }
       const entries = Array.isArray(data.entries) ? data.entries : [];
       setLog({
         entries: keep(state.log.entries, entries),
@@ -392,11 +398,13 @@
         // Server-Deckel noch nicht erreicht ist.
         more: limit < L.LOG_MAX && entries.length >= limit,
         error: '',
+        loadingMore: false,
         serverTime: Number(data.server_time) || Math.floor(Date.now() / 1000)
       });
     } catch (err) {
       if (isAuth(err)) return;
       if (state.log.entries === null) setLog({ error: 'Verlauf konnte nicht geladen werden – neuer Versuch läuft automatisch.' });
+      else if (state.log.loadingMore) setLog({ loadingMore: false, error: LOG_MORE_ERROR });
     }
   }
 
@@ -990,7 +998,7 @@
   function setLogFilter(filter) {
     const f = L.LOG_FILTERS.includes(filter) ? filter : 'all';
     if (f === state.log.filter) return;
-    setLog({ filter: f, limit: L.LOG_STEP, entries: null, more: false, error: '' });
+    setLog({ filter: f, limit: L.LOG_STEP, entries: null, more: false, error: '', loadingMore: false });
     refreshLog();
   }
 
@@ -999,8 +1007,12 @@
     setLog({ query: String(query || '') });
   }
 
+  // Läuft schon ein „Ältere laden“, tut ein weiterer Aufruf nichts (sonst
+  // wüchse der Umfang bei Doppeltipp um 50). Fertig ist es mit der Antwort
+  // (loadLog) oder einem Fehler.
   function loadMoreLog() {
-    setLog({ limit: Math.min(L.LOG_MAX, state.log.limit + L.LOG_STEP) });
+    if (state.log.loadingMore || !state.log.more) return;
+    setLog({ limit: Math.min(L.LOG_MAX, state.log.limit + L.LOG_STEP), loadingMore: true, error: '' });
     refreshLog();
   }
 

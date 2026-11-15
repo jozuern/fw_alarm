@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const FW = root.FW = root.FW || {};
-  const { html, useState, useEffect, useMemo } = root.htmPreact;
+  const { html, useEffect, useMemo } = root.htmPreact;
   const store = FW.store;
   const ui = FW.ui;
   const L = FW.logic;
@@ -86,16 +86,12 @@
     const more = store.useStore((s) => s.log.more);
     const error = store.useStore((s) => s.log.error);
     const query = store.useStore((s) => s.log.query);
-    const limit = store.useStore((s) => s.log.limit);
     const serverTime = store.useStore((s) => s.log.serverTime);
-    const [busy, setBusy] = useState(false);
+    const busy = store.useStore((s) => s.log.loadingMore);
 
     // Vorwahl aus der Adresse (nur wenn sie sich ändert; unbekannt = „Alle“).
     const wanted = L.LOG_FILTERS.includes(routeQuery && routeQuery.filter) ? routeQuery.filter : 'all';
     useEffect(() => { store.setLogFilter(wanted); }, [wanted]);
-
-    // „Ältere laden“ ist durch, sobald andere Einträge/ein anderer Umfang da sind.
-    useEffect(() => { setBusy(false); }, [entries, limit, filter]);
 
     // Filterwechsel per Hand: Adresse nachführen (ohne neuen Verlaufseintrag und
     // ohne Seitenwechsel), damit Neu-Laden und Zurück den Filter behalten.
@@ -122,8 +118,9 @@
       ${view ? view.sections.map((sec) => html`<${ui.Group} key=${sec.day} header=${sec.label} class="log-day">
         ${sec.rows.map((r) => html`<${LogRow} key=${r.key} e=${r.e} d=${r.d}/>`)}
       </${ui.Group}>`) : null}
+      ${entries && error ? html`<p class="log-empty is-error" role="alert">${error}</p>` : null}
       ${entries && more ? html`<button type="button" class="btn btn-block log-more" disabled=${busy}
-        onClick=${() => { setBusy(true); store.loadMoreLog(); }}>${busy ? 'Wird geladen…' : 'Ältere laden'}</button>` : null}
+        onClick=${() => store.loadMoreLog()}>${busy ? 'Wird geladen…' : 'Ältere laden'}</button>` : null}
     </${ui.Page}>`;
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -133,8 +133,17 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     // ---- Älter laden --------------------------------------------------------
     assert(await page.eval(`!!document.querySelector('.log-more')`), '„Ältere laden“ sichtbar');
     assert(await hitHeight(page, '.log-more') >= 44, '„Ältere laden“: Tippfläche >= 44 px');
-    await page.click('.log-more');
+    // Doppeltipp: Der Umfang wächst nur um 25, der Knopf ist bis zur Antwort gesperrt.
+    const during = await page.eval(`(() => {
+      const b = document.querySelector('.log-more');
+      b.click(); b.click();
+      return { limit: FW.store.getState().log.limit, loading: FW.store.getState().log.loadingMore };
+    })()`);
+    assert(during.limit === 50 && during.loading === true, 'Doppeltipp: Umfang 50, lädt: ' + JSON.stringify(during));
     await page.waitFor(`document.querySelectorAll('.log-row').length > 25`, 10000);
+    await page.waitFor(`!FW.store.getState().log.loadingMore`, 5000);
+    assert(await page.eval(`FW.store.getState().log.limit`) === 50, 'Umfang nach Doppeltipp genau 50');
+    assert(await text(page, '.log-more') === 'Ältere laden' && await page.eval(`!document.querySelector('.log-more').disabled`), 'Knopf wieder frei');
     const more = (await rows(page)).length;
     assert(more > 25 && more <= 50, 'nach „Ältere laden“ mehr Einträge: ' + more);
 
