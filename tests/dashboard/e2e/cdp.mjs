@@ -15,6 +15,7 @@ class Page {
     this.nextId = 1;
     this.pending = new Map();
     this.waiters = [];
+    this.listeners = [];
     ws.addEventListener('message', (ev) => {
       const msg = JSON.parse(ev.data);
       if (msg.id && this.pending.has(msg.id)) {
@@ -23,8 +24,14 @@ class Page {
         msg.error ? reject(new Error(msg.error.message)) : resolve(msg.result);
       } else if (msg.method) {
         this.waiters = this.waiters.filter((w) => !(w.method === msg.method && (w.resolve(msg.params), true)));
+        this.listeners.forEach((l) => { if (l.method === msg.method) l.fn(msg.params); });
       }
     });
+  }
+
+  // Dauerhafter Empfänger für ein CDP-Ereignis (z.B. Konsolenfehler sammeln).
+  on(method, fn) {
+    this.listeners.push({ method, fn });
   }
 
   send(method, params = {}) {

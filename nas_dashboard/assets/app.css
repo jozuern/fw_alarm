@@ -1,0 +1,1549 @@
+/* ==========================================================================
+   Alarm-Wächter – Stylesheet der neuen Oberfläche (einziges Stylesheet).
+   Richtung „Native“, dunkel als Standard: echtes Schwarz, gruppierte Listen,
+   eine Akzentfarbe, Farbe nur mit Bedeutung (Spec §5). Keine Verläufe, kein
+   Glas, keine Schatten-Karten; Systemschrift, Ziffern tabellarisch.
+   Raster 4 px, Tippflächen mind. 44 px. Breakpoint 900 px (wie main.js).
+   ========================================================================== */
+
+/* ---- 1. Farben und Maße (Tokens) ---------------------------------------- */
+/* Dunkel = Standard. Die ersten 14 Werte sind die abgestimmten Tokens; die
+   *-text-Varianten sind für Schrift (im Hellen dunkler, damit WCAG AA hält). */
+:root {
+  color-scheme: dark;
+  --bg: #000000;
+  --surface: #1c1c1e;
+  --surface-2: #2c2c2e;
+  --surface-3: #3a3a3c;
+  --separator: #38383a;
+  --text: #ffffff;
+  --text-2: #98989f;
+  --text-3: #5a5a5e;
+  --accent: #ff453a;
+  --alarm: #ff3b30;
+  --ok: #30d158;
+  --warn: #ff9f0a;
+  --crit: #ff6961;
+  --info: #0a84ff;
+
+  --accent-text: var(--accent);
+  --ok-text: var(--ok);
+  --warn-text: var(--warn);
+  --crit-text: var(--crit);
+  --info-text: var(--info);
+  /* Unbekannte Werte (Box offline, NAS antwortet nicht): grau und damit
+     sichtbar „nicht normal“, aber noch lesbar (4,5 : 1 auf --surface). */
+  --unknown-text: #85858b;
+  --tint-ok: rgba(48, 209, 88, 0.16);
+  --tint-warn: rgba(255, 159, 10, 0.16);
+  --tint-crit: rgba(255, 69, 58, 0.16);
+  --tint-info: rgba(10, 132, 255, 0.16);
+  --badge-crit: #d93025;          /* weiße Ziffer bleibt lesbar */
+  --row-hover: #242426;
+  --row-press: var(--surface-3);
+  --switch-off: #39393d;
+  --seg-track: var(--surface);
+  --seg-on: var(--surface-3);
+  --seg-shadow: none;
+  --field-bg: var(--surface-2);
+  --bar-bg: rgba(22, 22, 24, 0.94);
+  --bar-line: var(--separator);
+  --side-bg: #111113;
+  --side-line: #2c2c2e;
+  --side-text: #c7c7cc;
+  --side-on: #2c2c2e;
+  --side-hover: #1c1c1e;
+  --backdrop: rgba(0, 0, 0, 0.55);
+  --sheet-bg: var(--surface);
+  --sheet-group: var(--surface-2);
+  --sheet-sep: #48484a;
+  --sheet-seg-on: #636366;
+  --grab: #48484a;
+  --confirm-text: #aeaeb2;
+  --hold-track: #3a1512;
+  --hold-ink: #ffffff;
+  --tile-neutral: #636366;
+
+  --font: -apple-system, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Consolas, monospace;
+  --radius-group: 13px;
+  --radius-btn: 12px;
+  --gutter: 16px;
+  --row-font: 16px;
+  --row-pad-x: 16px;
+  --tabbar-h: 50px;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Hell: „Hell“ fest gewählt … */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f2f2f7;
+  --surface: #ffffff;
+  --surface-2: #e5e5ea;
+  --surface-3: #d1d1d6;
+  --separator: #c6c6c8;
+  --text: #000000;
+  --text-2: #6d6d72;
+  --text-3: #c4c4c7;
+  --accent: #d70015;
+  --alarm: #ff3b30;
+  --ok: #34c759;
+  --warn: #ff9500;
+  --crit: #d70015;
+  --info: #007aff;
+  --ok-text: #1f7f37;
+  --warn-text: #b25000;
+  --crit-text: #d70015;
+  --info-text: #0058d0;
+  --unknown-text: #76767b;
+  --tint-ok: rgba(52, 199, 89, 0.15);
+  --tint-warn: rgba(255, 149, 0, 0.16);
+  --tint-crit: rgba(215, 0, 21, 0.1);
+  --tint-info: rgba(0, 122, 255, 0.12);
+  --badge-crit: #d70015;
+  --row-hover: #f5f5f7;
+  --row-press: #e5e5ea;
+  --switch-off: #e3e3e6;
+  --seg-track: #e3e3e8;
+  --seg-on: #ffffff;
+  --seg-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+  --field-bg: #ffffff;
+  --bar-bg: rgba(249, 249, 251, 0.96);
+  --bar-line: #c6c6c8;
+  --side-bg: #ffffff;
+  --side-line: #d1d1d6;
+  --side-text: #3a3a3c;
+  --side-on: #e5e5ea;
+  --side-hover: #f2f2f7;
+  --backdrop: rgba(0, 0, 0, 0.32);
+  --sheet-bg: #f2f2f7;
+  --sheet-group: #ffffff;
+  --sheet-sep: #c6c6c8;
+  --sheet-seg-on: #ffffff;
+  --grab: #c7c7cc;
+  --confirm-text: #3a3a3c;
+  --hold-track: #fde2e0;
+  --hold-ink: #a3000f;
+  --tile-neutral: #8e8e93;
+}
+
+/* … oder „System“ bei hellem Gerät (gleiche Werte wie oben). */
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] {
+    color-scheme: light;
+    --bg: #f2f2f7;
+    --surface: #ffffff;
+    --surface-2: #e5e5ea;
+    --surface-3: #d1d1d6;
+    --separator: #c6c6c8;
+    --text: #000000;
+    --text-2: #6d6d72;
+    --text-3: #c4c4c7;
+    --accent: #d70015;
+    --alarm: #ff3b30;
+    --ok: #34c759;
+    --warn: #ff9500;
+    --crit: #d70015;
+    --info: #007aff;
+    --ok-text: #1f7f37;
+    --warn-text: #b25000;
+    --crit-text: #d70015;
+    --info-text: #0058d0;
+    --unknown-text: #76767b;
+    --tint-ok: rgba(52, 199, 89, 0.15);
+    --tint-warn: rgba(255, 149, 0, 0.16);
+    --tint-crit: rgba(215, 0, 21, 0.1);
+    --tint-info: rgba(0, 122, 255, 0.12);
+    --badge-crit: #d70015;
+    --row-hover: #f5f5f7;
+    --row-press: #e5e5ea;
+    --switch-off: #e3e3e6;
+    --seg-track: #e3e3e8;
+    --seg-on: #ffffff;
+    --seg-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+    --field-bg: #ffffff;
+    --bar-bg: rgba(249, 249, 251, 0.96);
+    --bar-line: #c6c6c8;
+    --side-bg: #ffffff;
+    --side-line: #d1d1d6;
+    --side-text: #3a3a3c;
+    --side-on: #e5e5ea;
+    --side-hover: #f2f2f7;
+    --backdrop: rgba(0, 0, 0, 0.32);
+    --sheet-bg: #f2f2f7;
+    --sheet-group: #ffffff;
+    --sheet-sep: #c6c6c8;
+    --sheet-seg-on: #ffffff;
+    --grab: #c7c7cc;
+    --confirm-text: #3a3a3c;
+    --hold-track: #fde2e0;
+    --hold-ink: #a3000f;
+    --tile-neutral: #8e8e93;
+  }
+}
+
+/* Breit (PC): Listenzeilen 14 px, Gruppen etwas weniger rund. */
+@media (min-width: 900px) {
+  :root {
+    --row-font: 14px;
+    --radius-group: 12px;
+  }
+}
+
+/* ---- 2. Grundlagen ------------------------------------------------------ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.35;
+  /* Zeiten und Zahlen springen nicht, wenn sie sich ändern. */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Offenes Sheet: Hintergrund scrollt nicht mit. */
+body.has-sheet {
+  overflow: hidden;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--accent-text);
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+/* Sichtbarer Fokus nur bei Tastatur-Bedienung, immer in --info. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.noscript,
+.boot-error {
+  margin: 0;
+  padding: calc(env(safe-area-inset-top) + 24px) 24px 24px;
+  color: var(--text-2);
+  font-size: 16px;
+}
+
+/* ---- 3. Symbole --------------------------------------------------------- */
+.icon {
+  display: block;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Farbige Symbol-Kachel links in einer Zeile (Einstellungen, Verlauf). */
+.tile {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: var(--tile-neutral);
+  color: #ffffff;
+}
+
+.tile .icon {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2;
+}
+
+.tile-crit {
+  background: var(--alarm);
+}
+
+.tile-warn {
+  background: var(--warn);
+  color: #000000;
+}
+
+.tile-ok {
+  background: var(--ok);
+  color: #000000;
+}
+
+.tile-info {
+  background: var(--info);
+}
+
+/* ---- 4. Rahmen: Spalten, Inhalt, sichere Ränder ------------------------- */
+.shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.main-col {
+  min-width: 0;
+}
+
+/* Schmal: Platz für Statusleiste oben und Tab-Leiste unten. */
+.content {
+  max-width: 720px;
+  margin: 0 auto;
+  padding:
+    calc(env(safe-area-inset-top) + 12px)
+    calc(env(safe-area-inset-right) + var(--gutter))
+    calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 28px)
+    calc(env(safe-area-inset-left) + var(--gutter));
+}
+
+/* Mit Demo-Band übernimmt das Band den Rand unter der Statusleiste. */
+.has-band .content {
+  padding-top: 12px;
+}
+
+/* Breit: Seitenleiste links, Inhalt daneben. */
+.shell.is-wide {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  align-items: start;
+}
+
+.is-wide .content {
+  max-width: 1120px;
+  margin: 0;
+  padding: 28px 32px 48px;
+}
+
+.is-wide.has-band .content {
+  padding-top: 20px;
+}
+
+/* Zwei Spalten (Übersicht am PC). */
+@media (min-width: 900px) {
+  .cols {
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+    gap: 24px;
+    align-items: start;
+  }
+}
+
+/* Einspaltige Seiten am PC nicht über die ganze Breite ziehen. */
+.page-narrow {
+  max-width: 720px;
+}
+
+/* ---- 5. Seitenkopf: großer Titel, Zurück -------------------------------- */
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 4px 16px;
+}
+
+.large-title {
+  min-width: 0;
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+
+.large-title:focus {
+  outline: none;
+}
+
+@media (min-width: 900px) {
+  .large-title {
+    font-size: 30px;
+  }
+}
+
+.page-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  margin: -6px 0 -4px -6px;
+  padding-right: 8px;
+  color: var(--accent-text);
+  font-size: 17px;
+}
+
+.back-link .icon {
+  width: 22px;
+  height: 22px;
+  stroke-width: 2.2;
+}
+
+/* ---- 6. Gruppen und Zeilen ---------------------------------------------- */
+.group {
+  margin: 0 0 24px;
+}
+
+.group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 16px 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.group-head-right {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.group-body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  list-style: none;
+  border-radius: var(--radius-group);
+  background: var(--group-bg, var(--surface));
+}
+
+.group-foot {
+  margin: 6px 16px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.row {
+  position: relative;
+}
+
+/* Haarlinie zwischen Zeilen, eingerückt bis zum Text (mit Kachel weiter). */
+.row + .row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: var(--row-inset, 16px);
+  z-index: 1;
+  height: 1px;
+  background: var(--group-sep, var(--separator));
+  transform: scaleY(0.5);
+  transform-origin: top;
+  pointer-events: none;
+}
+
+.row.has-icon {
+  --row-inset: 58px;
+}
+
+.row-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: 11px var(--row-pad-x);
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--row-font);
+  line-height: 1.3;
+  text-align: left;
+}
+
+a.row-main,
+button.row-main {
+  cursor: pointer;
+}
+
+a.row-main:active,
+button.row-main:active {
+  background: var(--row-press);
+}
+
+@media (hover: hover) {
+  a.row-main:hover,
+  button.row-main:hover {
+    background: var(--row-hover);
+  }
+}
+
+/* Fokusring innen, sonst schneidet ihn die Rundung der Gruppe ab. */
+.row-main:focus-visible {
+  outline-offset: -2px;
+}
+
+.row-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 30%;
+}
+
+.row-label {
+  overflow-wrap: anywhere;
+}
+
+.row-sub {
+  color: var(--text-2);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.row-value {
+  flex: 0 1 auto;
+  max-width: 70%;
+  color: var(--text-2);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.row-chev {
+  width: 16px;
+  height: 16px;
+  margin-right: -4px;
+  color: var(--text-3);
+  stroke-width: 2.2;
+}
+
+/* Bezeichnung UND Wert tragen die Farbe des Zustands (Spec §5.3). */
+.tone-ok .row-value {
+  color: var(--ok-text);
+}
+
+.tone-warn .row-label,
+.tone-warn .row-value {
+  color: var(--warn-text);
+}
+
+.tone-crit .row-label,
+.tone-crit .row-value {
+  color: var(--crit-text);
+}
+
+.tone-unknown .row-label,
+.tone-unknown .row-value {
+  color: var(--unknown-text);
+}
+
+.row.is-disabled .row-main {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Freier Inhalt in einer Gruppe (Regler, Knöpfe, Erklärungen). */
+.row-block {
+  padding: 12px var(--row-pad-x);
+  font-size: var(--row-font);
+}
+
+.note {
+  margin: 6px 16px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* ---- 7. Pillen, Badge, Lämpchen ----------------------------------------- */
+.pill {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.pill-ok {
+  background: var(--tint-ok);
+  color: var(--ok-text);
+}
+
+.pill-warn {
+  background: var(--tint-warn);
+  color: var(--warn-text);
+}
+
+.pill-crit {
+  background: var(--tint-crit);
+  color: var(--crit-text);
+}
+
+.pill-info {
+  background: var(--tint-info);
+  color: var(--info-text);
+}
+
+.pill-neutral {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.badge {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.badge-crit {
+  background: var(--badge-crit);
+  color: #ffffff;
+}
+
+.badge-warn {
+  background: var(--warn);
+  color: #000000;
+}
+
+.lamp {
+  display: inline-block;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.lamp-ok {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+}
+
+.lamp-warn {
+  background: var(--warn);
+  box-shadow: 0 0 8px var(--warn);
+}
+
+.lamp-crit {
+  background: var(--crit);
+  box-shadow: 0 0 8px var(--crit);
+}
+
+/* „Alarm läuft“ pulsiert ruhig. */
+.lamp-alarm {
+  background: var(--alarm);
+  box-shadow: 0 0 8px var(--alarm);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+/* ---- 8. Knöpfe ---------------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--radius-btn);
+  background: var(--group-bg, var(--surface));
+  color: var(--accent-text);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.btn-block {
+  display: flex;
+  width: 100%;
+}
+
+/* Großer roter Alarm-Knopf; Schrift groß und fett (AA für große Schrift). */
+.btn-alarm,
+.btn-danger {
+  background: var(--alarm);
+  color: #ffffff;
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.btn-alarm {
+  min-height: 56px;
+}
+
+.btn-danger {
+  min-height: 52px;
+}
+
+.btn-tinted {
+  background: var(--group-bg, var(--surface));
+  color: var(--accent-text);
+}
+
+.btn-cancel {
+  min-height: 52px;
+  background: var(--surface);
+  color: var(--info-text);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.btn-small {
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 9px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.btn-row {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-row > .btn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.link-btn {
+  display: inline;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font: inherit;
+}
+
+/* Runder Symbol-Knopf (44 px Tippfläche, 30 px sichtbar). */
+.icon-btn {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin: -7px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--accent-text);
+}
+
+.icon-btn-face {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--surface-2);
+}
+
+.icon-btn-face .icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2.4;
+}
+
+.icon-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+/* ---- 9. Eingabefelder --------------------------------------------------- */
+/* Mind. 16 px: kleiner zoomt iOS beim Antippen in die Seite. */
+.input,
+.select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--field-bg);
+  color: var(--text);
+  font-size: 16px;
+}
+
+.input::placeholder {
+  color: var(--text-2);
+}
+
+/* ---- 10. Schalter ------------------------------------------------------- */
+.switch {
+  position: relative;
+  flex: none;
+  width: 51px;
+  height: 31px;
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  background: var(--switch-off);
+  transition: background-color 0.2s ease;
+}
+
+/* Tippfläche größer als der sichtbare Schalter. */
+.switch::after {
+  content: "";
+  position: absolute;
+  inset: -7px -4px;
+}
+
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s var(--ease);
+}
+
+.switch.is-on {
+  background: var(--ok);
+}
+
+.switch.is-on .switch-knob {
+  transform: translateX(20px);
+}
+
+.switch:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+/* ---- 11. Segment-Schalter ----------------------------------------------- */
+.segmented {
+  display: flex;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--seg-track);
+}
+
+.seg {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 40px;
+  padding: 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.seg.is-on {
+  background: var(--seg-on);
+  box-shadow: var(--seg-shadow);
+  font-weight: 600;
+}
+
+.seg:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.seg:focus-visible {
+  outline-offset: -2px;
+}
+
+/* ---- 12. Regler --------------------------------------------------------- */
+.slider {
+  --slider-fill: var(--accent);
+  --slider-ink: var(--accent-text);
+  --slider-track: var(--sheet-sep);
+}
+
+.slider-warn {
+  --slider-fill: var(--warn);
+  --slider-ink: var(--warn-text);
+}
+
+.slider-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.slider-value {
+  color: var(--slider-ink);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.slider-input {
+  display: block;
+  width: 100%;
+  height: 44px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.slider-input:focus-visible {
+  outline-offset: -4px;
+}
+
+.slider-input::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--slider-fill) 0 var(--fill, 0%), var(--slider-track) var(--fill, 0%) 100%);
+}
+
+.slider-input::-webkit-slider-thumb {
+  width: 28px;
+  height: 28px;
+  margin-top: -12px;
+  border: 0;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.slider-input::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--slider-track);
+}
+
+.slider-input::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--slider-fill);
+}
+
+.slider-input::-moz-range-thumb {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4), 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+}
+
+.slider-input:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.slider-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -6px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* ---- 13. Sheet, Dialog, Panel ------------------------------------------- */
+/* Schmal: von unten mit Griff. Breit (oder Variante „dialog“): zentriert. */
+.sheet-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--backdrop);
+  animation: fade-in 0.2s ease-out;
+}
+
+.sheet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100% - env(safe-area-inset-top) - 24px);
+  padding:
+    8px
+    calc(16px + env(safe-area-inset-right))
+    calc(16px + env(safe-area-inset-bottom))
+    calc(16px + env(safe-area-inset-left));
+  border-radius: 14px 14px 0 0;
+  background: var(--sheet-bg);
+  color: var(--text);
+  animation: sheet-up 0.25s var(--ease);
+  /* Gruppen und Segmente im Sheet eine Stufe heller. */
+  --group-bg: var(--sheet-group);
+  --group-sep: var(--sheet-sep);
+  --seg-track: var(--surface-2);
+  --seg-on: var(--sheet-seg-on);
+}
+
+.sheet:focus {
+  outline: none;
+}
+
+.sheet-grab {
+  flex: none;
+  width: 36px;
+  height: 5px;
+  margin: 0 auto 6px;
+  border-radius: 3px;
+  background: var(--grab);
+}
+
+.sheet-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+}
+
+.sheet-title {
+  min-width: 0;
+  font-size: 17px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.sheet-close {
+  flex: none;
+  min-height: 44px;
+  margin-right: -4px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font-size: 17px;
+}
+
+/* Etwas Luft rundum (mit Gegenrand): Sonst schnitte das Scrollen die
+   Fokusringe der vollbreiten Knöpfe ab. */
+.sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0 -4px;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.sheet-layer-dialog {
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.sheet-dialog {
+  width: min(480px, 100%);
+  max-height: min(85vh, 760px);
+  padding: 16px 20px 20px;
+  border-radius: 14px;
+  animation: dialog-in 0.2s var(--ease);
+}
+
+@media (min-width: 900px) {
+  .sheet-layer-sheet {
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+
+  .sheet-sheet {
+    width: min(560px, 100%);
+    max-height: min(85vh, 760px);
+    padding: 16px 20px 20px;
+    border-radius: 14px;
+    animation: dialog-in 0.2s var(--ease);
+  }
+
+  .sheet-grab {
+    display: none;
+  }
+}
+
+/* Panel: steht neben der Liste (PC), ohne Abdunkeln. */
+.panel {
+  padding: 16px;
+  border-radius: var(--radius-group);
+  background: var(--surface);
+  --group-bg: var(--surface-2);
+  --group-sep: var(--sheet-sep);
+  --seg-track: var(--surface-2);
+  --seg-on: var(--sheet-seg-on);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 32px;
+  margin-bottom: 8px;
+}
+
+.panel-title {
+  min-width: 0;
+  font-size: 21px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+/* ---- 14. Bestätigung (Aufbau wie ein iOS-Aktionsblatt) ------------------ */
+.sheet-layer.is-confirm .sheet {
+  padding:
+    0
+    calc(10px + env(safe-area-inset-right))
+    calc(10px + env(safe-area-inset-bottom))
+    calc(10px + env(safe-area-inset-left));
+  border-radius: 0;
+  background: transparent;
+}
+
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.confirm-box {
+  padding: 18px 16px 14px;
+  border-radius: 16px;
+  background: var(--surface);
+  text-align: center;
+}
+
+.confirm-title {
+  margin-bottom: 6px;
+  font-size: 17px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.confirm-text {
+  color: var(--confirm-text);
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.confirm-box .hold,
+.confirm-box .btn-danger {
+  margin-top: 16px;
+}
+
+.confirm-count {
+  margin-top: 10px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.confirm .btn-cancel {
+  border-radius: 14px;
+}
+
+@media (min-width: 900px) {
+  .sheet-layer.is-confirm .sheet {
+    width: min(440px, 100%);
+    padding: 0;
+  }
+
+  .confirm-box {
+    padding: 20px 20px 16px;
+  }
+}
+
+/* ---- 15. Halten zum Senden ---------------------------------------------- */
+/* --p (0…1) setzt ui.js beim Halten; die rote Füllung schneidet ein
+   zweites, weißes Etikett frei - so bleibt die Schrift überall lesbar. */
+.hold {
+  --p: 0;
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 13px;
+  background: var(--hold-track);
+  color: var(--hold-ink);
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+
+.hold-label {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 54px;
+  padding: 0 16px;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.hold-fill {
+  position: absolute;
+  inset: 0;
+  background: var(--alarm);
+  color: #ffffff;
+  clip-path: inset(0 calc((1 - var(--p)) * 100%) 0 0);
+}
+
+.hold.is-nudge .hold-label {
+  font-size: 16px;
+}
+
+.hold:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+/* ---- 16. Tab-Leiste (schmal) -------------------------------------------- */
+.tabbar {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  display: flex;
+  padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  border-top: 0.5px solid var(--bar-line);
+  background: var(--bar-bg);
+}
+
+.tab {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  min-height: var(--tabbar-h);
+  padding: 6px 2px 4px;
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+.tab.is-on {
+  color: var(--accent-text);
+}
+
+.tab-icon {
+  position: relative;
+  display: block;
+}
+
+.tab .icon {
+  width: 26px;
+  height: 26px;
+}
+
+.tab-icon .badge {
+  position: absolute;
+  top: -4px;
+  left: 17px;
+}
+
+.tab:focus-visible {
+  outline-offset: -2px;
+}
+
+/* ---- 17. Seitenleiste (breit) ------------------------------------------- */
+.sidebar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  padding: 20px 12px 16px;
+  overflow-y: auto;
+  border-right: 0.5px solid var(--side-line);
+  background: var(--side-bg);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 10px 20px;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.side-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 9px;
+  color: var(--side-text);
+  font-size: 15px;
+}
+
+.side-item .icon {
+  color: var(--accent);
+}
+
+.side-item .nav-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+@media (hover: hover) {
+  .side-item:hover {
+    background: var(--side-hover);
+  }
+}
+
+.side-item.is-on {
+  background: var(--side-on);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.side-count {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.side-foot {
+  margin-top: auto;
+  padding: 12px 12px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* „Abmelden“ zurückhaltend wie der Rest der Fußzeile, erst beim Zeigen deutlich. */
+.side-foot .link-btn {
+  color: var(--text-2);
+}
+
+.side-foot .link-btn:hover,
+.side-foot .link-btn:focus-visible {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+/* ---- 18. Demo-Band (jede Seite, solange der Demo-Modus aktiv ist) ------- */
+.demo-band {
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  background: var(--warn);
+  color: #000000;
+}
+
+.band-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding:
+    calc(env(safe-area-inset-top) + 8px)
+    calc(env(safe-area-inset-right) + var(--gutter))
+    8px
+    calc(env(safe-area-inset-left) + var(--gutter));
+  color: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.band-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.band-icon,
+.band-chev {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2;
+}
+
+a.band-inner:focus-visible {
+  outline-color: #000000;
+  outline-offset: -3px;
+}
+
+.is-wide .band-inner {
+  padding: 8px 32px;
+}
+
+/* ---- 19. Rückmeldungen -------------------------------------------------- */
+.msg {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 8px 4px 0;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.msg-sym {
+  flex: none;
+  font-weight: 700;
+}
+
+.msg-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.msg-ok {
+  color: var(--ok-text);
+}
+
+.msg-warn {
+  color: var(--warn-text);
+}
+
+.msg-error {
+  color: var(--crit-text);
+}
+
+.msg-info {
+  color: var(--text-2);
+}
+
+.boundary {
+  margin: 0 4px 16px;
+  color: var(--text-2);
+}
+
+/* ---- 20. Bewegung ------------------------------------------------------- */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Bewegung reduzieren: alles aus. Die Füllung des Halten-Knopfs bleibt -
+   sie ist Anzeige, keine Animation (ui.js setzt --p direkt). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
