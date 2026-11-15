@@ -7,3 +7,6 @@ cloud_watcher/*.conf.example text eol=lf
 
 # Sandbox-Skripte des Dashboard-Tests: immer LF (Git Bash).
 tests/dashboard/sandbox/*.sh text eol=lf
+
+# Vendor-Bibliotheken: Bytes unverändert lassen (Prüfsumme der Bundle-Datei).
+nas_dashboard/assets/vendor/* -text
