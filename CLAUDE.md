@@ -109,10 +109,14 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   anderen nicht blockieren. `sendBark()` gibt `bool` zurück (Code des letzten
   Versuchs über `int* httpCode`, < 0 = Transportfehler); bei HTTP 4xx wird
   **nicht** wiederholt (Client-Fehler). `sendStatus()` gibt ebenfalls `bool` zurück.
-  400/401/403/404 = dauerhaft abgelehnt: Key ist für diesen Alarm endgültig
-  gescheitert (`keyFailed[]`, keine Nachsende-Runden mehr), Owner wird sofort
-  gewarnt (Key nur maskiert, `maskKey()` – auch im seriellen Log), die übrigen
-  Keys laufen weiter. Zwei Transportfehler in Folge brechen eine Runde ab (die
+  400/401/403/404 = dauerhaft abgelehnt – aber NUR, wenn Bark in derselben
+  Runde mindestens einen anderen Empfänger angenommen hat (Beweis, dass Bark
+  selbst funktioniert): Dann ist der Key für diesen Alarm endgültig gescheitert
+  (`keyFailed[]`, keine Nachsende-Runden mehr), Owner wird sofort gewarnt (Key
+  nur maskiert, `maskKey()` – auch im seriellen Log). Lehnt Bark ALLE ab
+  (Störung, Firewall), bleiben die Keys offen und werden in jeder Runde erneut
+  versucht – sonst ginge ein echter Alarm nach der ersten Runde nie wieder
+  raus. Die übrigen Keys laufen weiter. Zwei Transportfehler in Folge brechen eine Runde ab (die
   nächste beginnt beim nächsten Key); 5xx/andere 4xx bleiben pro Key isoliert.
   Jede HTTPS-Anfrage hat ein Handshake-Limit (`setHandshakeTimeout()`, Bark 8 s,
   NAS = `REMOTE_HTTP_TIMEOUT_MS`, mind. 4 s) – der Core-Standard (120 s) läge
@@ -159,8 +163,9 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   erst bei angenommener Zustellung als erledigt, Wiederholung nach
   `STATUS_RETRY_MS`, nie während `alarmPending` (Ausnahme: abgelehnter Key –
   ein Versuch direkt nach der Runde), höchstens eine pro `loop()`, nach einem
-  Fehlschlag Pause für alle. Zeitstempel = Ereignis. Bark lehnt den Status-Key
-  dauerhaft ab (4xx) → Warnung verworfen. Die Start-Meldung kommt erst nach der
+  Fehlschlag Pause für alle. Zeitstempel = Ereignis. Auch bei 400/403/404 auf
+  den Status-Key wird eine Warnung NICHT verworfen (kann eine Bark-Störung
+  sein), nur später wiederholt. Die Start-Meldung kommt erst nach der
   Startphase und nie vor einer offenen Zustellung.
 - **Heartbeat** mit NTP = 1×/Kalendertag ab `HEARTBEAT_HOUR`; ohne NTP Fallback auf
   millis-Abstand (`HEARTBEAT_MS`). Als erledigt markiert wird **nur bei Erfolg**;

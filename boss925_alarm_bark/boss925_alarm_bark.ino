@@ -656,10 +656,15 @@ bool trySendNotice(int id) {
     noticePending[id] = false;
     lastNoticeFail = 0;
     onNoticeDelivered(id);
-  } else if (code == 400 || code == 401 || code == 403 || code == 404) {
-    noticePending[id] = false;
-    Serial.println("Warnung verworfen: Bark lehnt BARK_KEY_STATUS ab - Key in config.h pruefen!");
   } else {
+    // Auch 400/403/404 NICHT verwerfen: Das kann ebenso eine Störung bei
+    // Bark sein (dann antwortet es allen so) - und genau diese Warnungen
+    // ("Zustellung unvollstaendig", "Kontakt klemmt") dürfen nicht verloren
+    // gehen. Bei einem wirklich falschen Status-Key kostet das nur einen
+    // Versuch alle STATUS_RETRY_MS.
+    if (isPermanentRejection(code)) {
+      Serial.println("Bark lehnt BARK_KEY_STATUS ab - Key in config.h pruefen! (neuer Versuch spaeter)");
+    }
     lastNoticeFail = millis();
     if (lastNoticeFail == 0) lastNoticeFail = 1;
     Serial.println("Warnung an den Owner nicht zugestellt - neuer Versuch spaeter.");
@@ -1110,6 +1115,11 @@ void processPendingAlarm() {
 
   int  ok = 0, rejectedNow = 0, transportFailsInRow = 0;
   bool aborted = false, deadlineHit = false, sentOne = false;
+  // Keys, die Bark in DIESER Runde mit 400/401/403/404 abgelehnt hat - erst
+  // NACH der Runde entscheiden, ob das wirklich am Key liegt (siehe unten).
+  int  rejectedIdx[MAX_ALARM_KEYS];
+  int  rejectedCode[MAX_ALARM_KEYS];
+  int  rejectedCount = 0;
   int  count = alarmKeyCount;
   int  start = (roundStartIdx > 0 && roundStartIdx < count) ? roundStartIdx : 0;
   roundStartIdx = 0;
@@ -1144,13 +1154,14 @@ void processPendingAlarm() {
       continue;
     }
     if (isPermanentRejection(code)) {
-      // Dauerhaft abgelehnt: keine weiteren Nachsende-Runden für diesen Key,
-      // Owner warnen - die übrigen Keys laufen normal weiter.
-      keyFailed[i] = true;
-      rejectedNow++;
+      // Abgelehnt - ob DAUERHAFT (falscher/gelöschter Key), entscheidet sich
+      // erst nach der Runde. Die übrigen Keys laufen normal weiter.
+      if (rejectedCount < MAX_ALARM_KEYS) {
+        rejectedIdx[rejectedCount]  = i;
+        rejectedCode[rejectedCount] = code;
+        rejectedCount++;
+      }
       transportFailsInRow = 0;
-      noteRejectedKey(alarmKeys[i], code);
-      saveRtcState();
       continue;
     }
     if (code < 0) {
@@ -1168,6 +1179,27 @@ void processPendingAlarm() {
       transportFailsInRow = 0;   // 5xx/andere 4xx: Server erreichbar, pro Key isoliert
     }
   }
+  // Abgelehnte Keys nur dann als DAUERHAFT gescheitert abhaken, wenn Bark in
+  // derselben Runde mindestens einen anderen Empfänger angenommen hat - das
+  // beweist, dass Bark selbst funktioniert und es am Key liegt. Antwortet
+  // Bark dagegen allen mit 400/403/404 (Störung, Firewall, Wartungsseite),
+  // bleiben die Keys offen und werden wie früher in jeder Runde erneut
+  // versucht (bis ALARM_RETRY_GIVEUP_MS) - sonst ginge ein echter Alarm nach
+  // der ersten Runde nie wieder raus.
+  if (rejectedCount > 0) {
+    if (ok > 0) {
+      for (int r = 0; r < rejectedCount; r++) {
+        keyFailed[rejectedIdx[r]] = true;
+        rejectedNow++;
+        noteRejectedKey(alarmKeys[rejectedIdx[r]], rejectedCode[r]);
+      }
+      saveRtcState();
+    } else {
+      Serial.printf("Bark lehnte %d Empfaenger ab, aber keiner wurde erreicht - "
+                    "Bark-Stoerung? Wird in der naechsten Runde erneut versucht.\n", rejectedCount);
+    }
+  }
+
   int open = openKeyCount();
   Serial.printf("Alarm-Runde: %d neu zugestellt, %d abgelehnt, %d noch offen%s.\n",
                 ok, rejectedNow, open,
