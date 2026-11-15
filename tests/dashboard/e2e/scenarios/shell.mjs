@@ -48,6 +48,22 @@ async function keyHold(page, key, ms) {
   await page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...up });
 }
 
+// Treffbare Höhe eines Elements in der Mitte: zählt die Pixel-Zeilen, in denen
+// elementFromPoint das Element (oder sein Inneres, auch ::after) trifft.
+async function hitHeight(page, sel) {
+  return page.eval(`(() => {
+    const el = document.querySelector(${q(sel)});
+    const r = el.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    let n = 0;
+    for (let y = Math.floor(r.top) - 30; y <= Math.ceil(r.bottom) + 30; y++) {
+      const hit = document.elementFromPoint(x, y);
+      if (hit && (hit === el || el.contains(hit))) n++;
+    }
+    return n;
+  })()`);
+}
+
 // Bestätigung wie eine Ansicht öffnen; ausgelöst wird nur ein Zähler.
 async function openTestConfirm(page, hold) {
   await page.eval(`(() => {
@@ -201,6 +217,34 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
   await page.waitFor(`/Status vor \\d+/.test(document.querySelector('.sidebar').textContent)`, 8000);
   assert(await page.eval(`document.documentElement.scrollWidth <= innerWidth`), 'breit: kein waagrechtes Scrollen');
   await page.waitFor(`document.title.startsWith('🟢')`, 10000);
+
+  // Tippflächen mind. 44 px - auch wo das Sichtbare kleiner ist („Abmelden“,
+  // Segmente, kleiner Knopf). „Abmelden“ darf nicht in die Statuszeile reichen.
+  for (const sel of ['.sidebar nav a', '.side-foot .link-btn']) {
+    const hh = await hitHeight(page, sel);
+    assert(hh >= 44, `Tippfläche ${sel}: ${hh} px`);
+  }
+  assert(await page.eval(`(() => { const r = document.querySelector('.side-age').getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + 10, r.top + r.height / 2);
+    return !hit || !hit.closest('.link-btn'); })()`), '„Abmelden“ reicht nicht in die Statuszeile');
+  await page.eval(`(() => {
+    const { html, render } = htmPreact;
+    const ui = FW.ui;
+    const box = document.createElement('div');
+    box.id = 'tap-probe';
+    document.querySelector('main').appendChild(box);
+    const cell = { padding: '24px 0' };
+    render(html\`<div style=\${cell}><\${ui.Segmented} label="Probe" value="a" onChange=\${() => null}
+        options=\${[{ value: 'a', label: 'Laut' }, { value: 'b', label: 'Stumm' }]}/></div>
+      <div style=\${cell}><button type="button" class="btn btn-small" id="probe-small">Klein</button></div>
+      <div style=\${cell}><\${ui.Switch} id="probe-switch" label="Probe" checked=\${false} onChange=\${() => null}/></div>
+      <div style=\${cell}><\${ui.IconButton} icon="plus" label="Probe" onClick=\${() => null}/></div>\`, box);
+  })()`);
+  for (const sel of ['#tap-probe .seg', '#tap-probe .seg + .seg', '#probe-small', '#probe-switch', '#tap-probe .icon-btn']) {
+    const hh = await hitHeight(page, sel);
+    assert(hh >= 44, `Tippfläche ${sel}: ${hh} px`);
+  }
+  await page.eval(`(() => { htmPreact.render(null, document.getElementById('tap-probe')); document.getElementById('tap-probe').remove(); })()`);
   await shot(page, 'wide');
   await openTestConfirm(page, true);
   await shot(page, 'wide-confirm');
