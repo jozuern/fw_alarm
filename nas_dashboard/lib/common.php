@@ -975,6 +975,15 @@ function log_event_types(): array
         'demo_repaired' => ['cat' => 'system', 'fields' => []],
         'key_added' => ['cat' => 'keys', 'fields' => ['by' => $by, 'label' => $label, 'key' => $key]],
         'key_removed' => ['cat' => 'keys', 'fields' => ['by' => $by, 'label' => $label, 'key' => $key]],
+        'key_renamed' => ['cat' => 'keys', 'fields' => [
+            'by' => $by, 'label' => $label, 'old_label' => ['str', 'old_label'], 'key' => $key,
+        ]],
+        // Beide Keys nur maskiert (log_key_event).
+        'key_replaced' => ['cat' => 'keys', 'fields' => [
+            'by' => $by, 'label' => $label, 'key' => $key, 'old_key' => ['str', 'old_key'],
+        ]],
+        // Die Telefonnummer selbst steht bewusst NIE im Verlauf.
+        'key_phone_changed' => ['cat' => 'keys', 'fields' => ['by' => $by, 'label' => $label]],
         'key_muted' => ['cat' => 'keys', 'fields' => [
             'by' => $by, 'label' => $label, 'key' => $key, 'source' => ['str', 'source'],
         ]],
@@ -1476,6 +1485,19 @@ function valid_bark_key(string $key): bool
 {
     return preg_match('/^[A-Za-z0-9_-]{5,64}$/', $key) === 1;
 }
+
+// Telefonnummer eines Empfängers (nur zur Anzeige im Dashboard, für den Admin).
+// Liefert die bereinigte Nummer ('' = keine) oder null, wenn sie ungültig ist.
+function normalize_phone(string $phone): ?string
+{
+    $phone = trim($phone);
+    if ($phone === '') {
+        return '';
+    }
+    return preg_match('/^[0-9+\-\/() ]{3,30}$/', $phone) === 1 ? $phone : null;
+}
+
+const PHONE_INVALID_MESSAGE = 'Ungültige Telefonnummer (erlaubt: 3-30 Zeichen: Ziffern, + - / ( ) und Leerzeichen).';
 
 // ============================== DEMO-MODUS ==================================
 // Im Demo-Modus gehen ALLE Alarme (ESP32-Relaisalarm UND NAS-Direktalarm) nur

@@ -48,6 +48,9 @@ const DASHBOARD_ACTIONS = [
     'demo_set'                => ['post' => true, 'csrf' => true, 'admin' => true],
     'keys_add'                => ['post' => true, 'csrf' => true, 'admin' => true],
     'keys_delete'             => ['post' => true, 'csrf' => true, 'admin' => true],
+    'keys_rename'             => ['post' => true, 'csrf' => true, 'admin' => true],
+    'keys_replace_key'        => ['post' => true, 'csrf' => true, 'admin' => true],
+    'keys_set_phone'          => ['post' => true, 'csrf' => true, 'admin' => true],
     'keys_mute'               => ['post' => true, 'csrf' => true, 'admin' => true],
     'keys_set_mute_permanent' => ['post' => true, 'csrf' => true, 'admin' => true],
     'keys_set_mute_volume'    => ['post' => true, 'csrf' => true, 'admin' => true],
@@ -341,6 +344,10 @@ if ($action === 'keys_list') {
             'mute_volume' => mute_volume_of($entry),
             'mute_permanent' => mute_is_permanent($entry),
         ];
+        // Die Telefonnummer sieht nur der Admin (nie api/keys.php, nie Bark/Log).
+        if ($isAdmin) {
+            $item['phone'] = (string)($entry['phone'] ?? '');
+        }
         // Wann schaltet das Sicherheitsnetz automatisch wieder laut? So kann
         // das Dashboard "Stumm bis ~HH:MM" zeigen, statt dass die Rückschaltung
         // die Betroffenen später überrascht. Bei "dauerhaft stumm" gibt es
@@ -524,7 +531,14 @@ if ($action === 'keys_add') {
         json_response(['ok' => false, 'message' => 'Ungültiger Bark-Key (erlaubt: 5-64 Zeichen, A-Z a-z 0-9 _ -).']);
     }
 
-    $result = mutate_alarm_keys($config, function (array &$state) use ($config, $label, $key): array {
+    // Optionale Telefonnummer (nur Anzeige): ungültig = der ganze Antrag
+    // scheitert, es wird nichts angelegt.
+    $phone = normalize_phone((string)($_POST['phone'] ?? ''));
+    if ($phone === null) {
+        json_response(['ok' => false, 'message' => PHONE_INVALID_MESSAGE]);
+    }
+
+    $result = mutate_alarm_keys($config, function (array &$state) use ($config, $label, $key, $phone): array {
         $keys = is_array($state['keys'] ?? null) ? $state['keys'] : [];
         if (count($keys) >= MAX_ALARM_KEYS) {
             return ['ok' => false, 'message' => 'Maximal ' . MAX_ALARM_KEYS . ' Empfänger möglich.'];
@@ -544,6 +558,9 @@ if ($action === 'keys_add') {
             // Geheim-Token für den persönlichen Stummschalt-Link (Kurzbefehl).
             'mute_token' => new_mute_token(),
         ];
+        if ($phone !== '') {
+            $keys[count($keys) - 1]['phone'] = $phone;
+        }
         $state['keys'] = $keys;
         return ['ok' => true, 'write' => true, 'bump' => true,
             'message' => 'Empfänger hinzugefügt. Die Box übernimmt die Liste nach wenigen Sekunden.'];
@@ -592,6 +609,122 @@ if ($action === 'keys_delete') {
         log_key_event($config, 'key_removed', $removed, $user, ['version' => (int)($result['version'] ?? 0)]);
     }
     unset($result['entry']);   // Klartext-Key nicht an den Browser geben
+
+    json_response($result);
+}
+
+// Empfänger umbenennen. Der Name steht nur im Dashboard (nicht in der Liste der
+// Box, nicht in Bark-Texten) - deshalb KEIN Versions-Bump und kein Key-Sync.
+// Ist es der aktive Demo-Empfänger, zieht das Demo-Banner den Namen mit
+// (label in demo_mode.json). Reihenfolge wie bei demo_set: erst demo_mode.json,
+// dann (nach dem Callback) alarm_keys.json - beides unter dem 'keys'-Lock.
+if ($action === 'keys_rename') {
+    $id = (int)($_POST['id'] ?? 0);
+    $label = trim((string)($_POST['label'] ?? ''));
+    if (preg_match('/^[^\p{Cc}]{1,40}$/u', $label) !== 1) {
+        json_response(['ok' => false, 'message' => 'Name fehlt, ist länger als 40 Zeichen oder enthält ungültige Zeichen.']);
+    }
+
+    $result = mutate_alarm_keys($config, function (array &$state) use ($config, $id, $label): array {
+        $idx = find_key_index($state, $id);
+        if ($idx < 0) {
+            return ['ok' => false, 'message' => 'Empfänger nicht gefunden.'];
+        }
+        $oldLabel = (string)($state['keys'][$idx]['label'] ?? '');
+        if ($oldLabel === $label) {
+            return ['ok' => true, 'changed' => false, 'message' => 'Der Name ist bereits so eingetragen.'];
+        }
+        $demo = load_demo_mode($config);
+        if (!empty($demo['enabled']) && (int)($demo['key_id'] ?? 0) === $id) {
+            $demo['label'] = $label;
+            if (!backup_then_write($config, 'demo_mode.json', $demo)) {
+                return ['ok' => false, 'message' => 'Name konnte nicht gespeichert werden (data_dir prüfen).'];
+            }
+        }
+        $state['keys'][$idx]['label'] = $label;
+        return ['ok' => true, 'changed' => true, 'write' => true, 'old_label' => $oldLabel,
+            'entry' => $state['keys'][$idx], 'message' => 'Name geändert.'];
+    });
+    if (!empty($result['ok']) && !empty($result['changed'])) {
+        log_key_event($config, 'key_renamed', $result['entry'], $user, ['old_label' => (string)$result['old_label']]);
+    }
+    unset($result['entry'], $result['old_label']);   // Klartext-Key nicht an den Browser geben
+
+    json_response($result);
+}
+
+// Bark-Key eines Empfängers ersetzen (neues iPhone/neue App-Installation):
+// Name, Stumm-Zustand, Token (Kurzbefehl-Link) und Telefonnummer bleiben. Die
+// Box bekommt eine neue Listen-Version. Der aktive Demo-Empfänger ist
+// ausgenommen - demo_mode.json hält seinen Key als Kopie.
+if ($action === 'keys_replace_key') {
+    $id = (int)($_POST['id'] ?? 0);
+    $newKey = trim((string)($_POST['key'] ?? ''));
+    if (!valid_bark_key($newKey)) {
+        json_response(['ok' => false, 'message' => 'Ungültiger Bark-Key (erlaubt: 5-64 Zeichen, A-Z a-z 0-9 _ -).']);
+    }
+
+    $result = mutate_alarm_keys($config, function (array &$state) use ($config, $id, $newKey): array {
+        $demo = load_demo_mode($config);
+        if (!empty($demo['enabled']) && (int)($demo['key_id'] ?? 0) === $id) {
+            return ['ok' => false, 'message' => 'Dieser Empfänger ist gerade der Demo-Empfänger. Zuerst den Demo-Modus beenden.'];
+        }
+        $idx = find_key_index($state, $id);
+        if ($idx < 0) {
+            return ['ok' => false, 'message' => 'Empfänger nicht gefunden.'];
+        }
+        foreach ($state['keys'] as $i => $entry) {
+            if ((int)$i !== $idx && is_array($entry) && hash_equals((string)($entry['key'] ?? ''), $newKey)) {
+                return ['ok' => false, 'message' => 'Dieser Key ist bereits eingetragen.'];
+            }
+        }
+        $oldKey = (string)($state['keys'][$idx]['key'] ?? '');
+        if (hash_equals($oldKey, $newKey)) {
+            return ['ok' => true, 'changed' => false, 'message' => 'Dieser Key ist bereits eingetragen.'];
+        }
+        $state['keys'][$idx]['key'] = $newKey;
+        return ['ok' => true, 'changed' => true, 'write' => true, 'bump' => true, 'old_key' => $oldKey,
+            'entry' => $state['keys'][$idx],
+            'message' => 'Key ersetzt. Die Box übernimmt die Liste nach wenigen Sekunden.'];
+    });
+    if (!empty($result['ok']) && !empty($result['changed'])) {
+        log_key_event($config, 'key_replaced', $result['entry'], $user,
+            ['old_key' => mask_bark_key((string)$result['old_key']), 'version' => (int)($result['version'] ?? 0)]);
+    }
+    unset($result['entry'], $result['old_key']);   // Klartext-Keys nicht an den Browser geben
+
+    json_response($result);
+}
+
+// Telefonnummer eines Empfängers (nur Anzeige im Dashboard, nur Admin). Weder
+// die Box noch Bark noch der Verlauf bekommen sie - daher kein Versions-Bump.
+if ($action === 'keys_set_phone') {
+    $id = (int)($_POST['id'] ?? 0);
+    $phone = normalize_phone((string)($_POST['phone'] ?? ''));
+    if ($phone === null) {
+        json_response(['ok' => false, 'message' => PHONE_INVALID_MESSAGE]);
+    }
+
+    $result = mutate_alarm_keys($config, function (array &$state) use ($id, $phone): array {
+        $idx = find_key_index($state, $id);
+        if ($idx < 0) {
+            return ['ok' => false, 'message' => 'Empfänger nicht gefunden.'];
+        }
+        if ((string)($state['keys'][$idx]['phone'] ?? '') === $phone) {
+            return ['ok' => true, 'changed' => false, 'message' => 'Telefonnummer ist bereits so eingetragen.'];
+        }
+        if ($phone === '') {
+            unset($state['keys'][$idx]['phone']);
+        } else {
+            $state['keys'][$idx]['phone'] = $phone;
+        }
+        return ['ok' => true, 'changed' => true, 'write' => true, 'entry' => $state['keys'][$idx],
+            'message' => $phone === '' ? 'Telefonnummer entfernt.' : 'Telefonnummer gespeichert.'];
+    });
+    if (!empty($result['ok']) && !empty($result['changed'])) {
+        log_key_event($config, 'key_phone_changed', $result['entry'], $user);
+    }
+    unset($result['entry']);
 
     json_response($result);
 }

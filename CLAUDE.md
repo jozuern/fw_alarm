@@ -296,6 +296,20 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   BOX alarmiert dann weiter stumm, denn sie holt die Liste nur bei neuer
   Version (das Dashboard warnt an der Zeile). Ist die Liste samt `.bak`
   unlesbar, antwortet `keys_list` mit `code=keys_corrupt`.
+  Weitere Empfänger-Aktionen (alle Admin+CSRF, über `mutate_alarm_keys()`,
+  Verlauf per `log_key_event()` nach dem Lock): `keys_rename` (Name wie bei
+  `keys_add`; KEIN Versions-Bump, die Box kennt den Namen nicht; ist es der
+  aktive Demo-Empfänger, schreibt sie `label` in `demo_mode.json` mit
+  `backup_then_write()` – im selben `keys`-Lock, vor `alarm_keys.json`, wie
+  `demo_set`; Ereignis `key_renamed`), `keys_replace_key` (neuer Bark-Key für
+  denselben Empfänger, Name/Stumm-Zustand/`mute_token`/Telefon bleiben; bumpt
+  die Version; für den AKTIVEN Demo-Empfänger abgelehnt, weil `demo_mode.json`
+  den Key kopiert hält; Duplikat-Prüfung wie `keys_add`; `key_replaced` mit
+  beiden Keys nur maskiert) und `keys_set_phone` (Telefonnummer `''` = löschen,
+  sonst `/^[0-9+\-\/() ]{3,30}$/`; KEIN Bump; `key_phone_changed` ohne Nummer).
+  `keys_add` nimmt optional `phone` (gleiche Prüfung; ungültig = nichts
+  angelegt). Die Telefonnummer ist reine Dashboard-Anzeige: `keys_list` liefert
+  sie nur der Admin-Rolle, NIE `api/keys.php`, Bark-Texte oder der Verlauf.
 - **Demo-Modus (Dashboard, nur Admin)**: leitet beide Alarmwege auf genau einen
   Test-Empfänger aus der gepflegten Liste um — ohne Firmware-Änderung, über
   denselben Empfängerlisten-Mechanismus: `demo_mode.json` im `data_dir` hält den
