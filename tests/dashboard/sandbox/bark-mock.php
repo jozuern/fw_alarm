@@ -16,14 +16,19 @@ $segments = array_values(array_filter(explode('/', $uri), 'strlen'));
 $key = (string)($fields['device_key'] ?? ($segments[0] ?? ''));
 unset($fields['device_key']);
 
+header('Content-Type: application/json');
+// Ohne Key (z.B. die Bereitschaftsprüfung von start.sh) nur 200, kein Log.
+if ($key === '') {
+    echo '{"code":200,"message":"success"}';
+    return;
+}
 $log = getenv('BARK_LOG') ?: (__DIR__ . '/bark.log');
 @file_put_contents(
     $log,
-    json_encode(['t' => time(), 'key' => $key, 'fields' => $fields], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n",
+    json_encode(['t' => time(), 'key' => $key, 'fields' => (object)$fields], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n",
     FILE_APPEND | LOCK_EX
 );
 
-header('Content-Type: application/json');
 if (str_starts_with($key, 'fail')) {
     http_response_code(500);
     echo '{"code":500,"message":"mock failure"}';
