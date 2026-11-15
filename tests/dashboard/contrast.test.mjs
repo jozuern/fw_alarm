@@ -145,6 +145,33 @@ function pairs() {
     add(theme, 'sheet', 'Bestätigung Restzeit', '--text-2', ['--surface']);
     add(theme, 'sheet', 'Abbrechen', '--info-text', ['--surface']);
     add(theme, 'sheet', 'Schließen (Kopf)', '--accent-text', ['--sheet-bg']);
+    // Übersicht: Status-Karte (rot getönt bzw. Fläche), Kreis-Symbole,
+    // Befehlszeile, Ergebnis-Karte, Anrufen, Farbpunkte der Ereignisse.
+    add(theme, 'page', 'Status-Karte rot: Titel', '--crit-text', ['--bg', '--status-crit-bg']);
+    add(theme, 'page', 'Status-Karte rot: Satz/Alter', '--text-2', ['--bg', '--status-crit-bg']);
+    add(theme, 'page', 'Status-Karte rot: Schrift', '--text', ['--bg', '--status-crit-bg']);
+    add(theme, 'page', 'Status-Karte orange: Titel', '--warn-text', ['--bg', '--surface']);
+    add(theme, 'page', 'Status-Karte: Satz/Alter', '--text-2', ['--bg', '--surface']);
+    add(theme, 'page', 'Status-Kreis grün (Symbol)', '#000000', ['--bg', '--ok'], LARGE);
+    add(theme, 'page', 'Status-Kreis orange (Symbol)', '#000000', ['--bg', '--warn'], LARGE);
+    add(theme, 'page', 'Status-Kreis rot (Symbol)', '#ffffff', ['--bg', '--alarm'], LARGE);
+    add(theme, 'page', 'Status-Kreis grau (Symbol)', '#ffffff', ['--bg', '--tile-neutral'], LARGE);
+    add(theme, 'page', 'Befehlszeile orange', '--warn-text', ['--bg', '--surface']);
+    add(theme, 'page', 'Befehlszeile erledigt/Symbol', '--text-2', ['--bg', '--surface']);
+    add(theme, 'page', 'Befehlszeile Abbrechen', '--accent-text', ['--bg', '--surface']);
+    add(theme, 'page', 'Ergebnis: Titel grün / ✓', '--ok-text', ['--bg', '--surface']);
+    add(theme, 'page', 'Ergebnis: Titel rot / NICHT erreicht', '--crit-text', ['--bg', '--surface']);
+    add(theme, 'page', 'Ergebnis: Hinweis orange', '--warn-text', ['--bg', '--surface']);
+    add(theme, 'page', 'Ergebnis: Grund/Erreicht/Zeit', '--text-2', ['--bg', '--surface']);
+    add(theme, 'page', 'Ergebnis: Ausblenden', '--accent-text', ['--bg', '--surface']);
+    add(theme, 'page', 'Ergebnis: ✕-Kreis (Symbol)', '#ffffff', ['--bg', '--surface', '--alarm'], LARGE);
+    add(theme, 'page', 'Nachsenden rot (19 px fett)', '#ffffff', ['--bg', '--surface', '--alarm'], LARGE);
+    add(theme, 'page', 'Anrufen (grüne Pille)', '#000000', ['--bg', '--surface', '--ok']);
+    add(theme, 'page', 'Lese-Rolle: Satz', '--text-2', ['--bg', '--surface']);
+    add(theme, 'page', 'Ereignis-Punkt rot', '--crit-text', ['--bg', '--surface'], LARGE);
+    add(theme, 'page', 'Ereignis-Punkt orange', '--warn-text', ['--bg', '--surface'], LARGE);
+    add(theme, 'page', 'Ereignis-Punkt grün', '--ok-text', ['--bg', '--surface'], LARGE);
+    add(theme, 'page', 'Ereignis-Punkt grau', '--text-2', ['--bg', '--surface'], LARGE);
   }
   return list;
 }

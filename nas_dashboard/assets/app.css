@@ -73,6 +73,11 @@
   --hold-track: #3a1512;
   --hold-ink: #ffffff;
   --tile-neutral: #636366;
+  /* Übersicht: rote Status-Karte (Fläche, Rand), Ränder für orange/grün. */
+  --status-crit-bg: #2a1414;
+  --status-crit-line: rgba(255, 69, 58, 0.45);
+  --status-warn-line: rgba(255, 159, 10, 0.45);
+  --status-ok-line: rgba(48, 209, 88, 0.4);
 
   --font: -apple-system, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Consolas, monospace;
@@ -143,6 +148,10 @@
   --hold-track: #fde2e0;
   --hold-ink: #a3000f;
   --tile-neutral: #8e8e93;
+  --status-crit-bg: #fff0f0;
+  --status-crit-line: rgba(215, 0, 21, 0.35);
+  --status-warn-line: rgba(255, 149, 0, 0.55);
+  --status-ok-line: rgba(52, 199, 89, 0.5);
 }
 
 /* … oder „System“ bei hellem Gerät (gleiche Werte wie oben). */
@@ -204,6 +213,10 @@
     --hold-track: #fde2e0;
     --hold-ink: #a3000f;
     --tile-neutral: #8e8e93;
+    --status-crit-bg: #fff0f0;
+    --status-crit-line: rgba(215, 0, 21, 0.35);
+    --status-warn-line: rgba(255, 149, 0, 0.55);
+    --status-ok-line: rgba(52, 199, 89, 0.5);
   }
 }
 
@@ -1600,7 +1613,413 @@ a.band-inner:focus-visible {
   color: var(--text-2);
 }
 
-/* ---- 20. Bewegung ------------------------------------------------------- */
+/* ---- 20. Übersicht ------------------------------------------------------ */
+/* Status-Karte: Kreis mit Symbol (✓ / ! / ✕), Urteil, ein Satz, Alter. Rot
+   bekommt eine getönte Fläche, Orange nur einen Rand. */
+.status-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 14px;
+  border-radius: var(--radius-group);
+  background: var(--surface);
+}
+
+.status-card.is-warn {
+  box-shadow: inset 0 0 0 1px var(--status-warn-line);
+}
+
+.status-card.is-crit,
+.status-card.is-alarm {
+  background: var(--status-crit-bg);
+  box-shadow: inset 0 0 0 1px var(--status-crit-line);
+}
+
+.status-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--tile-neutral);
+  color: #ffffff;
+}
+
+.status-icon .icon {
+  width: 22px;
+  height: 22px;
+  stroke-width: 2.8;
+}
+
+.is-ok .status-icon {
+  background: var(--ok);
+  color: #000000;
+}
+
+.is-warn .status-icon {
+  background: var(--warn);
+  color: #000000;
+}
+
+.is-crit .status-icon,
+.is-alarm .status-icon {
+  background: var(--alarm);
+  color: #ffffff;
+}
+
+/* „Alarm läuft“ pulsiert ruhig (bei reduzierter Bewegung aus, Abschnitt 21). */
+.is-alarm .status-icon {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.status-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.status-title {
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
+.is-warn .status-title {
+  color: var(--warn-text);
+}
+
+.is-crit .status-title,
+.is-alarm .status-title {
+  color: var(--crit-text);
+}
+
+.status-sub {
+  margin-top: 3px;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.status-age {
+  margin-top: 6px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+/* Hinweise: lange Sätze, die Kachel bleibt oben stehen. */
+.ov-hints .row-main {
+  align-items: flex-start;
+}
+
+/* Auslösen: großer Alarm-Knopf, darunter Entwarnung | Test. */
+.ov-actions .btn-row,
+.ov-box-alarm {
+  margin-top: 8px;
+}
+
+.ov-box-alarm .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.ov-actions .group-foot {
+  margin-top: 10px;
+}
+
+/* Befehlszeile (TEST / Demo-Alarm über die Box). */
+.cmd-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  margin-top: 12px;
+  padding: 8px 16px 8px 14px;
+  border-radius: var(--radius-group);
+  background: var(--surface);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.cmd-icon {
+  flex: none;
+  color: var(--text-2);
+}
+
+.cmd-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cmd-line.is-warn .cmd-text {
+  color: var(--warn-text);
+}
+
+.cmd-line.is-done .cmd-text {
+  color: var(--text-2);
+}
+
+.cmd-sym,
+.result-sym,
+.result-check {
+  font-weight: 700;
+}
+
+.cmd-cancel {
+  flex: none;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.cmd-cancel:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+/* Ergebnis-Karte: wer NICHT erreicht wurde, steht zuerst. */
+.result-card {
+  margin-top: 12px;
+  padding: 14px 14px 4px;
+  border-radius: 14px;
+  background: var(--surface);
+  /* Beim Hereinholen nicht unter Demo-Band bzw. Tab-Leiste. */
+  scroll-margin-top: 64px;
+  scroll-margin-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 16px);
+}
+
+.result-card.is-ok {
+  box-shadow: inset 0 0 0 1px var(--status-ok-line);
+}
+
+.result-card.is-fail {
+  box-shadow: inset 0 0 0 1px var(--status-crit-line);
+}
+
+.result-card.is-warn {
+  box-shadow: inset 0 0 0 1px var(--status-warn-line);
+}
+
+/* Während des Versands: kein Fuß, also unten den vollen Innenabstand. */
+.result-card.is-busy {
+  padding-bottom: 14px;
+}
+
+.result-title {
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.is-ok .result-title {
+  color: var(--ok-text);
+}
+
+.is-fail .result-title {
+  color: var(--crit-text);
+}
+
+.result-head {
+  margin-top: 3px;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* Ohne Titel ist der Satz selbst die Aussage. */
+.result-head.is-lead {
+  margin-top: 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.is-warn .result-head.is-lead {
+  color: var(--warn-text);
+}
+
+.result-label {
+  margin-top: 12px;
+  color: var(--crit-text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.result-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Mind. 52 px je Eintrag: Die 44-px-Tippfläche von „Anrufen“ bleibt in
+   ihrer Zeile und berührt die des Nachbarn nicht. */
+.result-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 6px 0;
+  border-top: 0.5px solid var(--separator);
+}
+
+.result-x {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--alarm);
+  color: #ffffff;
+}
+
+.result-x .icon {
+  width: 13px;
+  height: 13px;
+  stroke-width: 3;
+}
+
+.result-who {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.result-name {
+  font-size: 16px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.result-reason {
+  color: var(--text-2);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.call-btn {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--ok);
+  color: #000000;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.call-btn::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -4px;
+  left: -4px;
+  height: 44px;
+  transform: translateY(-50%);
+}
+
+.call-btn .icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2.2;
+}
+
+.result-retry {
+  margin-top: 12px;
+}
+
+.result-reached {
+  margin-top: 10px;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.result-check {
+  color: var(--ok-text);
+}
+
+/* Eigene 44-px-Zeile: Die Tippflächen der Text-Knöpfe reichen nicht in den
+   Nachsende-Knopf darüber; nebeneinander mit Abstand. */
+.result-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  column-gap: 24px;
+  min-height: 44px;
+  margin-top: 4px;
+}
+
+.result-foot .link-btn {
+  font-size: 15px;
+}
+
+/* Lese-Rolle: statt der Knöpfe, wen man verständigt. */
+.ov-readonly {
+  padding: 14px 16px;
+  border-radius: var(--radius-group);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+/* Rechte Spalte (PC): Ereignisse mit Farbpunkt, Link zum Verlauf. */
+.ov-event .row-main {
+  align-items: flex-start;
+}
+
+.ov-event .row-value {
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.ov-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--text-2);
+}
+
+.dot-crit {
+  background: var(--crit-text);
+}
+
+.dot-warn {
+  background: var(--warn-text);
+}
+
+.dot-ok {
+  background: var(--ok-text);
+}
+
+.ov-more {
+  justify-content: center;
+  color: var(--accent-text);
+}
+
+.ov-empty {
+  color: var(--text-2);
+}
+
+/* ---- 21. Bewegung ------------------------------------------------------- */
 @keyframes fade-in {
   from {
     opacity: 0;

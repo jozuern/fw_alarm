@@ -50,9 +50,12 @@ async function keyHold(page, key, ms) {
 
 // Treffbare Höhe eines Elements in der Mitte: zählt die Pixel-Zeilen, in denen
 // elementFromPoint das Element (oder sein Inneres, auch ::after) trifft.
+// Vorher ins Bild holen: elementFromPoint sieht nur den sichtbaren Bereich
+// (die Proben stehen am Ende einer inzwischen gefüllten Übersicht).
 async function hitHeight(page, sel) {
   return page.eval(`(() => {
     const el = document.querySelector(${q(sel)});
+    el.scrollIntoView({ block: 'center' });
     const r = el.getBoundingClientRect();
     const x = r.left + r.width / 2;
     let n = 0;

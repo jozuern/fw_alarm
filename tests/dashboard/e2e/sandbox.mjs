@@ -1,7 +1,11 @@
-// Hilfen für die Szenarien: Status-Push der simulierten Box und ein Lauf des
-// Cron-Wächters in der Sandbox-Kopie.
-import { execFileSync } from 'node:child_process';
+// Hilfen für die Szenarien: Status-Push der simulierten Box, ein Lauf des
+// Cron-Wächters, Laufzeitdateien und Bark-Log der Sandbox, Server an/aus.
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const scripts = join(dirname(fileURLToPath(import.meta.url)), '..', 'sandbox');
 
 // Standardwerte wie in sandbox/box.sh (beide Stellen gleich halten).
 const BOX_DEFAULTS = {
@@ -51,4 +55,53 @@ export function runWatchdog(sandbox) {
     '-d', `extension_dir=${ext}`, '-d', 'extension=curl', '-d', 'extension=openssl',
     join(winPath(sandbox), 'site', 'cron', 'check_offline.php'),
   ], { encoding: 'utf8' });
+}
+
+// Laufzeitdatei im data_dir lesen/ändern (Format wie write_json_file():
+// Guard-Zeile, dann JSON). name ohne Endung, z.B. 'watchdog_state'.
+// Liefert null, wenn die Datei fehlt.
+export function readData(sandbox, name) {
+  const p = join(winPath(sandbox), 'data', `${name}.json.php`);
+  if (!existsSync(p)) return null;
+  const raw = readFileSync(p, 'utf8');
+  const nl = raw.indexOf('\n');
+  return JSON.parse(raw.slice(nl + 1));
+}
+export function editData(sandbox, name, fn) {
+  const p = join(winPath(sandbox), 'data', `${name}.json.php`);
+  const raw = readFileSync(p, 'utf8');
+  const nl = raw.indexOf('\n');
+  const data = JSON.parse(raw.slice(nl + 1));
+  fn(data);
+  writeFileSync(p, raw.slice(0, nl + 1) + JSON.stringify(data, null, 4));
+  return data;
+}
+
+// Letzter Status-Push "vor <s> Sekunden" (wie box.sh --age): simuliert eine
+// verstummte Box, ohne die übrigen Werte zu ändern.
+export function setStatusAge(sandbox, seconds) {
+  return editData(sandbox, 'latest_status', (d) => { d.seen_at = Math.floor(Date.now() / 1000) - seconds; });
+}
+
+// Bark-Attrappe: alle bisher protokollierten Anfragen ({t, key, fields}).
+export function barkLog(sandbox) {
+  const p = join(winPath(sandbox), 'bark.log');
+  if (!existsSync(p)) return [];
+  return readFileSync(p, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+}
+
+// Dashboard-Server (bzw. Attrappe) der Sandbox stoppen/starten - über die
+// Skripte unter sandbox/ (Git Bash; dort bekommt taskkill die richtige PID).
+// Starten läuft losgelöst (detached): Sonst hinge der neue php-Prozess im
+// Job-Objekt dieses Node-Prozesses und endete mit dem Szenario.
+export function sandboxServer(sandbox, action, which = 'site') {
+  const script = join(scripts, action === 'stop' ? 'stop.sh' : 'start.sh').replace(/\\/g, '/');
+  if (action === 'stop') {
+    return Promise.resolve(execFileSync('bash', [script, sandbox, which], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn('bash', [script, sandbox, which], { detached: true, stdio: 'ignore', windowsHide: true });
+    child.on('error', reject);
+    child.on('exit', (code) => (code === 0 ? resolve('gestartet') : reject(new Error(`start.sh endete mit ${code}`))));
+  });
 }
