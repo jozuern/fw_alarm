@@ -529,7 +529,11 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   NEUE nicht gezählt – bewusst kein Sammel-Zähler, den ein Angreifer füllen
   und so den Admin aussperren könnte), Session-Idle-Timeout 12 h
   (`session.gc_maxlifetime` wird dafür gesetzt, sonst räumt PHP nach 24 min
-  ab; `use_strict_mode`; Cookie-Pfad = Dashboard-Ordner; Logout löscht auch
+  ab; `use_strict_mode`; Cookie-Pfad = Dashboard-Ordner; das Sitzungs-Cookie
+  ist ein DAUERHAFTES 12-h-Cookie, bei jeder angemeldeten Anfrage per
+  `refresh_dashboard_cookie()` erneuert – iOS wirft Cookies ohne Ablaufdatum
+  weg, sobald die Home-Bildschirm-App geschlossen wird; die Eigenschaften
+  kommen aus `dashboard_cookie_options()`; Logout löscht auch
   das Cookie; die Status-Antwort liefert das aktuelle CSRF-Token mit, damit
   ein alter Tab nach Neu-Login nicht am veralteten Token scheitert),
   `session_write_close()` direkt

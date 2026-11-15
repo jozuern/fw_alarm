@@ -555,7 +555,9 @@ function login_throttle_clear(array $config): void
 // Sitzung läuft nach dieser Inaktivität serverseitig ab. Wichtig, weil
 // Browser Session-Cookies über einen Neustart hinweg wiederherstellen können -
 // "Browser zu = abgemeldet" stimmt also nicht immer. Ein offener Dashboard-Tab
-// bleibt angemeldet (das 5-s-Polling zählt als Aktivität).
+// bleibt angemeldet (das 5-s-Polling zählt als Aktivität). Das Cookie selbst
+// gilt ebenso lange (siehe dashboard_cookie_options()): iOS wirft Cookies ohne
+// Ablaufdatum weg, sobald die Home-Bildschirm-App geschlossen wird.
 const SESSION_MAX_IDLE_SECONDS = 43200;   // 12 Stunden
 
 // Cookie-Pfad = Ordner des Dashboards (z.B. /fw_alarm/), nicht der ganze
@@ -568,6 +570,28 @@ function dashboard_cookie_path(): string
     return rtrim($dir, '/') . '/';
 }
 
+// EINE Quelle für die Cookie-Eigenschaften (Sitzung, Erneuerung, Abmelden).
+function dashboard_cookie_options(): array
+{
+    return [
+        'path' => dashboard_cookie_path(),
+        'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+        'httponly' => true,
+        'samesite' => 'Strict',
+    ];
+}
+
+// PHP schickt das Cookie bei einer bestehenden Sitzung nicht neu: Ablaufdatum
+// hier bei jeder angemeldeten Anfrage um 12 h nach hinten schieben.
+function refresh_dashboard_cookie(): void
+{
+    if (headers_sent() || session_status() !== PHP_SESSION_ACTIVE) {
+        return;
+    }
+    setcookie(session_name(), session_id(),
+        ['expires' => time() + SESSION_MAX_IDLE_SECONDS] + dashboard_cookie_options());
+}
+
 function start_dashboard_session(): void
 {
     // Ohne diese Zeile räumt der Session-GC von PHP eine Sitzung schon nach
@@ -577,13 +601,7 @@ function start_dashboard_session(): void
     // Nur vom Server vergebene Sitzungs-IDs annehmen (keine untergeschobenen).
     ini_set('session.use_strict_mode', '1');
     session_name('boss925_dashboard');
-    session_set_cookie_params([
-        'lifetime' => 0,
-        'path' => dashboard_cookie_path(),
-        'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
-        'httponly' => true,
-        'samesite' => 'Strict',
-    ]);
+    session_set_cookie_params(['lifetime' => SESSION_MAX_IDLE_SECONDS] + dashboard_cookie_options());
     session_start();
 }
 
@@ -596,13 +614,7 @@ function end_dashboard_session(): void
         session_destroy();
     }
     if (!headers_sent()) {
-        setcookie(session_name(), '', [
-            'expires' => 1,
-            'path' => dashboard_cookie_path(),
-            'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
-            'httponly' => true,
-            'samesite' => 'Strict',
-        ]);
+        setcookie(session_name(), '', ['expires' => 1] + dashboard_cookie_options());
     }
 }
 
@@ -618,6 +630,7 @@ function is_dashboard_authed(): bool
         return false;
     }
     $_SESSION['last_seen'] = time();
+    refresh_dashboard_cookie();
     return true;
 }
 

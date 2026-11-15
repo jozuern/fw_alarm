@@ -75,6 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
         if ($role !== '') {
             login_throttle_clear($config);
             session_regenerate_id(true);
+            refresh_dashboard_cookie();
             $_SESSION['authed'] = true;
             $_SESSION['user'] = $user;
             $_SESSION['role'] = $role;
