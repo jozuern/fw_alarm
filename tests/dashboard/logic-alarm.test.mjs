@@ -120,3 +120,53 @@ test('recipient view', () => {
   assert.equal(L.recipientView({ id: 2, label: 'A', muted: false }, { enabled: true, key_id: 2 }, 0).isDemoTarget, true);
   assert.equal(L.recipientView({ id: 2, label: 'A', muted: false }, { enabled: false }, 0).pill.text, 'Laut');
 });
+
+test('fix round: resend question names only muted re-send targets', () => {
+  const keys = [{ id: 1, label: 'Tom', muted: true, mute_volume: 2 }, { id: 2, label: 'Anna', muted: true, mute_volume: 3 }, { id: 3, label: 'Eva', muted: false }];
+  const q = L.alarmQuestion('resend', { enabled: false }, keys, { names: ['Tom'], ids: [1], what: 'REAL ALARM' });
+  assert.match(q.text, /Tom \(stumm\) mit Lautstärke 2/); assert.doesNotMatch(q.text, /Anna/);
+});
+
+test('fix round: muted line in every sending question', () => {
+  const keys = [{ id: 1, label: 'Josh', muted: false }, { id: 2, label: 'Anna', muted: true, mute_volume: 3 }];
+  const demo = { enabled: true, label: 'Anna', key_id: 2 };
+  const fa = L.alarmQuestion('false_alarm', demo, keys).text;
+  assert.match(fa, /Anna \(stumm\) mit Lautstärke 3/); assert.doesNotMatch(fa, /Alarm kommt/);
+  assert.match(L.alarmQuestion('box_alarm', demo, keys).text, /Anna \(stumm\) mit Lautstärke 3/);
+  assert.match(L.alarmQuestion('false_alarm', { enabled: false }, keys).text, /kommt mit Stumm-Lautstärke): Anna/);
+});
+
+test('fix round: empty vs. not loaded list', () => {
+  const empty = L.alarmQuestion('alarm', { enabled: false }, []).text;
+  assert.match(empty, /Not-Liste der NAS-Konfiguration\. Die Empfängerliste ist leer\./);
+  assert.doesNotMatch(empty, /senden an Die/);
+  const nl = L.alarmQuestion('alarm', { enabled: false }, null).text;
+  assert.match(nl, /noch nicht geladen/); assert.doesNotMatch(nl, /leer/);
+  assert.match(L.alarmQuestion('alarm', { enabled: false }, undefined).text, /noch nicht geladen/);
+});
+
+test('fix round: volume normalised', () => {
+  assert.match(L.muteQuestion('A', 'muted', '0'), /OHNE Ton/);
+  assert.match(L.muteQuestion('A', 'muted', '3'), /Stumm-Lautstärke 3 von 10/);
+  assert.equal(L.volWords('0'), 'lautlos'); assert.equal(L.volWords('3'), 'leise (Lautstärke 3 von 10)');
+});
+
+test('fix round: buildUnreached merge order', () => {
+  const prev = { action: 'alarm', what: 'REAL ALARM', at: 1, startedAt: 50, entries: [{ id: 3, name: 'A', reason: 'r' }, { id: 5, name: 'B', reason: 'r' }, { id: 0, name: 'N', reason: 'r' }] };
+  const a = L.buildUnreached(prev, 'alarm', { results: [{ id: 3, label: 'A', ok: true }] }, { ids: [3], origAt: 50 }, 9);
+  assert.deepEqual(plain(a.unreached.entries.map((e) => e.id)), [5, 0]);
+  const b = L.buildUnreached(prev, 'alarm', { results: [{ id: 5, label: 'B', ok: false, http: 502 }, { id: 7, label: 'C', ok: false, http: 0 }] }, { ids: [5, 7], origAt: 50 }, 9);
+  assert.deepEqual(plain(b.unreached.entries), [
+    { id: 3, name: 'A', reason: 'r' }, { id: 5, name: 'B', reason: 'HTTP 502' }, { id: 0, name: 'N', reason: 'r' },
+    { id: 7, name: 'C', reason: 'keine Verbindung/Timeout' }]);
+});
+
+test('fix round: clearedOk and demo counting', () => {
+  const failed = L.deriveAlarmInfo([{ event: 'false_alarm', at: 20, ok: false, demo: false }, { event: 'relay_alarm', at: 10 }]);
+  assert.equal(failed.clearedOk, false);
+  const resent = L.deriveAlarmInfo([{ event: 'false_alarm', at: 30, ok: true, resend: 1 }, { event: 'false_alarm', at: 20, ok: false, demo: false }, { event: 'relay_alarm', at: 10 }]);
+  assert.equal(resent.clearedOk, true);
+  const demo = L.deriveAlarmInfo([{ event: 'false_alarm', at: 20, ok: true, demo: true }, { event: 'nas_alarm', at: 10, ok: true, demo: true }]);
+  assert.equal(demo.clearedAt, 20);
+  assert.equal(L.deriveAlarmInfo([{ event: 'false_alarm', at: 20, ok: true, demo: true }, { event: 'nas_alarm', at: 10, ok: true, demo: false }]).clearedAt, undefined);
+});

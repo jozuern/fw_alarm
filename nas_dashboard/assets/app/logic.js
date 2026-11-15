@@ -1026,6 +1026,7 @@
         entries = merged;
       }
     }
+    // Die UI zeigt unreached.entries (die zusammengeführte Liste); failed sind nur die frischen Fehlschläge dieser Runde.
     return {
       unreached: entries.length ? { action, what: whatOf(action), at: nowMs, startedAt, entries } : null,
       reached,
@@ -1034,7 +1035,7 @@
   }
 
   // ---- Empfänger -----------------------------------------------------------
-  const volWords = (vol) => (vol === 0 ? 'lautlos' : `leise (Lautstärke ${vol} von 10)`);
+  const volWords = (vol) => { const v = Number(vol) || 0; return v === 0 ? 'lautlos' : `leise (Lautstärke ${v} von 10)`; };
 
   // now bleibt im Aufruf, damit die Zeilenlogik später Zeitabhängiges
   // (z.B. "gleich wieder laut") ergänzen kann, ohne die Aufrufer zu ändern.
@@ -1070,7 +1071,8 @@
   // Die Frage nennt die TATSÄCHLICHE Stumm-Lautstärke dieses Eintrags:
   // "OHNE Ton" stimmt nur bei 0 - sonst kommt der Alarm leise an.
   function muteQuestion(name, want, vol) {
-    const how = !vol ? 'OHNE Ton' : `nur noch leise (Stumm-Lautstärke ${vol} von 10)`;
+    const v = Number(vol) || 0;
+    const how = v === 0 ? 'OHNE Ton' : `nur noch leise (Stumm-Lautstärke ${v} von 10)`;
     if (want === 'permanent') {
       return `"${name}" DAUERHAFT stumm schalten? Alarme kommen dort weiterhin sichtbar an, aber ${how} – und die automatische Rückschaltung greift nicht mehr, bis das hier wieder beendet wird.`;
     }
@@ -1093,47 +1095,53 @@
     return vol === 0 ? `${k.label} (${kind}) lautlos` : `${k.label} (${kind}) mit Lautstärke ${vol}`;
   }
 
-  // keys = keys_list.keys. extra = { names, what } für 'resend'.
+  // keys = keys_list.keys (null/undefined = noch nicht geladen).
+  // extra = { names, ids, what } für 'resend'.
   function alarmQuestion(action, demo, keys, extra) {
     extra = extra || {};
     const demoOn = !!(demo && demo.enabled);
+    const loaded = Array.isArray(keys);
     const targets = targetKeys(demo, keys);
     const n = targets.length;
-    const muted = targets.filter((k) => k.muted);
     const mode = demoOn ? `DEMO-MODUS: nur „${demoName(demo)}“` : 'LIVE';
-    const count = n === 0
-      ? 'Die Liste ist leer – es geht an die Not-Liste der NAS-Konfiguration.'
-      : `${n} Empfänger.`;
-    const mutedText = muted.length
-      ? ` Stumm geschaltet (Alarm kommt mit Stumm-Lautstärke): ${muted.map(mutedPhrase).join('; ')}.`
-      : '';
+    // Wer wirklich Post bekommt: bei der Nachsendung nur die gewählten ids.
+    const receivers = action === 'resend' && Array.isArray(extra.ids)
+      ? targets.filter((k) => extra.ids.map(Number).includes(Number(k.id)))
+      : targets;
+    const muted = receivers.filter((k) => k.muted);
+    const mutedList = muted.map(mutedPhrase).join('; ');
+    const mutedAlarm = muted.length ? ` Stumm geschaltet (Alarm kommt mit Stumm-Lautstärke): ${mutedList}.` : '';
+    const mutedClear = muted.length ? ` Stumm geschaltet (kommt mit Stumm-Lautstärke): ${mutedList}.` : '';
+    // Eigener, vollständiger Satz zur Empfängerzahl.
+    const sendTo = !loaded ? 'an alle Empfänger der Liste. Die Empfängerliste ist noch nicht geladen.'
+      : (n === 0 ? 'an die Not-Liste der NAS-Konfiguration. Die Empfängerliste ist leer.' : `an ${n} Empfänger.`);
 
     if (action === 'box_alarm') {
       return {
         title: 'Demo-Alarm über die Box auslösen?',
-        text: `DEMO-MODUS: Der Alarm durchläuft die komplette Alarm-Kette der Box und geht an „${demoName(demo)}“. Danach greift der normale 5-Minuten-Cooldown der Box.`
+        text: `DEMO-MODUS: Der Alarm durchläuft die komplette Alarm-Kette der Box und geht an „${demoName(demo)}“. Danach greift der normale 5-Minuten-Cooldown der Box.${mutedAlarm}`
       };
     }
     if (action === 'resend') {
       const names = (extra.names || []).join(', ');
       return {
         title: 'Erneut senden?',
-        text: `Aktuell ${mode}: ${extra.what || 'Alarm'} erneut senden – NUR an: ${names}?${mutedText}`
+        text: `Aktuell ${mode}: ${extra.what || 'Alarm'} erneut senden – NUR an: ${names}?${mutedAlarm}`
       };
     }
     if (action === 'false_alarm') {
       return {
         title: demoOn ? `Demo-Entwarnung an ${demoName(demo)} senden?` : 'Entwarnung an alle senden?',
         text: demoOn
-          ? `${mode}. Die Entwarnung geht nur an diesen Empfänger.`
-          : `${mode}. ENTWARNUNG an ${count} („Der letzte Alarm war ein FEHLALARM“ – Critical Alert mit kurzem Ton, kommt auch durch Stummschalter durch.)${mutedText}`
+          ? `${mode}. Die Entwarnung geht nur an diesen Empfänger.${mutedClear}`
+          : `${mode}. ENTWARNUNG („Der letzte Alarm war ein FEHLALARM“ – Critical Alert mit kurzem Ton, kommt auch durch Stummschalter durch) ${sendTo}${mutedClear}`
       };
     }
     return {
       title: demoOn ? `Demo-Alarm an ${demoName(demo)} senden?` : 'Alarm an alle senden?',
       text: demoOn
-        ? `${mode}. Der Alarm geht nur an diesen Empfänger (1 Empfänger), alle anderen pausieren.${mutedText}`
-        : `${mode}. ECHTEN FEUERWEHR-ALARM direkt vom NAS senden an ${count}${mutedText}`
+        ? `${mode}. Der Alarm geht nur an diesen Empfänger (1 Empfänger), alle anderen pausieren.${mutedAlarm}`
+        : `${mode}. ECHTEN FEUERWEHR-ALARM direkt vom NAS senden ${sendTo}${mutedAlarm}`
     };
   }
 
