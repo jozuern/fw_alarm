@@ -108,6 +108,8 @@ const LARGE = 3;   // große Schrift bzw. Symbole/Fokusring (WCAG 1.4.3 / 1.4.11
 
 // Gewählte Zeile der Empfängerliste (PC): eigene Fläche, hellere Schriftfarben.
 const SELECTED = props('.rcp-list .row-main[aria-current="page"]');
+// Gruppen der Einstellungen: Segment-Leiste eine Stufe heller als die Gruppe.
+const SET_GROUP = props('.set .group-body');
 
 function pairs() {
   const list = [];
@@ -190,6 +192,25 @@ function pairs() {
     add(theme, 'sheet', 'Empfänger: Feld-Text in Gruppe', '--text', ['--sheet-bg']);
     add(theme, 'panel', 'Empfänger: Knopf/Feld in Gruppe', '--accent-text', ['--bg', '--surface'], AA, RAISED.panel);
     add(theme, 'panel', 'Empfänger: Feld-Text in Gruppe', '--text', ['--bg', '--surface']);
+    // Einstellungen: Segmente IN Gruppen (eigene, hellere Leiste), Werte und
+    // Erklärungen in Gruppen, Hinweise auf der Seite, Zustands-Karte des
+    // Demo-Modus und der Knopf „zurück zu LIVE“.
+    add(theme, 'page', 'Einstellungen: Segment in Gruppe', '--text', [...CARD('page'), '--seg-track'], AA, SET_GROUP);
+    add(theme, 'page', 'Einstellungen: Segment in Gruppe aktiv', '--text', [...CARD('page'), '--seg-track', '--seg-on'], AA, SET_GROUP);
+    add(theme, 'page', 'Einstellungen: Auswahl-Wert/Erklärung/Zusatz', '--text-2', CARD('page'));
+    add(theme, 'page', 'Einstellungen: Abmelden/Alte Ansicht', '--accent-text', CARD('page'));
+    add(theme, 'page', 'Einstellungen: Haken (Symbol)', '--accent-text', CARD('page'), LARGE);
+    add(theme, 'page', 'Einstellungen: Warnung in Zeile', '--warn-text', CARD('page'));
+    add(theme, 'page', 'Einstellungen: Warnung auf der Seite', '--warn-text', ['--bg']);
+    add(theme, 'page', 'Einstellungen: Gerade ist Ruhezeit', '--info-text', ['--bg']);
+    add(theme, 'page', 'Einstellungen: letzter bekannter Stand', '--unknown-text', ['--bg']);
+    add(theme, 'page', 'Einstellungen: Probealarm-Fenster (Link)', '--accent-text', ['--bg']);
+    add(theme, 'page', 'Einstellungen: Probealarm-Fenster (Text)', '--text-2', ['--bg']);
+    for (const [name, fg] of [['Text', '--text'], ['DEMO-MODUS / nicht übernommen', '--warn-text'], ['LIVE / übernommen', '--ok-text'],
+      ['Box offline', '--crit-text'], ['Key/seit', '--text-2']]) {
+      add(theme, 'page', `Einstellungen: Demo-Karte ${name}`, fg, ['--bg', '--surface']);
+    }
+    add(theme, 'page', 'Einstellungen: Demo beenden (Knopf)', '--crit-text', ['--bg', '--surface']);
   }
   return list;
 }

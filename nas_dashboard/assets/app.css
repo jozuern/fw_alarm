@@ -2522,6 +2522,349 @@ a.band-inner:focus-visible {
   margin: 0 0 24px;
 }
 
+/* ---- Einstellungen (view-settings.js) ------------------------------------ */
+/* Segmente IN einer Gruppe brauchen eine Leiste, die sich von der Gruppe
+   abhebt (sonst verschwände sie auf --surface) - wie in Sheets. */
+.set .group-body {
+  --seg-track: var(--surface-2);
+  --seg-on: var(--sheet-seg-on);
+}
+
+.set-intro,
+.set-type-hint {
+  margin: -6px 4px 18px;
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.set-loading {
+  margin: 8px 4px 24px;
+  color: var(--text-2);
+  font-size: 15px;
+}
+
+.set-loading.is-error {
+  color: var(--crit-text);
+}
+
+.set-warn-note {
+  margin: -6px 4px 18px;
+  color: var(--warn-text);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.set-sub-warn {
+  color: var(--warn-text);
+}
+
+/* Fußnoten unter den Gruppen; „Mehr erfahren“ mit 44-px-Tippfläche. */
+.set-foot {
+  margin: -8px 16px 24px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.set-foot .link-btn {
+  margin-top: 8px;
+  font-size: 15px;
+}
+
+/* Rückmeldung unter einer Zeile. */
+.set .row > .msg {
+  margin: 0 var(--row-pad-x) 10px;
+}
+
+.set .row-block > .msg {
+  margin: 8px 0 0;
+}
+
+/* Aktionen in der Konto-Gruppe (Abmelden, Alte Ansicht) in Akzentfarbe. */
+.set-action .row-label {
+  color: var(--accent-text);
+}
+
+/* Design: Bezeichnung links, Segment rechts in derselben Zeile. */
+.set-inline-row .row-label {
+  flex: none;
+}
+
+.set-theme-seg {
+  flex: 0 1 252px;
+  margin-left: auto;
+}
+
+/* Schalter-Zeilen: links der Link zur Detailseite, rechts der Schalter -
+   nebeneinander, nie ineinander (keine verschachtelten Bedienelemente).
+   Zwischen den Tippflächen bleiben ≥ 8 px Luft. */
+.set-ntype-line {
+  display: flex;
+  align-items: center;
+}
+
+.set-ntype-link {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 4px;
+}
+
+.set-ntype-switch {
+  display: flex;
+  flex: none;
+  align-items: center;
+  padding: 0 var(--row-pad-x) 0 12px;
+}
+
+.set-level {
+  flex: none;
+}
+
+/* Optionen der Detailseite: Bezeichnung über dem Segment, Zusatz darunter. */
+.set-opt-label {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: var(--row-font);
+}
+
+.set-opt-detail {
+  margin: 6px 0 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+/* Auswahlliste als Zeile: das native <select> liegt unsichtbar darüber
+   (16 px, sonst zoomt iOS), sichtbar ist der gewählte Text. */
+.set-select-row {
+  position: relative;
+}
+
+.set-select-row .row-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.set-select-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 55%;
+  overflow: hidden;
+  color: var(--text-2);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.set-select-chev {
+  width: 16px;
+  height: 16px;
+  margin-right: -4px;
+  color: var(--text-3);
+  stroke-width: 2.2;
+  transform: rotate(90deg);
+}
+
+.set-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  font-size: 16px;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.set-select:disabled {
+  cursor: default;
+}
+
+.set-select-row:has(.set-select:focus-visible) {
+  box-shadow: inset 0 0 0 2px var(--info);
+}
+
+/* „Automatisch wieder laut nach“: Liste mit Haken an der gewählten Dauer. */
+.set-check {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  color: var(--accent-text);
+}
+
+.set-check .icon {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2.4;
+}
+
+/* Ruhezeit gerade aktiv. */
+.set-quiet-now {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -6px 4px 18px;
+  color: var(--info-text);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.set-quiet-now .icon {
+  width: 18px;
+  height: 18px;
+}
+
+/* Demo-Modus: Zustand als Karte (aktiv mit orangem Rand), Abgleich in Worten. */
+.set-demo-state {
+  margin: 0 0 24px;
+  padding: 14px 16px;
+  border-radius: var(--radius-group);
+  background: var(--surface);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.set-demo-state.is-on {
+  box-shadow: inset 0 0 0 1px var(--status-warn-line);
+}
+
+.set-demo-on {
+  color: var(--warn-text);
+}
+
+.set-demo-live {
+  color: var(--ok-text);
+}
+
+.set-demo-meta {
+  margin-top: 2px;
+  color: var(--text-2);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.set-demo-sync {
+  margin-top: 10px;
+  font-weight: 600;
+}
+
+.set-demo-sync.is-ok {
+  color: var(--ok-text);
+}
+
+.set-demo-sync.is-warn {
+  color: var(--warn-text);
+}
+
+.set-demo-sync.is-crit {
+  color: var(--crit-text);
+}
+
+.set-demo-toggle {
+  margin: 0 0 8px;
+}
+
+/* Zurück zu LIVE: danach sind Alarme wieder „scharf“ - rot markiert. */
+.set-demo-toggle.is-end {
+  color: var(--crit-text);
+}
+
+.set-demo-msg {
+  margin: 0 4px 12px;
+}
+
+.set-demo-page .set-foot {
+  margin-top: 12px;
+}
+
+.set-empty {
+  color: var(--text-2);
+}
+
+/* Box: Erklärung klappt unter der Zeile auf; Pfeil zeigt dann nach unten.
+   Bezeichnungen brechen nur zwischen Wörtern um („Empfängerliste (Box)“),
+   lange Werte dürfen mehrzeilig werden. */
+.box-row .row-text {
+  min-width: auto;
+}
+
+.box-row .row-label {
+  overflow-wrap: break-word;
+}
+
+.box-row .row-value {
+  max-width: 62%;
+}
+
+.box-chev {
+  transition: transform 0.15s ease;
+}
+
+.box-row.is-open .box-chev {
+  transform: rotate(90deg);
+}
+
+.box-tip {
+  margin: -4px 0 0;
+  padding: 0 var(--row-pad-x) 12px;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.set-box-stale {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: -6px 4px 18px;
+  color: var(--unknown-text);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.set-box-stale .icon {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+}
+
+.set-probe-window {
+  margin: 0 16px 24px;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.set-probe-window summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--accent-text);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.set-probe-window strong,
+.set-explain strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* „Mehr erfahren“ (Sheet) */
+.set-explain p {
+  margin: 0 0 12px;
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
 /* Bewegung reduzieren: alles aus. Die Füllung des Halten-Knopfs bleibt -
    sie ist Anzeige, keine Animation (ui.js setzt --p direkt). */
 @media (prefers-reduced-motion: reduce) {

@@ -136,8 +136,10 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
   await page.click('.tabbar a:nth-child(2)');
   await page.waitFor(`location.hash === '#/empfaenger' && document.querySelector('main h1')?.textContent.trim() === 'Empfänger'`);
   assert(await page.eval(`document.querySelector('.tabbar a[aria-current="page"]').textContent.includes('Empfänger')`), 'Empfänger-Tab aktiv');
+  // Verschachtelte Adresse: Bereich Einstellungen, Unterseite „Meldungen an mich“.
   await page.eval(`location.hash = '#/einstellungen/meldungen'`);
-  await page.waitFor(`document.querySelector('main h1')?.textContent.trim() === 'Einstellungen'`);
+  await page.waitFor(`document.querySelector('main h1')?.textContent.trim() === 'Meldungen an mich'
+    && (document.querySelector('.tabbar a[aria-current="page"]')?.textContent || '').includes('Einstellungen')`);
   await page.eval(`location.hash = '#/gibt-es-nicht'`);
   await page.waitFor(`document.querySelector('main h1')?.textContent.trim() === 'Übersicht'`);
   assert(await page.eval(`location.hash`) === '#/uebersicht', 'unbekannte Adresse -> #/uebersicht');

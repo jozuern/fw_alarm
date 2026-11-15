@@ -204,3 +204,28 @@ test('overview rows and recipients fact', () => {
   assert.equal(off[0].value, 'offline seit 23 Min'); assert.equal(off[0].tone, 'crit');
   assert.equal(off[1].tone, 'unknown');
 });
+test('Hinweis im Browser: Text je Übergang, „wieder in Ordnung“ nur nach einer Störungs-Meldung', () => {
+  for (const to of ['offline', 'alarm', 'standing', 'nas', 'delivery']) {
+    const r = L.browserAlertFor(to, false);
+    assert.equal(r.problem, true, to);
+    assert.ok(r.body.length > 10, to);
+  }
+  assert.ok(L.browserAlertFor('offline', false).body.startsWith('Box offline'));
+  assert.ok(L.browserAlertFor('alarm', false).body.startsWith('Alarm läuft'));
+  assert.ok(L.browserAlertFor('standing', false).body.startsWith('Alarm ausgelöst'));
+  assert.ok(L.browserAlertFor('nas', false).body.startsWith('NAS nicht erreichbar'));
+  assert.ok(L.browserAlertFor('delivery', false).body.startsWith('Zustellung unvollständig'));
+  // Zurück ins Ruhige: nur, wenn vorher eine Störung gemeldet wurde.
+  assert.equal(L.browserAlertFor('ok', false), null);
+  assert.equal(L.browserAlertFor('hints', false), null);
+  const ok = L.browserAlertFor('ok', true);
+  assert.equal(ok.problem, false);
+  assert.ok(ok.body.startsWith('Wieder in Ordnung'));
+  assert.ok(L.browserAlertFor('hints', true).body.startsWith('Wieder in Ordnung'));
+  assert.ok(L.browserAlertFor('demo', true).body.includes('Demo-Modus'));
+  // Weder Störung noch „in Ordnung“: nichts melden.
+  for (const to of ['stuck', 'auth', 'loading', 'irgendwas']) {
+    assert.equal(L.browserAlertFor(to, true), null, to);
+    assert.equal(L.browserAlertFor(to, false), null, to);
+  }
+});

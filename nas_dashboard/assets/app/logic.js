@@ -1159,6 +1159,31 @@
   // sonst die key_id des Demo-Empfängers.
   const expectDemoOf = (info) => (info && info.enabled ? String(info.key_id) : '0');
 
+  // ---- „Hinweis im Browser bei Störung“ (Spec §8.6) ------------------------
+  // Text der Benachrichtigung je Übergang (Schlüssel aus store.onTransition:
+  // Urteil, dabei 'nas' erst ab dem 3. Fehlschlag, 'delivery' = Bereit mit
+  // unvollständiger Zustellung). Zurück ins Ruhige („Bereit“, Hinweise,
+  // Demo-Modus) gibt es EINMAL „Wieder in Ordnung“ - aber nur, wenn vorher
+  // eine Störung gemeldet wurde (alerted). Alles andere (Kontakt klemmt,
+  // Abgemeldet, Laden) meldet nichts. null = keine Benachrichtigung.
+  const BROWSER_ALERT_TEXTS = {
+    offline: 'Box offline – Relaisalarme kommen gerade NICHT an. Manuell alarmieren geht weiterhin über das Dashboard.',
+    alarm: 'Alarm läuft – die Box stellt gerade zu.',
+    standing: 'Alarm ausgelöst – der Melder-Kontakt ist noch geschlossen.',
+    nas: 'NAS nicht erreichbar – das Dashboard bekommt seit mehreren Abfragen keine aktuellen Daten. Die Box alarmiert über Bark auch ohne das NAS.',
+    delivery: 'Zustellung unvollständig – beim letzten Alarm der Box wurden nicht alle Empfänger erreicht.'
+  };
+  const BROWSER_ALERT_CALM = {
+    ok: 'Wieder in Ordnung – die Box meldet sich, keine Störung bekannt.',
+    hints: 'Wieder in Ordnung – die Box meldet sich (es liegen noch Hinweise an, siehe Übersicht).',
+    demo: 'Wieder in Ordnung – die Box meldet sich (der Demo-Modus ist noch aktiv).'
+  };
+  function browserAlertFor(to, alerted) {
+    if (Object.prototype.hasOwnProperty.call(BROWSER_ALERT_TEXTS, to)) return { body: BROWSER_ALERT_TEXTS[to], problem: true };
+    if (alerted && Object.prototype.hasOwnProperty.call(BROWSER_ALERT_CALM, to)) return { body: BROWSER_ALERT_CALM[to], problem: false };
+    return null;
+  }
+
   FW.logic = {
     setTimezone, tz,
     na, show, flagged,
@@ -1173,6 +1198,7 @@
     STATE_LABELS, ACK_RESULTS, ACK_MESSAGES, fmtAckResult, fmtAckMessage, COMMAND_LINGER_S, COMMAND_ACK_GIVEUP_S, commandLine,
     describeLogEntry, LOG_FILTERS, LOG_STEP, LOG_MAX, LOG_EMPTY, logMatches,
     failReason, whatOf, UNREACHED_MAX_AGE_MS, validateUnreached, buildUnreached,
-    volWords, recipientView, muteQuestion, alarmQuestion, armTimeoutFor, expectDemoOf
+    volWords, recipientView, muteQuestion, alarmQuestion, armTimeoutFor, expectDemoOf,
+    browserAlertFor
   };
 })(typeof window !== 'undefined' ? window : globalThis);
