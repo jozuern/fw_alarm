@@ -302,7 +302,7 @@
       cls: (s) => ((flagged(s.alarm_pending) || flagged(s.isr_latched)
         || flagged(s.waiting_for_release) || flagged(s.cooldown)) ? 'warn' : '') },
     { id: 'delivery', group: 'Alarmkette', label: 'Zustellung',
-      tip: 'Wie viele Empfänger beim letzten/laufenden Alarm erfolgreich benachrichtigt wurden (erreicht/gesamt). Läuft die Zustellung noch, versucht die Box automatisch weiter, bis alle versorgt sind (Nachsende-Puffer). Gelb heißt: Die Box sendet nicht mehr nach, aber nicht alle wurden erreicht – die übrigen ggf. per „REAL ALARM“ bzw. telefonisch verständigen. Achtung: Die Box zählt gegen ihre AKTUELLE Empfängerliste – wurde die Liste nach dem Alarm geändert (auch ein Demo-Wechsel), kann sich die Gesamtzahl verschoben haben.',
+      tip: 'Wie viele Empfänger beim letzten/laufenden Alarm erfolgreich benachrichtigt wurden (erreicht/gesamt). Läuft die Zustellung noch, versucht die Box automatisch weiter, bis alle versorgt sind (Nachsende-Puffer). Rot heißt: Die Box sendet nicht mehr nach, aber nicht alle wurden erreicht – die übrigen ggf. per „Alarm an alle senden“ bzw. telefonisch verständigen. Achtung: Die Box zählt gegen ihre AKTUELLE Empfängerliste – wurde die Liste nach dem Alarm geändert (auch ein Demo-Wechsel), kann sich die Gesamtzahl verschoben haben.',
       value: (s) => {
         if (flagged(s.alarm_pending)) return `läuft – bisher ${show(s.key_progress)}`;
         if (na(s.last_alarm) || s.last_alarm === 'nie') return '–';
@@ -311,10 +311,10 @@
       },
       cls: (s) => {
         if (flagged(s.alarm_pending)) return 'crit';
-        return deliveryIncomplete(s) ? 'warn' : '';
+        return deliveryIncomplete(s) ? 'crit' : '';
       } },
     { id: 'lastAlarm', group: 'Alarmkette', label: 'Letzter Alarm',
-      tip: 'Zeitpunkt und Text des letzten ausgelösten Alarms aus Sicht der Box (seit ihrem letzten Neustart) und – falls die Firmware es meldet – woher er kam: Melder-Relais oder DEMO-Alarm per Dashboard-Befehl. "nie" heißt: kein Alarm seit dem letzten Einschalten. Den dauerhaften Verlauf führt das NAS (Panel "Verlauf").',
+      tip: 'Zeitpunkt und Text des letzten ausgelösten Alarms aus Sicht der Box (seit ihrem letzten Neustart) und – falls die Firmware es meldet – woher er kam: Melder-Relais oder DEMO-Alarm per Dashboard-Befehl. "nie" heißt: kein Alarm seit dem letzten Einschalten. Den dauerhaften Verlauf führt das NAS („Verlauf“).',
       value: (s) => {
         const text = show(s.last_alarm);
         if (na(s.alarm_source) || na(s.last_alarm) || s.last_alarm === 'nie') return text;
@@ -390,7 +390,7 @@
     // NAS-seitig, nicht Box-seitig: Der Wächter (DSM-Aufgabe) muss auch dann
     // laufen, wenn die Box offline ist - deshalb live.
     { id: 'watchdog', group: 'Wartung', label: 'Offline-Wächter (NAS)', live: true,
-      tip: 'Die DSM-Aufgabe auf dem NAS prüft alle 15 Minuten, ob die Box sich noch meldet, und schickt sonst eine Bark-Warnung. Hier steht, ob diese Aufgabe selbst noch läuft – der Wächter darf nicht unbemerkt ausfallen. Welche Meldungen er schickt, stellt der Admin im Panel "Meldungen an den Admin" ein.',
+      tip: 'Die DSM-Aufgabe auf dem NAS prüft alle 15 Minuten, ob die Box sich noch meldet, und schickt sonst eine Bark-Warnung. Hier steht, ob diese Aufgabe selbst noch läuft – der Wächter darf nicht unbemerkt ausfallen. Welche Meldungen er schickt, stellt der Admin unter „Einstellungen → Meldungen“ ein.',
       value: (s, ctx) => (ctx.watchdog ? ctx.watchdog.text : 'n/a'),
       cls: (s, ctx) => (ctx.watchdog && ctx.watchdog.warn ? 'warn' : '') },
     // Der Gegenpart von außen: eine Cloud-VM prüft alle 5 min, ob das NAS
@@ -407,7 +407,11 @@
   function boxRows(s, ctx) {
     s = s || {};
     ctx = ctx || {};
-    const dim = !!(ctx.offline || ctx.stale);
+    // Unsicher = das NAS liefert gerade keine aktuellen Daten (Fehler oder
+    // veraltet): Dann ist ALLES nur der letzte bekannte Stand - auch Laufzeit
+    // und Wächter. Live bleiben die NAS-seitigen Zeilen nur bei "Box offline".
+    const unsure = !!ctx.stale || !!ctx.statusError;
+    const dim = !!ctx.offline;
     return ROW_DEFS.map((def) => {
       const cls = def.cls ? (def.cls(s, ctx) || '') : '';
       return {
@@ -415,7 +419,7 @@
         id: def.id,
         label: resolve(def.label, ctx),
         value: def.value(s, ctx),
-        tone: dim && !def.live ? 'unknown' : cls,
+        tone: unsure || (dim && !def.live) ? 'unknown' : cls,
         tip: resolve(def.tip, ctx)
       };
     });
@@ -426,7 +430,7 @@
   // bzw. ohne Status: keine Hinweise aus alten Daten.
   function collectHints(ctx) {
     const s = ctx && ctx.status;
-    if (!ctx || ctx.stale || !s) return [];
+    if (!ctx || ctx.stale || ctx.statusError || !s) return [];
     const hints = [];
     const add = (tone, text) => hints.push({ tone, text });
     const rowOf = (id) => boxRows(s, {
@@ -456,8 +460,8 @@
     if (!ctx.offline) {
       if (deliveryIncomplete(s)) {
         add('crit', `Nicht alle Empfänger erreicht (letzter Alarm der Box: ${show(s.key_progress)}) – ${ctx.readOnly
-          ? 'ggf. einen Admin verständigen, er kann per „REAL ALARM“ nachsenden'
-          : 'ggf. per „REAL ALARM“ nachsenden bzw. die übrigen anders verständigen'}. Wurde die Empfängerliste seit dem Alarm geändert, kann die Zählung verschoben sein.`);
+          ? 'ggf. einen Admin verständigen, er kann per „Alarm an alle senden“ nachsenden'
+          : 'ggf. per „Alarm an alle senden“ nachsenden bzw. die übrigen anders verständigen'}. Wurde die Empfängerliste seit dem Alarm geändert, kann die Zählung verschoben sein.`);
       }
       if (s.wifi === 'down' || weakWifi(s)) add('warn', rowText('wifi'));
       if (heartbeatFailed(s)) add('warn', rowText('heartbeat'));
@@ -523,7 +527,10 @@
         detail: err.kind === 'timeout' ? 'Keine Antwort vom NAS (Zeitüberschreitung)' : 'Keine Verbindung zum NAS'
       };
     }
-    if (err.kind === 'http') {
+    // Jede andere Fehlerart mit Art-Kennung (http, csrf, readonly, mode_changed
+    // ...) wie bisher mit Status und Servermeldung; nur ein Fehler ohne
+    // Art-Kennung (kein ApiError) heißt "nicht auswertbar".
+    if (typeof err.kind === 'string' && err.kind) {
       return {
         title: 'NAS-Störung',
         detail: `Das NAS meldet einen Fehler${err.status ? ` (HTTP ${err.status})` : ''}${err.message ? `: ${err.message}` : ''}`
@@ -538,18 +545,20 @@
     const s = ctx.status;
     const offline = !!ctx.offline;
 
-    if (ctx.authLost) return make('auth', 'warn', 'Abgemeldet', 'Sitzung abgelaufen – bitte neu anmelden.');
+    if (ctx.authLost) return make('auth', 'warn', 'Abgemeldet', ctx.alarmInFlight
+      ? 'Sitzung abgelaufen – bitte nach dem Lesen des Alarm-Ergebnisses die Seite neu laden (Anmeldung).'
+      : 'Sitzung abgelaufen – die Anmeldeseite wird geladen…');
 
     if (ctx.statusError || ctx.stale) {
       const { title, detail } = nasProblemTexts(ctx.statusError, ctx.alarmInFlight);
       // War die Box beim letzten erfolgreichen Abruf OFFLINE, ist das die
-      // wichtigste Aussage - und der Hinweis auf REAL ALARM darf mit der
+      // wichtigste Aussage - und der Hinweis auf „Alarm an alle senden“ darf mit der
       // NAS-Störung nicht verschwinden. Rot bleibt rot.
       let sub;
       if (offline) {
         sub = ctx.readOnly
           ? 'Letzter bekannter Stand: Box OFFLINE – Relaisalarme kamen da NICHT an. Bitte einen Admin verständigen – er kann manuell alarmieren.'
-          : 'Letzter bekannter Stand: Box OFFLINE – Relaisalarme kamen da NICHT an. Manuell alarmieren: „REAL ALARM“ direkt hier darunter (läuft über das NAS – kommt keine Antwort, die Mannschaft anders verständigen).';
+          : 'Letzter bekannter Stand: Box OFFLINE – Relaisalarme kamen da NICHT an. Manuell alarmieren: „Alarm an alle senden“ direkt hier darunter (läuft über das NAS – kommt keine Antwort, die Mannschaft anders verständigen).';
       } else {
         sub = 'Das Dashboard bekommt gerade keine frischen Daten. Die Box alarmiert über Bark auch ohne das NAS – ob sie gerade läuft, lässt sich von hier aus aber nicht prüfen.';
       }
@@ -561,7 +570,7 @@
     if (offline) {
       return make('offline', 'crit', 'Box offline', ctx.readOnly
         ? 'Relaisalarme kommen gerade NICHT an. Bitte einen Admin verständigen – er kann manuell alarmieren.'
-        : 'Relaisalarme kommen gerade NICHT an. Manuell alarmieren geht weiterhin: „REAL ALARM“ direkt hier darunter.');
+        : 'Relaisalarme kommen gerade NICHT an. Manuell alarmieren geht weiterhin: „Alarm an alle senden“ direkt hier darunter (läuft direkt über das NAS).');
     }
     if (alarmRunning(s, offline)) {
       return make('alarm', 'alarm', 'Alarm läuft', `Die Box stellt gerade zu – bisher ${show(s.key_progress)} erreicht.`);
@@ -637,10 +646,10 @@
       if (wd.outside && wd.outside.warn) parts.push(`Cloud: ${wd.outside.text}`);
       if (parts.length) {
         watchValue = parts.join(' · ');
-        watchTone = 'warn';
+        watchTone = unsure ? 'unknown' : 'warn';
       } else {
         watchValue = wd.outside ? 'NAS + Cloud aktiv' : 'NAS aktiv';
-        watchTone = '';
+        watchTone = unsure ? 'unknown' : '';
       }
     }
     rows.push({ id: 'watch', label: 'Wächter', value: watchValue, tone: watchTone, href: '#/einstellungen/box' });

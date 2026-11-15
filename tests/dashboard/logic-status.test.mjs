@@ -103,8 +103,57 @@ test('box rows: ids, groups, stale, values', () => {
   assert.equal(rows.find((r) => r.id === 'outside').value, 'nicht eingerichtet');
   const stale = L.boxRows(base, { offline: false, seenAge: NaN, watchdog: { warn: true, text: 'x' }, nasKeysVersion: 3, stale: true });
   assert.equal(stale.find((r) => r.id === 'relay').tone, 'unknown');
-  assert.equal(stale.find((r) => r.id === 'watchdog').tone, 'warn');
-  assert.equal(stale.find((r) => r.id === 'uptime').tone, '');
+  // R6: bei unsicherer Datenlage ist ausnahmslos alles unbekannt
+  assert.ok(stale.every((r) => r.tone === 'unknown'));
+  const errRows = L.boxRows(base, { offline: false, seenAge: NaN, watchdog: { warn: true, text: 'x' }, nasKeysVersion: 3, stale: false, statusError: { kind: 'network' } });
+  assert.ok(errRows.every((r) => r.tone === 'unknown'));
+  const staleOff = L.boxRows(base, { offline: true, seenAge: 100, watchdog: { warn: true, text: 'x' }, nasKeysVersion: 3, stale: true });
+  assert.ok(staleOff.every((r) => r.tone === 'unknown'));
+  // online und sicher: Wächter-Zeile behält ihre echte Farbe
+  const fresh = L.boxRows(base, { offline: false, seenAge: NaN, watchdog: { warn: true, text: 'x' }, nasKeysVersion: 3, stale: false });
+  assert.equal(fresh.find((r) => r.id === 'watchdog').tone, 'warn');
+  assert.equal(fresh.find((r) => r.id === 'uptime').tone, '');
+  // Zustellung unvollständig ist rot
+  const del = L.boxRows({ ...base, last_alarm: 'x', key_progress: '5/6' }, { offline: false, stale: false });
+  assert.equal(del.find((r) => r.id === 'delivery').tone, 'crit');
+});
+test('statusError alone: no hints, overview watch unknown', () => {
+  const ctx = { status: { ...base, rssi: '-90' }, offline: false, stale: false, statusError: { kind: 'network' }, watchdog: null,
+    keysSummary: null, keysCorrupt: 'x', demoOn: false, deviceHint: 'h', mismatchMs: 0, readOnly: false };
+  assert.equal(L.collectHints(ctx).length, 0);
+  const rows = L.overviewRows({ ...ctx, demo: null, seenAge: 5, watchdog: { warn: false, text: 'ok' }, alarmFact: null });
+  assert.equal(rows.find((r) => r.id === 'watch').tone, 'unknown');
+  const rows2 = L.overviewRows({ ...ctx, statusError: null, stale: false, demo: null, seenAge: 5, watchdog: { warn: false, text: 'ok' }, alarmFact: null });
+  assert.equal(rows2.find((r) => r.id === 'watch').tone, '');
+});
+test('verdict ranking: adjacent pairs', () => {
+  const crit = [{ tone: 'crit', text: 'y' }];
+  const demo = { enabled: true, label: 'Anna' };
+  const closed = { ...base, relay: 'closed' };
+  assert.equal(v({ authLost: true, statusError: { kind: 'network' } }).key, 'auth');
+  assert.equal(v({ statusError: { kind: 'network' }, offline: true, status: { ...base, alarm_pending: '1' } }).key, 'nas');
+  assert.equal(v({ offline: true, status: { ...base, alarm_pending: '1' } }).key, 'offline');
+  assert.equal(v({ status: { ...closed, alarm_pending: '1', stuck_warned: '1' } }).key, 'alarm');
+  assert.equal(v({ status: { ...closed, stuck_warned: '1' } }).key, 'stuck');
+  assert.equal(v({ status: closed, demo, hints: crit }).key, 'standing');
+  assert.equal(v({ demo, hints: crit }).key, 'demo');
+  assert.equal(v({ hints: crit }).key, 'hints');
+  assert.equal(v({ hints: [] }).key, 'ok');
+  const so = v({ stale: true, offline: true });
+  assert.equal(so.key, 'nas'); assert.equal(so.tone, 'crit');
+  assert.equal(v({ status: null }).key, 'loading');
+});
+test('verdict: auth variants and error kinds', () => {
+  assert.match(v({ authLost: true, alarmInFlight: true }).sub, /Alarm-Ergebnisses/);
+  assert.match(v({ authLost: true }).sub, /Anmeldeseite/);
+  for (const kind of ['http', 'csrf', 'readonly', 'mode_changed']) {
+    const r = v({ statusError: { kind, status: 403, message: 'Nein' } });
+    assert.equal(r.title, 'NAS-Störung');
+    assert.equal(r.detail, 'Das NAS meldet einen Fehler (HTTP 403): Nein');
+  }
+  assert.equal(v({ statusError: {} }).detail, 'Die Antwort des NAS konnte nicht ausgewertet werden');
+  assert.match(v({ offline: true }).sub, /Alarm an alle senden/);
+  assert.doesNotMatch(v({ offline: true }).sub, /REAL ALARM/);
 });
 test('format', () => {
   assert.equal(L.fmtUptime(360000), '4 T 4 Std 0 Min');
