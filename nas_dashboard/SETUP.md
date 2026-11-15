@@ -50,9 +50,23 @@ antworten die APIs mit HTTP 500.
 **Lege den Ordner UNBEDINGT außerhalb des Web-Roots ab** (also NICHT unter
 `/volume1/web/…`). Hier liegen die Bark-Keys im **Klartext**. Ein Pfad im
 ausgelieferten Baum ist nur durch die Guard-Zeile (unten) geschützt – eine
-einzige, zerbrechliche Schicht. Bewährt auf dieser Installation:
-`/volume1/web_packages/fw_alarm_data` (per URL nicht erreichbar, PHP darf
-schreiben). Alternativ eine eigene DSM-Freigabe außerhalb von `/volume1/web`.
+einzige, zerbrechliche Schicht.
+
+Empfohlen: eine **eigene DSM-Freigabe** außerhalb von `/volume1/web`, z. B.
+Systemsteuerung → Freigegebener Ordner → Erstellen → Name `fw_alarm_data`
+(Papierkorb aus), danach unter Berechtigungen dem Systembenutzer bzw. der
+Gruppe `http` Lesen/Schreiben geben. Pfad für `config.php`:
+`/volume1/fw_alarm_data`. Die Rechte dieser Freigabe gehören dir allein –
+kein Paket-Update fasst sie an.
+
+Alternative: ein Unterordner von `/volume1/web_packages` (z. B.
+`/volume1/web_packages/fw_alarm_data`; per URL ebenfalls nicht erreichbar).
+**Achtung:** Diesen Ordner verwaltet Web Station – ein Update kann dort die
+Rechte zurücksetzen. Genau das ist hier schon passiert (Störung 10/2026: `http`
+hatte nach einem Update nur noch Leserecht, Login und Status-Pushs scheiterten
+still). Der Selbsttest des Wächters (Abschnitt 5) meldet das inzwischen, nach
+jedem DSM-/Web-Station-Update aber trotzdem kurz prüfen.
+
 Beachte ggf. `open_basedir` im PHP-Profil.
 
 Alle Laufzeitdateien heißen zusätzlich absichtlich `*.php` und beginnen mit einer
@@ -98,6 +112,17 @@ Bark-Keys der Alarm-Empfänger: **im Dashboard pflegen** (Panel
 wird vom ESP32 automatisch übernommen und im NVS gespeichert.
 `bark_keys_alarm` in `config.php` und `BARK_KEYS_ALARM` in `config.h` sind nur
 Start-/Fallback-Listen, solange die Dashboard-Liste leer ist.
+
+Optional, aber empfohlen, sobald es außer der echten Box noch einen
+Bastel- oder Ersatz-ESP32 mit demselben Maschinen-Token gibt: in `config.php`
+`box_device_id` auf denselben Wert setzen wie `REMOTE_DEVICE_ID` in `config.h`
+der echten Box (z. B. `'boss925-01'`). Dann zählen für Online-Anzeige,
+Offline-Wächter und Demo-Sicherung nur deren Status-Pushs, und nur sie bekommt
+Befehle (TEST, DEMO-ALARM). Pushs anderer Boards nimmt das NAS weiter an, führt
+sie aber nur als Hinweis „fremdes Board meldet sich“. Ohne den Eintrag zählt
+jeder Push mit dem Token – ein weiter pushendes Bastel-Board würde dann den
+Ausfall der echten Box verdecken; melden sich mehrere Boards, warnt das
+Dashboard. Ein Tippfehler im Wert lässt die echte Box als offline erscheinen.
 
 ## 4. HTTPS und Portweiterleitung
 
@@ -168,12 +193,29 @@ Einrichtung:
    `WEB_OK | OK` (bzw. `WEB_OK | NO_DATA`, solange die Box noch nie gepusht
    hat), ggf. ergänzt um `DEMO_ACTIVE`, `MUTED_ACTIVE (n)` o. ä.
    - `DISABLED` – der Key aus Schritt 1 fehlt noch (überfällige
-     Stummschaltungen beendet der Lauf trotzdem).
+     Stummschaltungen beendet der Lauf trotzdem). Der Wächter meldet dann
+     bewusst nichts und vermerkt auch keinen Lauf – das Dashboard warnt, und
+     ein eingerichteter Außen-Wächter meldet „NAS-Waechter meldet nichts“.
    - `NO_CURL` – das verwendete CLI-PHP hat keine curl-Erweiterung → vollen
      Pfad wie oben verwenden.
-   - `WEB_FAIL (n) …` – der Selbsttest (unten) schlägt fehl.
+   - `WEB_FAIL (n) …` – der Selbsttest (unten) schlägt fehl; `WEB_FAIL_NOTIFIED`
+     = „NAS-Dashboard DEFEKT“ gemeldet, `WEB_RECOVERED` = wieder OK.
+   - `HEALTH_ISSUES (n)` / `HEALTH_NOTIFIED` – Auffälligkeiten an der Box
+     (schwaches WLAN, wenig Speicher, Heartbeat gescheitert; nur, wenn diese
+     Meldung eingeschaltet ist).
+   - `WATCHER_OK` / `WATCHER_SILENT (bereits gemeldet)` /
+     `WATCHER_SILENT_NOTIFIED` / `WATCHER_RECOVERED` – Zustand des
+     Außen-Wächters (nur, wenn er eingerichtet ist). `WATCHER_UNKNOWN (…)` –
+     der Datenordner klemmt, deshalb sind die Aufrufe der VM nicht zu
+     beurteilen; das deckt die Meldung „NAS-Dashboard DEFEKT“ ab.
+   - `STATE_WRITE_FAILED (…)` – der Wächter konnte seinen eigenen Zustand
+     (`watchdog_state.json.php`) nicht speichern (Platte voll? Rechte?). Dann
+     zählt er nicht weiter und wiederholt Meldungen – sofort beheben.
    - `SEND_FAILED` / `…_FAILED` – Bark hat die Meldung nicht angenommen
-     (Status-Key prüfen); das Dashboard zeigt das ebenfalls an.
+     (Status-Key prüfen; erreicht das NAS Bark überhaupt?). Das Dashboard zeigt
+     das ebenfalls an, und ein eingerichteter Außen-Wächter meldet nach drei
+     Läufen „NAS kann Bark nicht erreichen“ – dann scheitert auch der manuelle
+     REAL ALARM.
 
 Das Skript ist auch per HTTPS aufrufbar (POST mit dem Maschinen-Token wie bei
 `api/status.php`) – anonyme Web-Aufrufe weist es mit 403 ab. Derselbe
@@ -241,15 +283,21 @@ Der Wächter oben läuft AUF dem NAS – fällt das NAS selbst aus (Strom oder
 Internet am Standort, Router, DDNS, Zertifikat), meldet er nichts. Dafür gibt es
 den Außen-Wächter: eine kleine kostenlose Cloud-VM, die `api/alive.php` alle
 5 Minuten von außen aufruft und per Bark meldet, wenn das NAS nicht erreichbar
-ist oder die DSM-Aufgabe nicht mehr läuft. Umgekehrt meldet der Wächter oben,
-wenn die VM verstummt. Einrichtung: [`cloud_watcher/README.md`](../cloud_watcher/README.md);
-auf dem NAS braucht es nur `api/alive.php` und `watcher_token_sha256` in
-`config.php`.
+ist oder die DSM-Aufgabe nicht mehr läuft. Mit einem aktuellen `api/alive.php`
+meldet sie außerdem, wenn in `config.php` der `bark_key_status` fehlt (dann
+meldet der Wächter oben bewusst nichts) und wenn das NAS selbst Bark nicht
+mehr erreicht (dann scheitert auch der manuelle REAL ALARM). Umgekehrt meldet
+der Wächter oben, wenn die VM verstummt, und das Dashboard zeigt, wenn die VM
+ihre eigenen Meldungen nicht bei Bark loswird. Die Einstellungen unter
+„Meldungen an den Admin“ gelten nur für das NAS, nicht für die VM.
+Einrichtung: [`cloud_watcher/README.md`](../cloud_watcher/README.md); auf dem
+NAS braucht es nur `api/alive.php` und `watcher_token_sha256` in `config.php`
+(eigenes Token – derselbe Hash wie `machine_token_sha256` wird abgelehnt).
 
 ### Backup der Laufzeitdaten
 
 Empfängerliste, Demo-Zustand und Verlauf leben im `data_dir`
-(außerhalb des Web-Roots, z. B. `/volume1/web_packages/fw_alarm_data`).
+(außerhalb des Web-Roots, z. B. `/volume1/fw_alarm_data`).
 Nimm den Ordner in dein NAS-Backup auf
 (z. B. Hyper Backup), wenn du eins hast. Zusätzlich hält das Dashboard vor
 jeder Änderung der Empfängerliste die letzte **lesbare** Vorversion als
@@ -269,7 +317,11 @@ sicher neu holt.
   `login_max_failures` / `login_lockout_window_seconds` in `config.php`).
 - Eingebaut sind außerdem: Sicherheits-Header (u. a. Content-Security-Policy,
   `X-Frame-Options`, HSTS bei HTTPS, zentral in `lib/common.php`), ein
-  Session-Ablauf nach 12 h Inaktivität, Rotation von `commands.log` ab 5 MB
+  Session-Ablauf nach 12 h Inaktivität (bis dahin hält die Sitzung auch
+  verlässlich – das Dashboard setzt dafür `session.gc_maxlifetime`, sonst
+  könnte PHP sie je nach Profil schon nach 24 min, dem PHP-Standard,
+  wegräumen), Rotation von
+  `commands.log` ab 5 MB
   sowie `index.php`-Platzhalter gegen Verzeichnislisting in `api/`, `lib/`,
   `cron/` und im `data_dir`. Logins von fremden Seiten (Login-CSRF) werden
   abgewiesen, bevor sie die Login-Sperre zählen.

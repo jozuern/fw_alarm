@@ -15,14 +15,31 @@ $nonce = preg_replace('/[^a-zA-Z0-9_-]/', '', substr((string)($_POST['nonce'] ??
 // die Version). Die Info-Pushs an die Betroffenen laufen erst NACH der
 // Antwort - früher liefen sie davor und der ESP32 brach nach seinem
 // 4-s-Timeout ab. Nicht fatal: Auch ohne Schreibrecht bekommt der ESP32 die
-// Liste (überfällige Stummschaltungen rechnet effective_alarm_entries
-// ohnehin schon als laut).
+// Liste, und überfällige Stummschaltungen rechnet effective_alarm_entries
+// darin schon als laut - ABER: Die Box fragt nur bei neuer Version nach, und
+// die entsteht erst beim Wegschreiben (siehe expire_stale_mutes()).
 expire_stale_mutes($config, true);
+// Kaputten Demo-Zustand reparieren (LIVE + neue Version), siehe common.php.
+repair_broken_demo_mode($config);
 
-// Liste, Version und Demo-Zustand EINMAL lesen und daraus die Antwort bauen -
-// so passen Version und Inhalt garantiert zusammen.
-$state = load_alarm_keys($config);
-$demo = load_demo_mode($config);
+// Liste, Version und Demo-Zustand als EINE Momentaufnahme lesen und daraus die
+// Antwort bauen - so passen Version und Inhalt garantiert zusammen. Unter dem
+// 'keys'-Lock (alle Schreiber halten ihn, auch demo_set samt Rückrollen),
+// soweit er sich öffnen lässt; ohne Schreibrecht lockfrei. Dann ist die
+// Lese-REIHENFOLGE wichtig: erst die Liste (Version), dann der Demo-Zustand -
+// passend zu demo_set, das erst demo_mode.json und dann alarm_keys.json
+// schreibt. Umgekehrt könnte die Box die alte Liste unter der neuen Version
+// speichern und nie neu holen. NICHT tauschen.
+$snapshot = with_lock_soft($config, 'keys', static fn(): array => [
+    'state' => load_alarm_keys($config),
+    'demo' => load_demo_mode($config),
+], null);
+if ($snapshot === null) {
+    $snapshot = ['state' => load_alarm_keys($config)];
+    $snapshot['demo'] = load_demo_mode($config);
+}
+$state = $snapshot['state'];
+$demo = $snapshot['demo'];
 $entries = effective_alarm_entries($config, $state, $demo);
 
 // Pro Empfänger zusätzlich das Stumm-Flag (Arbeitsmodus) und die

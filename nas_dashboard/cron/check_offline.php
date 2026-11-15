@@ -46,6 +46,9 @@ function outage_duration_text(int $minutes): string
 // Sicherheitsnetz darf nicht davon abhängen, ob der Owner Meldungen bekommt.
 // (Nimmt den 'keys'-Lock; die Info-Pushs an die Betroffenen laufen am Ende.)
 expire_stale_mutes($config);
+// Kaputten/verlorenen Demo-Zustand reparieren (LIVE + neue Listen-Version),
+// sonst bliebe die Box still auf der Demo-Liste - siehe repair_broken_demo_mode().
+repair_broken_demo_mode($config);
 
 // Läuft der Wächter als root: Dateien, die das Dashboard an Ort und Stelle
 // beschreibt (Verlauf, Lock-Dateien, Sicherungen), an den Besitzer des
@@ -87,6 +90,17 @@ $threshold = max(
 // Wächter-Lock nicht so lange halten). Siehe Abschnitt 0 unten.
 $web = web_health_check($config);
 
+// Ersatz-Ablage für den Wächter-Zustand, falls watchdog_state.json nicht
+// gespeichert werden kann (z.B. volle Platte): Ohne sie fingen Zähler wie
+// web_fail_count jeden Lauf bei 0 an ("DEFEKT" käme nie), und "Box OFFLINE"
+// ginge alle 15 min erneut raus. Liegt im Temp-Ordner des Systems (auf
+// Synology ein RAM-Dateisystem), pro data_dir eindeutig benannt.
+function watchdog_fallback_state_path(array $config): string
+{
+    return rtrim(sys_get_temp_dir(), '/\\') . '/fw_alarm_watchdog_state_'
+        . substr(hash('sha256', data_dir($config)), 0, 12) . '.json';
+}
+
 $result = with_lock($config, 'watchdog', function () use ($config, $latest, $seenAt, $age, $threshold, $web, $settings): string {
     $types = $settings['types'];
     $path = data_path($config, 'watchdog_state.json');
@@ -95,6 +109,13 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
         'offline_since' => 0,
         'demo_reminded_at' => 0,
     ]);
+    // Ist die Ersatz-Ablage jünger (der letzte Lauf konnte nicht speichern),
+    // gilt sie.
+    $fallbackPath = watchdog_fallback_state_path($config);
+    $fallback = read_json_file($fallbackPath, []);
+    if ((int)($fallback['last_run_at'] ?? 0) > (int)($state['last_run_at'] ?? 0)) {
+        $state = $fallback;
+    }
     // Jeden Lauf festhalten: Das Dashboard zeigt daraus "Wächter zuletzt
     // gelaufen vor X min" und warnt, wenn die DSM-Aufgabe nicht mehr läuft.
     $state['last_run_at'] = time();
@@ -110,13 +131,17 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
     // gilt aber als erledigt (true): Einmal-Logik und Verlaufseintrag laufen
     // wie sonst weiter - es fehlt nur der Bark-Push. Der Sende-Zeitstempel
     // bleibt dabei unberührt (er sagt, ob Bark zuletzt wirklich angenommen hat).
+    // Kam die Meldung nur beim Stellvertreter an (Status-Key kaputt), gilt sie
+    // als zugestellt (kein Wiederholen alle 15 min), der Status-Key aber als
+    // gestört - das Dashboard warnt dann "kann nicht melden".
     $notify = function (string $type, string $title, string $body) use ($config, $settings, &$state, &$suppressed): bool {
-        $sent = admin_notify_send($config, $type, $title, $body, $settings);
+        $sent = admin_notify_send($config, $type, $title, $body, $settings, false, $used);
         if ($sent === 'off') {
             $suppressed[$type] = true;
             return true;
         }
-        $state[$sent === 'sent' ? 'last_send_ok_at' : 'last_send_failed_at'] = time();
+        $primaryOk = $sent === 'sent' && empty($used['primary_failed']);
+        $state[$primaryOk ? 'last_send_ok_at' : 'last_send_failed_at'] = time();
         return $sent === 'sent';
     };
 
@@ -165,16 +190,23 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
         if ($webFailCount >= 2 && ($webNotifiedAt === 0 || $webCatchUp
             || ($webRepeat > 0 && time() - $webNotifiedAt > $webRepeat))) {
             // Bark-Texte bewusst ASCII (keine Umlaute).
-            // Ist nur EINE bestehende Datei betroffen (step=perm), stimmt die
-            // große Aussage "Login und Status-Pushs scheitern" nicht - dann
-            // genau sagen, was klemmt.
-            $impact = ($web['step'] ?? '') === 'perm'
-                ? '. Verlauf, Empfaenger-Aenderungen oder Stummschalten koennen dadurch scheitern. '
-                    . 'Die Datei im Datenordner (fw_alarm_data) dem Web-Benutzer http zuordnen '
-                    . 'bzw. ihm Lesen+Schreiben geben. '
-                : '. Login und Status-Pushs der Box scheitern! '
-                    . 'Meist fehlt der Gruppe http das Schreibrecht: DSM > File Station > web_packages > '
+            // Die Wirkung hängt an blocks_pushes, nicht am Schritt: Sind nur
+            // einzelne Dateien betroffen (step=perm), aber nicht die Locks
+            // der Box, stimmt "Status-Pushs scheitern" nicht - dann genau
+            // sagen, was klemmt. Ein falsch eingerichteter Selbsttest
+            // (blocks_pushes=false ohne step) blockiert gar nichts.
+            if (!empty($web['blocks_pushes'])) {
+                $impact = '. Login und Status-Pushs der Box scheitern! '
+                    . 'Meist fehlt der Gruppe http das Schreibrecht: DSM > File Station > Freigabe mit '
                     . 'fw_alarm_data > Eigenschaften > Berechtigung > http Lesen+Schreiben. ';
+            } elseif (($web['step'] ?? '') === 'perm') {
+                $impact = '. Verlauf, Empfaenger-Aenderungen oder Stummschalten koennen dadurch scheitern. '
+                    . 'Die Datei(en) im Datenordner (fw_alarm_data) dem Web-Benutzer http zuordnen '
+                    . 'bzw. ihm Lesen+Schreiben geben. ';
+            } else {
+                $impact = '. Der Selbsttest selbst kommt nicht durch - Status-Pushs der Box sind davon '
+                    . 'vermutlich nicht betroffen. ';
+            }
             $ok = $notify('nas_web', 'NAS-Dashboard DEFEKT',
                 date('[d.m.Y H:i] ') . $web['detail'] . $impact
                 . 'Bark-Alarme der Box laufen davon unabhaengig weiter.');
@@ -279,8 +311,11 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
     // Im Demo-Modus erreichen ECHTE Alarme nur den Test-Empfänger. Das Banner
     // sieht nur, wer das Dashboard offen hat - deshalb nach einer Weile leise
     // erinnern, danach höchstens 1x pro Tag, bis wieder LIVE geschaltet ist.
+    // demo_mode_enabled() statt nur des Flags: Bei unplausiblem Demo-Key
+    // alarmiert das NAS die volle Liste - dann wäre "ALLE Alarme gehen nur an
+    // X" falsch.
     $demo = load_demo_mode($config);
-    if (!empty($demo['enabled'])) {
+    if (demo_mode_enabled($config)) {
         $since = (int)($demo['changed_at'] ?? 0);
         // Beide Abstände aus den Einstellungen (Standard: demo_reminder_after_seconds
         // aus config.php bzw. 24 h).
@@ -315,7 +350,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
     // Überfällige Stummschaltungen hat expire_stale_mutes() schon ganz oben
     // (vor dem Lock) beendet. Solange danach noch jemand stumm ist, den Owner
     // max. 1x pro Tag leise erinnern - stumme Empfänger bekommen echte Alarme
-    // nur OHNE Ton. Namen werden in bark_send_status() auf ASCII umgesetzt.
+    // nur OHNE Ton. Namen werden in admin_notify_send() auf ASCII umgesetzt.
     $mutedLabels = [];
     $permanentLabels = [];
     foreach ((load_alarm_keys($config)['keys'] ?? []) as $entry) {
@@ -457,6 +492,11 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
     // beim NAS, nicht bei der VM. Wie bei "Box OFFLINE" (blocks_pushes): nichts
     // melden, die Meldung "NAS-Dashboard DEFEKT" deckt den Fall ab.
     if (isset($types['outside_watcher']) && !$web['ok'] && !empty($web['blocks_pushes'])) {
+        // Merken: Bis zu diesem Zeitpunkt war die Stille nicht zu beurteilen.
+        // Nach der Reparatur zählt die Frist erst ab hier - sonst käme im
+        // ersten Lauf danach ein falsches "meldet sich nicht" (watcher_seen
+        // ist ja noch alt, die VM klopft nur alle 5 min an).
+        $state['watcher_unknown_at'] = time();
         $out[] = 'WATCHER_UNKNOWN (Datenordner gestoert - Aufrufe der VM werden nicht gespeichert)';
     } elseif (isset($types['outside_watcher'])) {
         $wt = $types['outside_watcher'];
@@ -466,7 +506,8 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
         if ($watcherSeen === 0 && empty($state['watcher_watch_since'])) {
             $state['watcher_watch_since'] = time();
         }
-        $watcherRef = $watcherSeen > 0 ? $watcherSeen : (int)$state['watcher_watch_since'];
+        $watcherRef = max($watcherSeen > 0 ? $watcherSeen : (int)$state['watcher_watch_since'],
+            (int)($state['watcher_unknown_at'] ?? 0));
         $watcherNotifiedAt = (int)($state['watcher_notified_at'] ?? 0);
         $watcherSilent = time() - $watcherRef > (int)$wt['silent_after_s']
             || ($watcherNotifiedAt > 0 && $watcherSeen <= (int)($state['watcher_silent_seen_at'] ?? 0));
@@ -520,11 +561,18 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
         }
     }
 
-    // Zustand konnte nicht gespeichert werden (z.B. volle Platte)? Melden -
-    // sonst blieben Zähler wie web_fail_count ewig bei 1 ("DEFEKT" käme nie),
-    // und OFFLINE würde alle 15 min erneut gemeldet.
-    if (!write_json_file($path, $state)) {
-        $out[] = 'STATE_WRITE_FAILED (watchdog_state.json nicht speicherbar)';
+    // Zustand konnte nicht gespeichert werden (z.B. volle Platte)? Dann in
+    // die Ersatz-Ablage (siehe watchdog_fallback_state_path) - sonst blieben
+    // Zähler wie web_fail_count ewig bei 1 ("DEFEKT" käme nie), und OFFLINE
+    // würde alle 15 min erneut gemeldet.
+    if (write_json_file($path, $state)) {
+        if (is_file($fallbackPath)) {
+            @unlink($fallbackPath);
+        }
+    } else {
+        $out[] = write_json_file($fallbackPath, $state)
+            ? 'STATE_WRITE_FAILED (watchdog_state.json nicht speicherbar - Zustand im Temp-Ordner zwischengespeichert)'
+            : 'STATE_WRITE_FAILED (watchdog_state.json nicht speicherbar, Temp-Ordner auch nicht)';
     }
     // Im Protokoll der DSM-Aufgabe sichtbar machen, dass eine fällige Meldung
     // bewusst NICHT gesendet wurde (sonst sähe "NOTIFIED_OFFLINE" nach Push aus).

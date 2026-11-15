@@ -7,9 +7,10 @@ start_dashboard_session();
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'logout') {
     // Logout nur per POST + CSRF (ein fremdes <img src="?logout=1"> soll dich
     // nicht abmelden können).
+    // Abmelden räumt vollständig auf: Sitzungsdaten, Sitzung UND Cookie.
     if (is_dashboard_authed() && !empty($_SESSION['csrf'])
         && hash_equals((string)$_SESSION['csrf'], (string)($_POST['csrf'] ?? ''))) {
-        session_destroy();
+        end_dashboard_session();
     }
     header('Location: index.php');
     exit;
@@ -64,10 +65,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
                 $role = 'readonly';
             }
         } else {
-            // Dummy-Vergleich gegen einen festen Wegwerf-Hash (KEIN echtes
-            // Passwort, verifiziert gegen nichts Reales): haelt die Antwortzeit
-            // konstant, damit sie nicht verraet, ob der Benutzername existiert.
-            password_verify($pass, '$2y$10$khBdEi9J4PEa.A0wgqTFn.y3qAqDtiUV/swQATVQUKjg1mYQu391y');
+            // Unbekannter Benutzer: trotzdem gegen den ECHTEN Admin-Hash prüfen
+            // und das Ergebnis verwerfen. Hält die Antwortzeit gleich, auch wenn
+            // der Hash mit anderem Aufwand (cost, Argon2) erzeugt wurde - ein
+            // fester Wegwerf-Hash verriete dann, ob der Benutzername existiert.
+            // Die Rolle bleibt leer: Ein Treffer hier meldet niemanden an.
+            password_verify($pass, (string)$config['dashboard_password_hash']);
         }
         if ($role !== '') {
             login_throttle_clear($config);
@@ -337,8 +340,14 @@ $readonly = $authed && dashboard_role() !== 'admin';
       <details class="explain">
         <summary>Was bedeuten „Stumm“ und „Dauerhaft stumm“?</summary>
         <p><strong>Stumm (Arbeitsmodus):</strong> Alarme kommen weiterhin als Critical Alert an –
-          nur mit der eingestellten <strong>Stumm-Lautstärke</strong> (0&nbsp;=&nbsp;lautlos).
-          Nach 12&nbsp;Std schaltet das NAS automatisch wieder laut.</p>
+          nur mit der eingestellten <strong>Stumm-Lautstärke</strong> (0&nbsp;=&nbsp;lautlos).<?php
+          // Wert aus config.php (mute_max_seconds, 0 = keine Rückschaltung) -
+          // nicht fest "12 Std".
+          $muteMax = mute_max_seconds($config);
+          if ($muteMax > 0): ?>
+          Nach <?= htmlspecialchars(str_replace(' ', "\u{00A0}", notify_duration_label($muteMax)), ENT_QUOTES, 'UTF-8') ?>
+          schaltet das NAS automatisch wieder laut.<?php else: ?>
+          Eine automatische Rückschaltung ist abgeschaltet (mute_max_seconds = 0).<?php endif; ?></p>
         <p><strong>Dauerhaft stumm</strong> schaltet genau diese automatische Rückschaltung
           für einen Empfänger ab – für längere Abwesenheiten (Schichtdienst, Krankheit, Urlaub).
           Die Stummschaltung gilt dann, bis sie jemand von Hand beendet. Der Alarm bleibt auch
@@ -366,7 +375,7 @@ $readonly = $authed && dashboard_role() !== 'admin';
         <?php // Eingeklappt: Einstellungen braucht man selten, und die Liste
               // ist lang - offen schöbe sie den Verlauf weit nach unten. Die
               // Zusammenfassung (app.js) sagt, wie viele Arten an sind. ?>
-        <details class="notify-wrap" data-notify-details>
+        <details class="notify-wrap">
           <summary data-notify-summary>Einstellungen anzeigen</summary>
           <div class="notify-list" data-notify-list>Wird geladen…</div>
           <h3 class="sub-title notify-global-title">Für alle Meldungen</h3>

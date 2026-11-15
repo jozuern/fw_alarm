@@ -5,7 +5,7 @@
 #  enthalten die Geheimnisse. Die Vorlagen bleiben per !-Ausnahme drin.
 boss925_alarm_bark/config.h*
 config.h*
-nas_dashboard/config.php*
+config.php*
 !boss925_alarm_bark/config.example.h
 !nas_dashboard/config.example.php
 
@@ -22,7 +22,6 @@ build/
 
 # Synology-Dashboard: lokale Geheimnisse und Laufzeitdaten
 # (Laufzeitdateien heißen *.php mit Guard-Zeile, damit Nginx sie nie ausliefert)
-nas_dashboard/config.php
 nas_dashboard/data/*.json
 nas_dashboard/data/*.tmp
 nas_dashboard/data/*.lock
@@ -30,7 +29,19 @@ nas_dashboard/data/*.log
 nas_dashboard/data/*.php
 
 # Außen-Wächter: die echte Konfiguration (Token + Bark-Key) lebt nur auf der VM
+# (auch Kopien wie fw-alarm-watch.conf.bak, egal in welchem Ordner)
 cloud_watcher/*.conf
+fw-alarm-watch.conf*
+!cloud_watcher/fw-alarm-watch.conf.example
+
+# Schlüssel und Zertifikate (z.B. SSH-Schlüssel der Cloud-VM)
+*.key
+*.pem
+id_rsa*
+id_ed25519*
+
+# Lokale Claude-Code-Einstellungen (persönliche Freigaben)
+.claude/settings.local.json
 
 # Persönliche Empfänger-Onboarding-Anleitung (enthält Name/Kontakt des Betreibers)
 bark-anleitung.html

@@ -301,20 +301,19 @@ function defer_after_response(callable $job): void
 // api/health.php - also für den echten Web-Benutzer (http). Der Cron-Wächter
 // läuft als root und würde einen Rechteverlust selbst nie bemerken.
 // Liefert ['ok' => bool, 'step' => 'ok'|'lock'|'write'|'read'|'delete'|'perm'].
-// 'perm' (dann zusätzlich 'file' => Dateiname): Eine BESTEHENDE Datei, die das
-// Dashboard an Ort und Stelle beschreiben muss (Verlauf, Lock, *.bak - siehe
-// inplace_data_files()), ist für diesen Benutzer nicht beschreibbar, z.B. weil
-// der root-Cron sie angelegt hat. Das Anlegen neuer Dateien allein sagt
-// darüber nichts. Geprüft werden NUR diese Dateien: Alles andere ersetzt das
-// Dashboard per rename() - ein fremder Besitzer wäre dort kein Fehler.
+// 'perm' (dann zusätzlich 'file' => erster Dateiname, 'files' => ALLE
+// betroffenen): Eine BESTEHENDE Datei, die das Dashboard an Ort und Stelle
+// beschreiben muss (Verlauf, Lock, *.bak - siehe inplace_data_files()), ist
+// für diesen Benutzer nicht beschreibbar, z.B. weil der root-Cron sie angelegt
+// hat. Das Anlegen neuer Dateien allein sagt darüber nichts. Geprüft werden
+// NUR diese Dateien: Alles andere ersetzt das Dashboard per rename() - ein
+// fremder Besitzer wäre dort kein Fehler.
+// Reihenfolge: ERST der Ordner (lock/write/read/delete), DANN die Dateien.
+// Umgekehrt meldete die Störung 10/2026 (http hatte überall nur Leserecht)
+// nur "perm: commands.log" - als wäre allein der Verlauf betroffen, obwohl
+// auch die Status-Pushs der Box scheiterten.
 function data_dir_write_check(array $config): array
 {
-    foreach (inplace_data_files($config) as $file) {
-        if (is_file($file) && !is_writable($file)) {
-            error_log('fw_alarm: Laufzeitdatei nicht beschreibbar: ' . basename($file));
-            return ['ok' => false, 'step' => 'perm', 'file' => basename($file)];
-        }
-    }
     $handle = @fopen(data_path($config, 'health.lock'), 'c');
     if ($handle === false) {
         return ['ok' => false, 'step' => 'lock'];
@@ -332,11 +331,36 @@ function data_dir_write_check(array $config): array
         if (!@unlink($path)) {
             return ['ok' => false, 'step' => 'delete'];
         }
-        return ['ok' => true, 'step' => 'ok'];
     } finally {
         flock($handle, LOCK_UN);
         fclose($handle);
     }
+    // ALLE betroffenen Dateien sammeln: Ob die Box ihre Pushs noch ablegen
+    // kann, hängt davon ab, WELCHE es sind (status.lock, command.lock).
+    $bad = [];
+    foreach (inplace_data_files($config) as $file) {
+        if (is_file($file) && !is_writable($file)) {
+            $bad[] = basename($file);
+        }
+    }
+    if (count($bad) > 0) {
+        error_log('fw_alarm: Laufzeitdateien nicht beschreibbar: ' . implode(', ', $bad));
+        return ['ok' => false, 'step' => 'perm', 'file' => $bad[0], 'files' => $bad];
+    }
+    return ['ok' => true, 'step' => 'ok'];
+}
+
+// Lock-Dateien, ohne die die Box nichts mehr ablegen kann: status.lock (der
+// Status-Push selbst) und command.lock (Poll/ACK - scheitern die, gerät die
+// Box in ihren Fehler-Backoff und pusht auch keinen Status mehr).
+function data_files_block_pushes(array $files): bool
+{
+    foreach ($files as $file) {
+        if (str_starts_with((string)$file, 'status.lock') || str_starts_with((string)$file, 'command.lock')) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Ruft api/health.php über den Webserver auf (also als Web-Benutzer, mit
@@ -375,11 +399,18 @@ function web_health_check(array $config): array
     }
     if (preg_match('/^step=(\w+)$/m', (string)$body, $m)) {
         if ($m[1] === 'perm') {
-            // Nur EINE Datei ist betroffen - der Ordner selbst ist beschreibbar.
+            // Einzelne Dateien sind betroffen - der Ordner selbst ist
+            // beschreibbar. 'files=' (alle) kennt erst der neuere health.php,
+            // sonst nur die erste ('file=').
             $file = preg_match('/^file=([\w.\-]+)$/m', (string)$body, $fm) ? $fm[1] : '?';
-            return ['ok' => false, 'step' => 'perm', 'file' => $file,
-                'blocks_pushes' => str_starts_with($file, 'status.lock'),
-                'detail' => 'Laufzeitdatei ' . $file . ' ist fuer den Web-Benutzer nicht beschreibbar'];
+            $files = preg_match('/^files=([\w.\-,]+)$/m', (string)$body, $fsm)
+                ? array_values(array_filter(explode(',', $fsm[1]), 'strlen'))
+                : [$file];
+            return ['ok' => false, 'step' => 'perm', 'file' => $file, 'files' => $files,
+                'blocks_pushes' => data_files_block_pushes($files),
+                'detail' => (count($files) > 1 ? 'Laufzeitdateien ' : 'Laufzeitdatei ')
+                    . implode(', ', array_slice($files, 0, 4)) . (count($files) > 4 ? ' u.a.' : '')
+                    . ' fuer den Web-Benutzer nicht beschreibbar'];
         }
         $steps = [
             'lock' => 'Lock-Datei',
@@ -390,6 +421,14 @@ function web_health_check(array $config): array
         return ['ok' => false, 'step' => $m[1], 'blocks_pushes' => true,
             'detail' => 'Datenordner nicht beschreibbar (Schritt: '
                 . ($steps[$m[1]] ?? $m[1]) . ', HTTP ' . $http . ')'];
+    }
+    // 3xx/4xx ohne step=: Der Selbsttest selbst ist falsch eingerichtet
+    // (health_check_url, Weiterleitung, Loopback-Sperre) - das sagt nichts
+    // darüber, ob die Box ihre Pushs ablegen kann. Sonst würde "Box OFFLINE"
+    // dem NAS die Schuld geben und die Stille des Außen-Wächters nie gemeldet.
+    if ($http >= 300 && $http < 500) {
+        return ['ok' => false, 'blocks_pushes' => false,
+            'detail' => 'Selbsttest falsch eingerichtet (HTTP ' . $http . ' - health_check_url in config.php pruefen)'];
     }
     return ['ok' => false, 'blocks_pushes' => true, 'detail' => 'Selbsttest lieferte HTTP ' . $http];
 }
@@ -445,16 +484,14 @@ function login_throttle_limits(array $config): array
     ];
 }
 
-// Hat dieser Absender sein Budget im aktuellen Fenster aufgebraucht? (Nur
-// lesend, ohne Lock - für den schnellen Vorab-Check.)
-function throttle_blocked(array $config, string $bucket, int $max, int $window): bool
-{
-    $entry = read_json_file(data_path($config, $bucket . '_throttle.json'), [])[client_throttle_key()] ?? null;
-    if (!is_array($entry) || time() - (int)($entry['first_at'] ?? 0) > $window) {
-        return false;
-    }
-    return (int)($entry['count'] ?? 0) >= $max;
-}
+// Höchstzahl gezählter Absender pro Bremse: Wer viele Adressen hat (ein ganzes
+// IPv6-/48 sind 65 536 /64-Netze), soll die Datei nicht auf Megabytes
+// aufblähen - sie wird bei jedem Versuch komplett gelesen und geschrieben.
+// Ist sie voll, wird ein NEUER Absender nicht mehr gezählt (bleibt bei
+// sleep(1) + Passwort-Hash). Bewusst KEIN gemeinsamer Sammel-Zähler: Den
+// könnte ein Angreifer mit vielen Adressen füllen und so den Login des Admins
+// sperren - ausgerechnet, wenn er einen REAL ALARM auslösen will.
+const THROTTLE_MAX_SOURCES = 500;
 
 // Zählt einen Versuch des Absenders - atomar, d.h. Prüfen und Zählen in EINEM
 // Schritt unter dem Lock (N parallele Requests bekommen so nicht N Versuche).
@@ -472,6 +509,9 @@ function throttle_hit(array $config, string $bucket, int $max, int $window): arr
             }
         }
         $who = client_throttle_key();
+        if (!isset($all[$who]) && count($all) >= THROTTLE_MAX_SOURCES) {
+            return ['blocked' => false, 'count' => 0];
+        }
         $entry = is_array($all[$who] ?? null) ? $all[$who] : ['count' => 0, 'first_at' => $now];
         if ((int)$entry['count'] >= $max) {
             return ['blocked' => true, 'count' => (int)$entry['count']];
@@ -512,12 +552,34 @@ function login_throttle_clear(array $config): void
     throttle_clear($config, 'login');
 }
 
+// Sitzung läuft nach dieser Inaktivität serverseitig ab. Wichtig, weil
+// Browser Session-Cookies über einen Neustart hinweg wiederherstellen können -
+// "Browser zu = abgemeldet" stimmt also nicht immer. Ein offener Dashboard-Tab
+// bleibt angemeldet (das 5-s-Polling zählt als Aktivität).
+const SESSION_MAX_IDLE_SECONDS = 43200;   // 12 Stunden
+
+// Cookie-Pfad = Ordner des Dashboards (z.B. /fw_alarm/), nicht der ganze
+// Host: Andere Web-Station-Anwendungen auf demselben Namen bekommen das
+// Sitzungs-Cookie so nicht mitgeschickt. Aufrufer liegen im Dashboard-Ordner
+// selbst (index.php, dashboard_api.php).
+function dashboard_cookie_path(): string
+{
+    $dir = str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/')));
+    return rtrim($dir, '/') . '/';
+}
+
 function start_dashboard_session(): void
 {
+    // Ohne diese Zeile räumt der Session-GC von PHP eine Sitzung schon nach
+    // 24 min Ruhe ab (Standard 1440 s): Ein Tab im Hintergrund pollt nicht -
+    // und der Admin müsste sich ausgerechnet vor einem REAL ALARM neu anmelden.
+    ini_set('session.gc_maxlifetime', (string)SESSION_MAX_IDLE_SECONDS);
+    // Nur vom Server vergebene Sitzungs-IDs annehmen (keine untergeschobenen).
+    ini_set('session.use_strict_mode', '1');
     session_name('boss925_dashboard');
     session_set_cookie_params([
         'lifetime' => 0,
-        'path' => '/',
+        'path' => dashboard_cookie_path(),
         'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
         'httponly' => true,
         'samesite' => 'Strict',
@@ -525,11 +587,24 @@ function start_dashboard_session(): void
     session_start();
 }
 
-// Sitzung läuft nach dieser Inaktivität serverseitig ab. Wichtig, weil
-// Browser Session-Cookies über einen Neustart hinweg wiederherstellen können -
-// "Browser zu = abgemeldet" stimmt also nicht immer. Ein offener Dashboard-Tab
-// bleibt angemeldet (das 5-s-Polling zählt als Aktivität).
-const SESSION_MAX_IDLE_SECONDS = 43200;   // 12 Stunden
+// Abmelden: Sitzungsdaten leeren, Sitzung zerstören UND das Cookie löschen
+// (sonst schickt der Browser die alte ID weiter).
+function end_dashboard_session(): void
+{
+    $_SESSION = [];
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_destroy();
+    }
+    if (!headers_sent()) {
+        setcookie(session_name(), '', [
+            'expires' => 1,
+            'path' => dashboard_cookie_path(),
+            'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+            'httponly' => true,
+            'samesite' => 'Strict',
+        ]);
+    }
+}
 
 function is_dashboard_authed(): bool
 {
@@ -636,6 +711,87 @@ function clipped_post_fields(array $skip = []): array
     return $out;
 }
 
+// ======================== WELCHE BOX ZÄHLT? =================================
+// Optional 'box_device_id' in config.php (= REMOTE_DEVICE_ID in config.h der
+// echten Box). Gesetzt: Nur deren Pushs zählen für Online-Anzeige,
+// Offline-Wächter und Demo-Sicherung, nur sie bekommt Befehle. Ein zweites
+// Board mit demselben Token (Bastel-/Ersatz-ESP32) verdeckte sonst den Ausfall
+// der echten Box - latest_status.json hält nur den jeweils letzten Push.
+// Leer = wie früher: jeder Push zählt (das Dashboard warnt dann, wenn sich
+// mehrere Boards melden).
+function expected_box_device_id(array $config): string
+{
+    return trim((string)($config['box_device_id'] ?? ''));
+}
+
+function is_expected_box(array $config, string $deviceId): bool
+{
+    $expected = expected_box_device_id($config);
+    return $expected === '' || hash_equals($expected, trim($deviceId));
+}
+
+// Merkt sich pro device_id den letzten Push (devices_seen.json, höchstens 10
+// Boards). Grundlage für den Dashboard-Hinweis auf mehrere/fremde Boards.
+// Unter dem 'status'-Lock aufrufen; best effort.
+function remember_device_push(array $config, string $deviceId, array $status): void
+{
+    $path = data_path($config, 'devices_seen.json');
+    $all = read_json_file($path, []);
+    $all[substr($deviceId, 0, 80)] = [
+        'seen_at' => time(),
+        'fw_build' => substr((string)($status['fw_build'] ?? ''), 0, 80),
+    ];
+    uasort($all, static fn($a, $b): int => (int)($b['seen_at'] ?? 0) <=> (int)($a['seen_at'] ?? 0));
+    write_json_file($path, array_slice($all, 0, 10, true));
+}
+
+// Hinweistext für das Dashboard, wenn sich mehrere bzw. fremde Boards mit dem
+// Maschinen-Token melden ('' = alles in Ordnung). Die device_ids stammen von
+// den Boards selbst - der Text ist reiner Text (das Frontend setzt ihn nie als
+// HTML).
+function device_hint(array $config): string
+{
+    $all = read_json_file(data_path($config, 'devices_seen.json'), []);
+    $now = time();
+    $expected = expected_box_device_id($config);
+    // (Numerische device_ids werden in PHP-Arrays zu int-Schlüsseln - deshalb
+    // überall (string).)
+    $expectedSeen = false;
+    $foreign = [];      // device_id => Alter in s (letzte 24 h, nicht die erwartete Box)
+    $active = [];       // device_id => Alter in s (letzte 15 min)
+    foreach ($all as $id => $info) {
+        $id = (string)$id;
+        $age = $now - (int)(is_array($info) ? ($info['seen_at'] ?? 0) : 0);
+        if ($expected !== '' && hash_equals($expected, $id)) {
+            $expectedSeen = true;
+        } elseif ($age <= 86400) {
+            $foreign[$id] = $age;
+        }
+        if ($age <= 900) {
+            $active[$id] = $age;
+        }
+    }
+    $names = static fn(array $list): string => '„' . implode('“, „', array_map('strval', array_keys($list))) . '“';
+    if ($expected !== '') {
+        if (!$expectedSeen && count($foreign) > 0) {
+            return 'Die eingestellte Box „' . $expected . '“ (box_device_id) hat sich noch nie gemeldet, '
+                . 'wohl aber ' . $names($foreign) . ' – stimmt box_device_id in config.php '
+                . 'mit REMOTE_DEVICE_ID in config.h der Box überein?';
+        }
+        if (count($foreign) > 0) {
+            return 'Ein fremdes Board meldet sich mit dem Maschinen-Token der Box (' . $names($foreign)
+                . ', zuletzt vor ' . max(1, (int)round(min($foreign) / 60)) . ' min) – seine Pushs werden ignoriert.';
+        }
+        return '';
+    }
+    if (count($active) >= 2) {
+        return 'Mehrere Boards melden sich mit demselben Maschinen-Token (' . $names($active)
+            . '). Anzeige und Offline-Wächter sehen nur den jeweils letzten Push – fällt eins aus, merkt das '
+            . 'niemand. In config.php box_device_id auf die echte Box setzen.';
+    }
+    return '';
+}
+
 function command_state_default(): array
 {
     return ['next_id' => 1, 'current' => null];
@@ -695,7 +851,10 @@ function append_command_log(array $config, array $entry): void
             @unlink($old);
             @rename($path, $old);
         }
-        $isNew = !is_file($path);
+        // Eine vorhandene, aber LEERE Datei (abgebrochene Erstanlage, von Hand
+        // geleert) braucht die Guard-Zeile ebenfalls - sonst stünde der
+        // Verlauf ohne Schutz in einer .php-Datei.
+        $isNew = !is_file($path) || (int)@filesize($path) === 0;
         $ok = @file_put_contents($path, ($isNew ? DATA_FILE_GUARD : '') . $line, FILE_APPEND | LOCK_EX) !== false;
         if ($isNew) {
             fix_owner($path);   // vom root-Cron angelegt? -> http muss weiter anhängen können
@@ -724,38 +883,134 @@ function read_command_log_tail(array $config, int $limit = 25): array
     return $entries;
 }
 
-// Grobe Einteilung der Verlaufs-Ereignisse für den Filter im Dashboard:
-// 'alarm' (Relaisalarm, REAL ALARM, Entwarnung, Demo-Alarm-Befehle), 'keys'
-// (alles an der Empfängerliste, inkl. Stumm-Wechsel und Test-Push) und
-// 'system' (TEST-Befehle, Demo-Modus, Wächter-Ereignisse). Ohne diesen
-// Filter verdrängen die täglichen Stumm-Wechsel der Kurzbefehle die Alarme
-// aus dem sichtbaren Fenster.
-// Die Versand-Ereignisse selbst (Relaisalarm, REAL ALARM, Entwarnung) - ohne
-// die Befehls-Ereignisse der Demo-Alarme. Filter 'alarm_core', genutzt für
-// "Letzter Alarm" im Held-Bereich: Sonst verdrängen ein paar Demo-Versuche
-// (je created/delivered/acked) den echten letzten Alarm aus dem Fenster.
-const LOG_ALARM_SEND_EVENTS = ['relay_alarm', 'nas_alarm', 'nas_alarm_started',
-    'false_alarm', 'false_alarm_started'];
+// ================= VERLAUFS-EREIGNISSE: EINE TABELLE FÜR ALLES ==============
+// Jedes Ereignis, das das Dashboard im Verlauf zeigt, steht HIER - und nur
+// hier. Daraus folgen der Filter (Kategorie, Vorprüfung), was die Lese-Rolle
+// sehen darf und WELCHE Felder überhaupt an den Browser gehen (Whitelist).
+// Ein neues Ereignis braucht einen Eintrag hier (sonst liefert log_view es
+// nicht aus) und einen Text in app.js (describeLogEntry) - sonst nichts.
+//   cat    Filter "Alarme/Empfänger/System": 'alarm' | 'keys' | 'system' |
+//          'command' (= 'alarm', wenn es um einen ALARM-Befehl geht - also
+//          einen Demo-Alarm über die Box -, sonst 'system'). Ohne diesen
+//          Filter verdrängen die täglichen Stumm-Wechsel der Kurzbefehle die
+//          Alarme aus dem sichtbaren Fenster.
+//   core   Versand-Ereignis (Filter 'alarm_core' für "Letzter Alarm" im
+//          Held-Bereich - ohne die Befehls-Ereignisse der Demo-Alarme, sonst
+//          verdrängten ein paar Demo-Versuche den echten letzten Alarm).
+//   admin  nur für die Admin-Rolle; die Lese-Rolle bekommt es nie, und es
+//          wird VOR dem Abzählen aussortiert (sonst bekäme sie weniger
+//          Einträge als verlangt, und "Ältere anzeigen" verschwände).
+//   fields Feldname im Browser => [Typ, Pfad im Log-Eintrag, Standard]. Typ
+//          'str' | 'int' | 'bool'; mit '?' davor nur, wenn im Log vorhanden.
+//          Pfad 'command.id' = Unterfeld. Ohne Standard gilt '' / 0 / false.
+//          Reihenfolge = Reihenfolge in der Antwort.
+// Keys stehen im Log ohnehin nur maskiert (log_key_event, mask_bark_key).
+function log_event_types(): array
+{
+    static $types = null;
+    if ($types !== null) {
+        return $types;
+    }
+    // Befehls-Ereignisse: Die Felder stehen im Unterobjekt 'command'.
+    $command = static fn(string $byField, array $more = []): array => ['cat' => 'command', 'fields' => array_merge([
+        'id' => ['int', 'command.id'],
+        'type' => ['str', 'command.type'],
+        'by' => ['str', 'command.' . $byField],
+    ], $more)];
+    $by = ['str', 'by'];
+    $label = ['str', 'label'];
+    $key = ['str', 'key'];
+    $minutes = ['cat' => 'system', 'fields' => ['minutes' => ['int', 'minutes']]];
+    $started = ['cat' => 'alarm', 'core' => true, 'fields' => [
+        'by' => $by,
+        // > 0: Nachsendung nur an so viele (zuvor nicht erreichte) Empfänger.
+        'resend' => ['int', 'resend'],
+        // Demo-Modus beim Versand (fehlt bei Alt-Einträgen - dann erkennt das
+        // Frontend ihn wie früher am Text).
+        'demo' => ['?bool', 'demo'],
+    ]];
+    $sent = ['cat' => 'alarm', 'core' => true, 'fields' => [
+        'by' => $by, 'ok' => ['bool', 'ok'], 'message' => ['str', 'message'],
+        'resend' => ['int', 'resend'], 'demo' => ['?bool', 'demo'],
+    ]];
+    $types = [
+        'created' => $command('created_by'),
+        'delivered' => $command('created_by'),
+        'acked' => $command('created_by', [
+            'result' => ['str', 'command.ack_result'],
+            'message' => ['str', 'command.ack_message'],
+        ]),
+        'expired' => $command('created_by'),
+        'cancelled' => $command('cancelled_by', ['message' => ['?str', 'command.cancel_reason']]),
+        // Verspätete Quittung: Den Typ schreibt ack.php oben mit (soweit noch
+        // bekannt) - die ACK eines Demo-Alarms gehört zu dessen Lebenslauf.
+        'late_ack' => ['cat' => 'command', 'fields' => [
+            'id' => ['int', 'id'], 'result' => ['str', 'result'], 'type' => ['str', 'type'],
+        ]],
+        'demo_enabled' => ['cat' => 'system', 'fields' => ['by' => $by, 'label' => $label]],
+        'demo_disabled' => ['cat' => 'system', 'fields' => ['by' => $by, 'label' => $label]],
+        'demo_repaired' => ['cat' => 'system', 'fields' => []],
+        'key_added' => ['cat' => 'keys', 'fields' => ['by' => $by, 'label' => $label, 'key' => $key]],
+        'key_removed' => ['cat' => 'keys', 'fields' => ['by' => $by, 'label' => $label, 'key' => $key]],
+        'key_muted' => ['cat' => 'keys', 'fields' => [
+            'by' => $by, 'label' => $label, 'key' => $key, 'source' => ['str', 'source'],
+        ]],
+        'key_unmuted' => ['cat' => 'keys', 'fields' => [
+            'by' => $by, 'label' => $label, 'key' => $key, 'source' => ['str', 'source'],
+        ]],
+        'key_mute_volume' => ['cat' => 'keys', 'fields' => [
+            'by' => $by, 'label' => $label, 'volume' => ['int', 'volume'],
+        ]],
+        'key_mute_permanent' => ['cat' => 'keys', 'fields' => [
+            'by' => $by, 'label' => $label, 'permanent' => ['bool', 'permanent'], 'source' => ['str', 'source'],
+        ]],
+        'key_test' => ['cat' => 'keys', 'fields' => ['by' => $by, 'label' => $label, 'ok' => ['bool', 'ok']]],
+        // Welche Meldungen der Admin sich schicken lässt (z.B. "Anmeldung am
+        // Dashboard"), geht die Lese-Rolle nichts an - notify_list ist ihr
+        // ebenfalls verwehrt.
+        'notify_changed' => ['cat' => 'system', 'admin' => true, 'fields' => [
+            'by' => $by, 'label' => $label,
+            'key' => $key,   // 'enabled' = Art ein/aus
+            'option' => ['str', 'option'], 'value' => ['str', 'value'],
+        ]],
+        'box_restart' => ['cat' => 'system', 'fields' => ['reason' => ['str', 'reason']]],
+        'nas_alarm_started' => $started,
+        'false_alarm_started' => $started,
+        'nas_alarm' => $sent,
+        'false_alarm' => $sent,
+        'relay_alarm' => ['cat' => 'alarm', 'core' => true, 'fields' => [
+            'info' => ['str', 'info'], 'source' => ['str', 'source', 'relay'],
+        ]],
+        'box_offline' => $minutes,
+        'box_recovered' => $minutes,
+        'nas_web_recovered' => $minutes,
+        'watcher_silent' => $minutes,
+        'watcher_recovered' => $minutes,
+        'nas_web_failed' => ['cat' => 'system', 'fields' => ['detail' => ['str', 'detail']]],
+    ];
+    return $types;
+}
 
+// Ereignisse, die die Lese-Rolle nicht sehen darf (vor dem Abzählen
+// aussortieren, siehe log_event_types()).
+function log_events_hidden(bool $isAdmin): array
+{
+    if ($isAdmin) {
+        return [];
+    }
+    return array_keys(array_filter(log_event_types(), static fn(array $def): bool => !empty($def['admin'])));
+}
+
+// Kategorie eines Eintrags für den Filter ('alarm', 'keys' oder 'system').
+// Unbekannte Ereignisse zählen als 'system' (ausgeliefert werden sie nicht).
 function log_event_category(array $entry): string
 {
-    $event = (string)($entry['event'] ?? '');
-    if (in_array($event, LOG_ALARM_SEND_EVENTS, true)) {
-        return 'alarm';
+    $cat = (string)(log_event_types()[(string)($entry['event'] ?? '')]['cat'] ?? 'system');
+    if ($cat !== 'command') {
+        return $cat;
     }
-    if (str_starts_with($event, 'key_')) {
-        return 'keys';
-    }
-    if (in_array($event, ['created', 'delivered', 'acked', 'expired', 'cancelled'], true)) {
-        $type = is_array($entry['command'] ?? null) ? (string)($entry['command']['type'] ?? '') : '';
-        return $type === 'ALARM' ? 'alarm' : 'system';
-    }
-    // Verspätete Quittung: Den Typ schreibt ack.php mit, soweit er noch
-    // bekannt ist - die ACK eines Demo-Alarms gehört zu dessen Lebenslauf.
-    if ($event === 'late_ack') {
-        return (string)($entry['type'] ?? '') === 'ALARM' ? 'alarm' : 'system';
-    }
-    return 'system';
+    $type = is_array($entry['command'] ?? null) ? ($entry['command']['type'] ?? '') : ($entry['type'] ?? '');
+    return (string)$type === 'ALARM' ? 'alarm' : 'system';
 }
 
 // Gehört ein Eintrag zum Filter? 'all' = alles, 'alarm_core' = nur die
@@ -766,25 +1021,41 @@ function log_entry_in_filter(array $entry, string $filter): bool
         return true;
     }
     if ($filter === 'alarm_core') {
-        return in_array((string)($entry['event'] ?? ''), LOG_ALARM_SEND_EVENTS, true);
+        return !empty(log_event_types()[(string)($entry['event'] ?? '')]['core']);
     }
     return log_event_category($entry) === $filter;
 }
 
 // Billige Vorprüfung an der ROHEN Log-Zeile: Kann sie zum Filter gehören?
 // Erspart das JSON-Dekodieren der vielen Zeilen, die es sicher nicht tun
-// (maßgeblich bleibt danach log_entry_in_filter()). Verlässt sich darauf, dass
+// (maßgeblich bleibt danach log_entry_in_filter() - die Vorprüfung muss
+// immer GROSSZÜGIGER sein als der Filter). Verlässt sich darauf, dass
 // json_encode Anführungszeichen in Werten maskiert - ein Name kann die
-// Zeichenfolge '"event":"key_' also nicht vortäuschen.
+// Zeichenfolge '"event":"key_added"' also nicht vortäuschen.
 function log_line_may_match(string $line, string $category): bool
 {
     if ($category === 'all') {
         return true;
     }
-    $isKey = strpos($line, '"event":"key_') !== false;
-    $isAlarmEvent = strpos($line, '"event":"relay_alarm"') !== false
-        || strpos($line, '"event":"nas_alarm') !== false
-        || strpos($line, '"event":"false_alarm') !== false;
+    static $needles = null;
+    if ($needles === null) {
+        $needles = ['keys' => [], 'alarm' => []];
+        foreach (log_event_types() as $event => $def) {
+            if (isset($needles[$def['cat']])) {
+                $needles[$def['cat']][] = '"event":"' . $event . '"';
+            }
+        }
+    }
+    $has = static function (array $list) use ($line): bool {
+        foreach ($list as $needle) {
+            if (strpos($line, $needle) !== false) {
+                return true;
+            }
+        }
+        return false;
+    };
+    $isKey = $has($needles['keys']);
+    $isAlarmEvent = $has($needles['alarm']);   // alle 'alarm'-Ereignisse sind Versand-Ereignisse (core)
     if ($category === 'keys') {
         return $isKey;
     }
@@ -795,6 +1066,41 @@ function log_line_may_match(string $line, string $category): bool
         return $isAlarmEvent || strpos($line, '"type":"ALARM"') !== false;
     }
     return !$isKey && !$isAlarmEvent;   // 'system': der Rest
+}
+
+// Ein Log-Eintrag so, wie ihn der Browser bekommt: nur die Felder aus
+// log_event_types(), mit festem Typ. null = gar nicht ausliefern (unbekanntes
+// Ereignis bzw. für diese Rolle nicht sichtbar).
+function log_event_view(array $entry, bool $isAdmin): ?array
+{
+    $event = (string)($entry['event'] ?? '');
+    $def = log_event_types()[$event] ?? null;
+    if ($def === null || (!empty($def['admin']) && !$isAdmin)) {
+        return null;
+    }
+    $item = ['at' => (int)($entry['log_at'] ?? 0), 'event' => $event];
+    foreach ($def['fields'] as $name => $spec) {
+        $type = (string)$spec[0];
+        $optional = str_starts_with($type, '?');
+        $type = ltrim($type, '?');
+        // Pfad auflösen ('command.id'); null zählt wie "fehlt" (wie ??).
+        $value = $entry;
+        foreach (explode('.', (string)$spec[1]) as $part) {
+            $value = is_array($value) ? ($value[$part] ?? null) : null;
+        }
+        if ($value === null) {
+            if ($optional) {
+                continue;
+            }
+            $value = $spec[2] ?? null;
+        }
+        $item[$name] = match ($type) {
+            'int' => (int)$value,
+            'bool' => !empty($value),
+            default => is_scalar($value) || $value === null ? (string)$value : '',
+        };
+    }
+    return $item;
 }
 
 // Geht die Zeilen einer Log-Datei vom ENDE her durch (neueste zuerst), in
@@ -982,20 +1288,39 @@ function alarm_keys_default(): array
     return ['next_id' => 1, 'version' => 0, 'keys' => []];
 }
 
-// Liest die Empfängerliste. Ist alarm_keys.json kaputt, wird automatisch die
-// letzte gute Sicherung (*.bak) genommen. null = BEIDE unbrauchbar - Schreiber
-// müssen dann abbrechen, statt eine leere Liste "neu anzufangen" (das würde
-// die Version zurücksetzen und die gute Sicherung überschreiben).
+// Gültiges JSON, aber falsche Struktur ("keys": false o.ä. nach einer
+// Handänderung)? Zählt wie eine kaputte Datei - sonst scheiterten alle Leser
+// mit einem TypeError (jeder Poll der Box antwortete dann mit HTTP 500).
+function alarm_keys_state_valid(array $state): bool
+{
+    return (!isset($state['keys']) || is_array($state['keys']))
+        && (!isset($state['version']) || is_numeric($state['version']))
+        && (!isset($state['next_id']) || is_numeric($state['next_id']));
+}
+
+// Liest die Empfängerliste. Ist alarm_keys.json kaputt - oder verschwunden,
+// obwohl es eine Sicherung gibt -, wird automatisch die letzte gute
+// Sicherung (*.bak) genommen. null = BEIDE unbrauchbar - Schreiber müssen dann
+// abbrechen, statt eine leere Liste "neu anzufangen" (das würde die Version
+// zurücksetzen und die gute Sicherung überschreiben).
 function read_alarm_keys_state(array $config): ?array
 {
     $state = read_json_file(data_path($config, 'alarm_keys.json'), alarm_keys_default(), $status);
-    if ($status !== 'corrupt') {
+    if ($status === 'ok' && !alarm_keys_state_valid($state)) {
+        error_log('fw_alarm: alarm_keys.json hat eine ungültige Struktur');
+        $status = 'corrupt';
+    }
+    if ($status === 'ok') {
         return $state;
     }
     $bak = read_json_file(data_path($config, 'alarm_keys.json.bak'), alarm_keys_default(), $bakStatus);
-    if ($bakStatus === 'ok') {
-        error_log('fw_alarm: alarm_keys.json unlesbar - nutze alarm_keys.json.bak');
+    if ($bakStatus === 'ok' && alarm_keys_state_valid($bak)) {
+        error_log('fw_alarm: alarm_keys.json ' . ($status === 'missing' ? 'fehlt' : 'unlesbar')
+            . ' - nutze alarm_keys.json.bak');
         return $bak;
+    }
+    if ($status === 'missing' && $bakStatus === 'missing') {
+        return $state;   // Neuinstallation: noch nie eine Liste gespeichert
     }
     error_log('fw_alarm: alarm_keys.json UND .bak unlesbar');
     return null;
@@ -1012,15 +1337,44 @@ function load_alarm_keys(array $config): array
 // wurde (Hochwassermarke in einer eigenen Datei). Wird die Liste aus einer
 // .bak zurückgeholt, läuft die Version so nie rückwärts auf eine Nummer, die
 // der ESP32 schon mit ANDEREM Inhalt kennt (er würde dann nie neu holen).
+// Zusätzlich zählt die Version, die die Box zuletzt gemeldet hat: Ging der
+// data_dir samt Hochwassermarke verloren (Umzug ohne Kopie), finge das NAS
+// sonst wieder bei 1 an - und erreichte irgendwann genau die Nummer, die die
+// Box mit ANDEREM Inhalt im NVS hat.
 // Muss unter dem 'keys'-Lock aufgerufen werden.
 function bump_keys_version(array $config, array &$state): int
 {
     $hwPath = data_path($config, 'alarm_keys_version.json');
-    $hw = (int)(read_json_file($hwPath, [])['high_water'] ?? 0);
-    $next = max((int)($state['version'] ?? 0), $hw) + 1;
+    $hwState = read_json_file($hwPath, []);
+    $boxVersion = (int)(read_json_file(data_path($config, 'latest_status.json'), [])['keys_version'] ?? 0);
+    $next = max((int)($state['version'] ?? 0), (int)($hwState['high_water'] ?? 0), $boxVersion) + 1;
     $state['version'] = $next;
-    write_json_file($hwPath, ['high_water' => $next]);
+    $hwState['high_water'] = $next;
+    write_json_file($hwPath, $hwState);
     return $next;
+}
+
+// Vergibt die id für einen NEUEN Empfänger - ebenfalls über alles hinaus, was
+// je vergeben wurde (Hochwassermarke 'next_id' in alarm_keys_version.json).
+// Nach einem .bak-Rückgriff ist next_id in der Liste sonst einen Stand zu alt,
+// und die nächste Person bekäme die id der zuletzt angelegten: Stellvertreter
+// (extra_id), Demo-Empfänger (key_id) und eine offene Nachsendung (only_ids)
+// träfen dann jemand anderen. Unter dem 'keys'-Lock aufrufen.
+function allocate_key_id(array $config, array &$state): int
+{
+    $hwPath = data_path($config, 'alarm_keys_version.json');
+    $hwState = read_json_file($hwPath, []);
+    $maxId = 0;
+    foreach (($state['keys'] ?? []) as $entry) {
+        if (is_array($entry)) {
+            $maxId = max($maxId, (int)($entry['id'] ?? 0));
+        }
+    }
+    $id = max(1, (int)($state['next_id'] ?? 1), (int)($hwState['next_id'] ?? 1), $maxId + 1);
+    $state['next_id'] = $id + 1;
+    $hwState['next_id'] = $id + 1;
+    write_json_file($hwPath, $hwState);
+    return $id;
 }
 
 // Position eines Eintrags (per id) in der Liste, -1 = nicht gefunden.
@@ -1040,9 +1394,16 @@ function find_key_index(array $state, int $id): int
 // true, wird gespeichert (mit 'bump' => true unter neuer Listen-Version, die
 // dann als 'version' im Ergebnis steht). Ist die Liste samt Sicherung
 // unlesbar, wird NICHTS geschrieben.
-function mutate_alarm_keys(array $config, callable $mutate): array
+// $soft = true: Lässt sich der Lock nicht öffnen, kommt ['ok' => false,
+// 'write_failed' => true, ...] zurück statt eines Abbruchs (für api/mute.php,
+// das Browsern eine lesbare Seite schuldet).
+function mutate_alarm_keys(array $config, callable $mutate, bool $soft = false): array
 {
-    return with_lock($config, 'keys', function () use ($config, $mutate): array {
+    $lockFailed = ['ok' => false, 'message' => LOCK_FAILED_MESSAGE, 'write_failed' => true];
+    $run = $soft
+        ? static fn(callable $work) => with_lock_soft($config, 'keys', $work, $lockFailed)
+        : static fn(callable $work) => with_lock($config, 'keys', $work);
+    return $run(function () use ($config, $mutate): array {
         $state = read_alarm_keys_state($config);
         if ($state === null) {
             return ['ok' => false, 'message' => ALARM_KEYS_CORRUPT_MESSAGE];
@@ -1103,15 +1464,71 @@ function demo_mode_default(): array
     return ['enabled' => false];
 }
 
-function load_demo_mode(array $config): array
+// $status wie bei read_json_file(): 'ok', 'missing' oder 'corrupt'.
+function load_demo_mode(array $config, ?string &$status = null): array
 {
-    return read_json_file(data_path($config, 'demo_mode.json'), demo_mode_default());
+    return read_json_file(data_path($config, 'demo_mode.json'), demo_mode_default(), $status);
+}
+
+// Ist demo_mode.json kaputt - oder verschwunden, obwohl es sie schon gab (die
+// .bak entsteht erst beim zweiten Wechsel)? Dann rechnet das NAS LIVE (der
+// Standard), die Box bliebe aber still auf der Demo-Liste: Die Listen-Version
+// ändert sich ja nicht, sie holt nie neu. Echte Relaisalarme gingen nur an den
+// Test-Empfänger. Die .bak hilft hier NICHT - sie hält immer den VORIGEN Modus.
+function demo_mode_broken(array $config): bool
+{
+    load_demo_mode($config, $status);
+    return $status === 'corrupt'
+        || ($status === 'missing' && is_file(data_path($config, 'demo_mode.json.bak')));
+}
+
+// Repariert einen kaputten Demo-Zustand in die sichere Richtung: LIVE
+// festschreiben und die Listen-Version erhöhen - so holt sich die Box beim
+// nächsten Poll die volle Liste, und beide Alarmwege sind sich wieder einig.
+// Läuft in api/poll.php, api/keys.php und im Cron-Wächter (wie
+// expire_stale_mutes). Nimmt selbst den 'keys'-Lock - NIE aus einem gehaltenen
+// 'keys'-Lock aufrufen. Nicht fatal.
+function repair_broken_demo_mode(array $config): bool
+{
+    if (!demo_mode_broken($config)) {
+        return false;   // billiger Normalfall ohne Lock
+    }
+    $repaired = with_lock_soft($config, 'keys', function () use ($config): bool {
+        if (!demo_mode_broken($config)) {
+            return false;   // inzwischen von jemand anderem erledigt
+        }
+        $state = read_alarm_keys_state($config);
+        if ($state === null) {
+            return false;   // Liste ebenfalls kaputt: nichts überschreiben
+        }
+        // Erst die Liste (neue Version), dann der Demo-Zustand: Der kaputte
+        // Zustand liest sich ohnehin schon als LIVE, der lockfreie Leser
+        // api/keys.php bekommt in jeder Zwischenstufe die volle Liste.
+        bump_keys_version($config, $state);
+        if (!backup_then_write($config, 'alarm_keys.json', $state)) {
+            return false;
+        }
+        return write_json_file(data_path($config, 'demo_mode.json'),
+            ['enabled' => false, 'changed_at' => time(), 'by' => 'Reparatur']);
+    }, false);
+    if ($repaired) {
+        error_log('fw_alarm: demo_mode.json war beschädigt/verloren - auf LIVE zurückgesetzt, Listen-Version erhöht');
+        append_command_log($config, ['event' => 'demo_repaired']);
+    }
+    return $repaired;
+}
+
+// Geht im übergebenen Demo-Zustand WIRKLICH alles nur an den Demo-Key? Nur bei
+// gesetztem Flag UND plausiblem Key - sonst alarmiert effective_alarm_entries()
+// die volle Liste.
+function demo_state_enabled(array $demo): bool
+{
+    return !empty($demo['enabled']) && valid_bark_key(trim((string)($demo['key'] ?? '')));
 }
 
 function demo_mode_enabled(array $config): bool
 {
-    $demo = load_demo_mode($config);
-    return !empty($demo['enabled']) && valid_bark_key(trim((string)($demo['key'] ?? '')));
+    return demo_state_enabled(load_demo_mode($config));
 }
 
 // Kompakte Demo-Info für das Dashboard (Key nur maskiert - Keys sind Geheimnisse).
@@ -1120,17 +1537,17 @@ function demo_mode_enabled(array $config): bool
 // alarmiert effective_alarm_entries() die volle Liste - dann darf das
 // Dashboard nicht "Demo" anzeigen (und Browser und Server müssen sich über
 // den Modus einig sein, siehe expect_demo in dashboard_api.php).
-function demo_mode_info(array $config): array
+// $demo optional: ein schon gelesener Demo-Zustand (Momentaufnahme).
+function demo_mode_info(array $config, ?array $demo = null): array
 {
-    $demo = load_demo_mode($config);
-    $enabled = !empty($demo['enabled']) && valid_bark_key(trim((string)($demo['key'] ?? '')));
+    $demo = $demo ?? load_demo_mode($config);
+    $enabled = demo_state_enabled($demo);
     return [
         'enabled' => $enabled,
         'label' => $enabled ? (string)($demo['label'] ?? '') : '',
         'key_id' => $enabled ? (int)($demo['key_id'] ?? 0) : 0,
         'key_masked' => $enabled ? mask_bark_key((string)($demo['key'] ?? '')) : '',
         'changed_at' => (int)($demo['changed_at'] ?? 0),
-        'by' => (string)($demo['by'] ?? ''),
     ];
 }
 
@@ -1147,8 +1564,10 @@ function demo_mode_info(array $config): array
 // MAX_ALARM_KEYS - sonst würde der ESP32 die Liste verwerfen, während das NAS
 // sie benutzt (beide Wege alarmierten verschiedene Empfänger).
 // Überfällige Stummschaltungen gelten hier schon als LAUT (mute_is_stale), auch
-// wenn expire_stale_mutes() sie noch nicht weggeschrieben hat: Die Alarmierung
-// hängt so nicht am Schreibrecht auf den data_dir.
+// wenn expire_stale_mutes() sie noch nicht weggeschrieben hat: Der NAS-
+// Direktalarm hängt so nicht am Schreibrecht auf den data_dir. ACHTUNG: Für
+// die Box gilt das NICHT - sie holt diese Liste nur bei einer neuen Version,
+// und die entsteht erst beim erfolgreichen Wegschreiben.
 // $keysState/$demo optional übergeben, damit ein Aufrufer (api/keys.php) Liste,
 // Version und Demo-Zustand aus EINEM Lesevorgang ausliefern kann.
 function effective_alarm_entries(array $config, ?array $keysState = null, ?array $demo = null): array
@@ -1202,15 +1621,22 @@ function effective_alarm_entries(array $config, ?array $keysState = null, ?array
 // Empfänger für einen NAS-Direktversand (Alarm/Entwarnung): die effektive
 // Liste, sonst die Not-Liste aus config.php. Liefert zusätzlich, ob der
 // Fallback griff und ob der Demo-Modus aktiv ist - für die Meldung im Dashboard.
-function alarm_recipients(array $config): array
+// $keysState/$demo optional: die Momentaufnahme, gegen die der Browser-Modus
+// (expect_demo) schon geprüft wurde - so können Prüfung und Versand nie
+// verschiedene Demo-Stände sehen.
+function alarm_recipients(array $config, ?array $keysState = null, ?array $demo = null): array
 {
-    $entries = effective_alarm_entries($config);
+    $demo = $demo ?? load_demo_mode($config);
+    $entries = effective_alarm_entries($config, $keysState, $demo);
     $usedFallback = false;
     if (count($entries) === 0) {
         $fallback = $config['bark_keys_alarm'] ?? [];
+        $seen = [];
         foreach ((is_array($fallback) ? $fallback : []) as $key) {
             $key = trim((string)$key);
-            if (valid_bark_key($key) && count($entries) < MAX_ALARM_KEYS) {
+            // Doppelt eingetragen = sonst zwei Critical Alerts mit call=1.
+            if (valid_bark_key($key) && !isset($seen[$key]) && count($entries) < MAX_ALARM_KEYS) {
+                $seen[$key] = true;
                 // id 0: Einträge der Not-Liste haben keine Dashboard-id (und
                 // lassen sich deshalb nicht gezielt nachsenden).
                 $entries[] = ['id' => 0, 'key' => $key, 'muted' => false, 'mute_volume' => 0, 'label' => ''];
@@ -1218,7 +1644,7 @@ function alarm_recipients(array $config): array
         }
         $usedFallback = count($entries) > 0;
     }
-    return ['entries' => $entries, 'used_fallback' => $usedFallback, 'demo' => demo_mode_enabled($config)];
+    return ['entries' => $entries, 'used_fallback' => $usedFallback, 'demo' => demo_state_enabled($demo)];
 }
 
 // ========================= ARBEITSMODUS (STUMM) =============================
@@ -1261,6 +1687,38 @@ function mute_is_permanent(array $entry): bool
 function mute_volume_of(array $entry): int
 {
     return max(0, min(10, (int)($entry['mute_volume'] ?? 0)));
+}
+
+// Schaltet EINEN Listeneintrag stumm bzw. laut - die eine Stelle für die
+// Regeln aller Schalter (Dashboard, Kurzbefehl-Link, automatische
+// Rückschaltung): muted_at setzen bzw. löschen, und "laut" beendet IMMER auch
+// eine DAUERHAFTE Stummschaltung. Laut ist die sichere Richtung; bliebe das
+// Flag hängen, hebelte es beim nächsten Stummschalten überraschend wieder das
+// Sicherheitsnetz aus. (Dauerhaft stumm BEGINNEN geht nur über
+// keys_set_mute_permanent im Dashboard.)
+// Liefert true, wenn dabei eine dauerhafte Stummschaltung endete.
+function apply_mute_change(array &$entry, bool $muted): bool
+{
+    $wasPermanent = mute_is_permanent($entry);
+    $entry['muted'] = $muted;
+    $entry['muted_at'] = $muted ? time() : 0;
+    if (!$muted) {
+        $entry['mute_permanent'] = false;
+    }
+    return $wasPermanent && !$muted;
+}
+
+// Verlaufseintrag zu EINEM Empfänger (key_added, key_muted, key_test ...) -
+// Name und Key immer gleich aufbereitet, der Key nur maskiert. Aufruf erst
+// NACH dem 'keys'-Lock (der Verlauf hat einen eigenen Lock).
+function log_key_event(array $config, string $event, array $entry, string $by, array $extra = []): void
+{
+    append_command_log($config, array_merge([
+        'event' => $event,
+        'by' => $by,
+        'label' => (string)($entry['label'] ?? ''),
+        'key' => mask_bark_key((string)($entry['key'] ?? '')),
+    ], $extra));
 }
 
 // Ist die Stummschaltung dieses Eintrags überfällig (länger als
@@ -1371,8 +1829,7 @@ function expire_stale_mutes(array $config, bool $soft = false): array
             if (!is_array($entry) || !$isStale($entry)) {
                 continue;
             }
-            $state['keys'][$i]['muted'] = false;
-            $state['keys'][$i]['muted_at'] = 0;
+            apply_mute_change($state['keys'][$i], false);
             $expired[] = $entry;
         }
         if (count($expired) === 0) {
@@ -1380,34 +1837,47 @@ function expire_stale_mutes(array $config, bool $soft = false): array
         }
         $version = bump_keys_version($config, $state);
         if (!backup_then_write($config, 'alarm_keys.json', $state)) {
-            return ['expired' => [], 'version' => 0];
+            return ['expired' => [], 'version' => 0, 'write_failed' => true];
         }
         return ['expired' => $expired, 'version' => $version];
     };
     $result = $soft
-        ? with_lock_soft($config, 'keys', $work, ['expired' => [], 'version' => 0])
+        ? with_lock_soft($config, 'keys', $work, ['expired' => [], 'version' => 0, 'write_failed' => true])
         : with_lock($config, 'keys', $work);
+    if (!empty($result['write_failed'])) {
+        // Der NAS-Weg rechnet die Betroffenen trotzdem schon als laut
+        // (mute_is_stale), die BOX aber nicht: Sie holt die Liste nur bei einer
+        // neuen Version - und die entsteht erst beim Wegschreiben. Bis dahin
+        // alarmiert sie diese Empfänger weiter stumm. Das Dashboard zeigt den
+        // Fall an der Zeile (mute_overdue in keys_list).
+        error_log('fw_alarm: überfällige Stummschaltung konnte nicht gespeichert werden - '
+            . 'die Box alarmiert die Betroffenen bis dahin weiter stumm');
+    }
 
     // Log erst NACH dem Lock; Info-Push erst nach der Antwort.
     foreach ($result['expired'] as $entry) {
-        append_command_log($config, [
-            'event' => 'key_unmuted',
-            'by' => 'automatisch',
-            'source' => 'auto',
-            'label' => (string)($entry['label'] ?? ''),
-            'key' => mask_bark_key((string)($entry['key'] ?? '')),
-            'version' => $result['version'],
-        ]);
+        log_key_event($config, 'key_unmuted', $entry, 'automatisch',
+            ['source' => 'auto', 'version' => $result['version']]);
     }
     if (count($result['expired']) > 0) {
         $expiredEntries = $result['expired'];
         defer_after_response(static function () use ($config, $expiredEntries): void {
+            // Leise Info an die Betroffenen selbst (ASCII) - alle PARALLEL in
+            // einem Aufruf: seriell hielte das bei 10 Einträgen und gestörtem
+            // Bark einen PHP-Worker bis zu ~200 s fest.
+            $fields = ['title' => 'Alarmton wieder LAUT', 'level' => 'passive',
+                'body' => bark_ascii(date('[d.m.Y H:i] ') . 'Stummschaltung automatisch beendet (war laenger als '
+                    . notify_duration_label(mute_max_seconds($config)) . ' aktiv). '
+                    . 'Alarme kommen wieder als Critical Alert mit Ton.')];
+            $jobs = [];
             foreach ($expiredEntries as $entry) {
-                // Leise Info an den Betroffenen selbst (ASCII, siehe bark_send_status).
-                bark_send_status($config, (string)($entry['key'] ?? ''), 'Alarmton wieder LAUT',
-                    date('[d.m.Y H:i] ') . 'Stummschaltung automatisch beendet (war laenger als '
-                    . max(1, (int)round(mute_max_seconds($config) / 3600)) . ' Std aktiv). '
-                    . 'Alarme kommen wieder als Critical Alert mit Ton.');
+                $key = (string)($entry['key'] ?? '');
+                if (valid_bark_key($key)) {
+                    $jobs[] = ['key' => $key, 'fields' => $fields];
+                }
+            }
+            if (count($jobs) > 0 && function_exists('curl_init')) {
+                bark_post_many($config, $jobs, 2);
             }
             // Auf Wunsch auch den Admin informieren (Art "mute_expired",
             // Standard: aus): Lief ein Zeitlimit ab, hat meist die
@@ -1474,11 +1944,14 @@ function bark_ascii(string $text): string
 // und der letzte Empfänger wartet nicht mehr auf die Timeouts aller
 // vorherigen (früher seriell: bei gestörtem Bark und 10 Keys bis ~5 min).
 // $jobs: Liste von ['key' => string, 'fields' => array].
-// Ergebnis pro Job (gleiche Reihenfolge): ['ok' => bool, 'http' => int].
+// Ergebnis pro Job (gleiche Reihenfolge): ['ok' => bool, 'http' => int,
+// 'err' => cURL-Fehlertext oder '']. 'err' unterscheidet bei http 0 die
+// Ursache (DNS, TLS/CA-Bundle, Timeout) - sonst sähe ein komplett
+// ausgefallener REAL ALARM nur nach "keine Verbindung" aus.
 function bark_post_many(array $config, array $jobs, int $tries): array
 {
     $jobs = array_values($jobs);
-    $results = array_fill(0, count($jobs), ['ok' => false, 'http' => 0]);
+    $results = array_fill(0, count($jobs), ['ok' => false, 'http' => 0, 'err' => '']);
     if (count($jobs) === 0 || !function_exists('curl_multi_init')) {
         return $results;
     }
@@ -1503,8 +1976,14 @@ function bark_post_many(array $config, array $jobs, int $tries): array
             curl_multi_add_handle($multi, $ch);
             $handles[$i] = $ch;
         }
+        $errors = [];   // spl_object_id(Handle) => cURL-Fehlercode
         do {
             $status = curl_multi_exec($multi, $running);
+            while (($info = curl_multi_info_read($multi)) !== false) {
+                if (($info['msg'] ?? 0) === CURLMSG_DONE && isset($info['handle'])) {
+                    $errors[spl_object_id($info['handle'])] = (int)($info['result'] ?? 0);
+                }
+            }
             if ($running > 0 && curl_multi_select($multi, 1.0) === -1) {
                 usleep(10000);   // select() nicht verfügbar: kurz warten statt Dauerschleife
             }
@@ -1513,9 +1992,15 @@ function bark_post_many(array $config, array $jobs, int $tries): array
         $stillOpen = [];
         foreach ($handles as $i => $ch) {
             $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+            $errNo = $errors[spl_object_id($ch)] ?? 0;
+            $err = $errNo !== 0 ? (string)curl_strerror($errNo) : '';
             curl_multi_remove_handle($multi, $ch);
             curl_close($ch);
-            $results[$i] = ['ok' => $code === 200, 'http' => $code];
+            $results[$i] = ['ok' => $code === 200, 'http' => $code, 'err' => $err];
+            if ($code === 0 && $err !== '') {
+                error_log('fw_alarm: Bark-Versand an ' . mask_bark_key((string)$jobs[$i]['key'])
+                    . ' gescheitert (Versuch ' . $attempt . '): ' . $err);
+            }
             if ($code !== 200 && !($code >= 400 && $code < 500)) {
                 $stillOpen[] = $i;   // 4xx: Key falsch, Wiederholen zwecklos
             }
@@ -1926,7 +2411,11 @@ function notify_in_quiet_hours(array $global, ?int $now = null): bool
 // oder 'off' (Art abgeschaltet bzw. kein Status-Key - es wurde NICHTS
 // gesendet). $force = Probe-Meldung aus dem Dashboard: sendet auch eine
 // abgeschaltete Art. Texte gehen per bark_ascii() als ASCII raus.
-// Der Stellvertreter ist "best effort": Sein Ergebnis ändert die Rückgabe nicht.
+// Der Stellvertreter ist "best effort" - aber hat ER angenommen, gilt die
+// Meldung als zugestellt ('sent'), auch wenn der Status-Key scheiterte: Sonst
+// bekäme der Stellvertreter dieselbe Meldung bei jedem Wächter-Lauf (alle
+// 15 min) erneut. Den Fehlschlag des Status-Keys meldet dann $used
+// ['primary_failed' => true] - der Wächter führt ihn so trotzdem als Störung.
 // $used (optional) erfährt, wie gesendet wurde: ['level' => tatsächliche
 // Dringlichkeit, 'quiet_capped' => true, wenn die Ruhezeit sie gekappt hat] -
 // so muss niemand die Logik nachrechnen (Probe-Meldung im Dashboard).
@@ -1937,9 +2426,15 @@ function admin_notify_send(array $config, string $type, string $title, string $b
     $key = trim((string)($config['bark_key_status'] ?? ''));
     $settings = $settings ?? load_notify_settings($config);
     $row = $settings['types'][$type] ?? null;
+    if ($row === null) {
+        // Unbekannte Art = Programmierfehler (Tippfehler im Namen). Nie 'off':
+        // Der Wächter würde den Fall sonst still als erledigt abhaken.
+        error_log('fw_alarm: unbekannte Meldungsart ' . $type);
+        return $key === '' ? 'off' : 'failed';
+    }
     // 'off' NUR, wenn bewusst nichts gesendet werden soll: Art abgeschaltet
     // oder gar kein Status-Key eingetragen.
-    if ($key === '' || $row === null || (!$force && empty($row['enabled']))) {
+    if ($key === '' || (!$force && empty($row['enabled']))) {
         return 'off';
     }
     // Ein eingetragener, aber unbrauchbarer Key (z.B. die ganze Bark-URL
@@ -1974,7 +2469,15 @@ function admin_notify_send(array $config, string $type, string $title, string $b
             $jobs[] = ['key' => $extraKey, 'fields' => $fields];
         }
     }
-    return bark_post_many($config, $jobs, 2)[0]['ok'] ? 'sent' : 'failed';
+    $sent = bark_post_many($config, $jobs, 2);
+    if ($sent[0]['ok']) {
+        return 'sent';
+    }
+    if (count($sent) > 1 && $sent[1]['ok']) {
+        $used['primary_failed'] = true;
+        return 'sent';
+    }
+    return 'failed';
 }
 
 // Text des Wochenberichts (ASCII, geht an Bark): Zählt die Ereignisse der
@@ -1990,7 +2493,10 @@ function weekly_report_text(array $config, bool $boxOnline): string
         if ((int)($entry['log_at'] ?? 0) < $since) {
             break;   // neueste zuerst - alles Weitere ist älter
         }
-        $isDemo = str_starts_with((string)($entry['message'] ?? ''), 'DEMO-MODUS');
+        // Neuere Einträge tragen 'demo' selbst; bei alten bleibt nur der Text.
+        $isDemo = array_key_exists('demo', $entry)
+            ? !empty($entry['demo'])
+            : str_starts_with((string)($entry['message'] ?? ''), 'DEMO-MODUS');
         switch ((string)($entry['event'] ?? '')) {
             case 'relay_alarm':
                 if ((string)($entry['source'] ?? 'relay') !== 'remote') {
@@ -2125,12 +2631,14 @@ function bark_false_alarm_fields(array $config, string $title, string $body, boo
 // Die Auswahl kann die effektive Liste ausschließlich VERKLEINERN - im
 // Demo-Modus bleibt es beim Test-Empfänger, gelöschte ids fallen heraus, und
 // eine leere Schnittmenge sendet NICHTS (count 0), nie ersatzweise an alle.
-function bark_broadcast(array $config, callable $fieldsFor, ?array $onlyIds = null): array
+// $snapshot (optional): ['keys' => Liste, 'demo' => Demo-Zustand] - die
+// Momentaufnahme, gegen die das Dashboard den bestätigten Modus geprüft hat.
+function bark_broadcast(array $config, callable $fieldsFor, ?array $onlyIds = null, ?array $snapshot = null): array
 {
     ignore_user_abort(true);
     @set_time_limit(120);
 
-    $recipients = alarm_recipients($config);
+    $recipients = alarm_recipients($config, $snapshot['keys'] ?? null, $snapshot['demo'] ?? null);
     $entries = $recipients['entries'];
     if ($onlyIds !== null) {
         $entries = array_values(array_filter($entries, static fn(array $entry): bool =>
@@ -2158,6 +2666,7 @@ function bark_broadcast(array $config, callable $fieldsFor, ?array $onlyIds = nu
             'key' => mask_bark_key((string)$entry['key']),
             'ok' => $sent[$i]['ok'],
             'http' => $sent[$i]['http'],
+            'err' => (string)($sent[$i]['err'] ?? ''),
             'muted' => $muted,
             'label' => (string)($entry['label'] ?? ''),
         ];
@@ -2182,20 +2691,31 @@ function bark_broadcast(array $config, callable $fieldsFor, ?array $onlyIds = nu
 // Versands, und der Zusatz "(verspaetet zugestellt)" kommt dazu: Sonst sähe
 // ein 15 Minuten alter Alarm wie ein frischer aus, und wen der erste Versuch
 // doch erreicht hatte (z.B. HTTP 0, nachdem Bark schon angenommen hatte),
-// hielte die Nachsendung für einen zweiten Alarm. Der ursprüngliche Versand
-// ist der jüngste $startedEvent ohne resend im Verlauf; fehlt er (Verlauf
-// verloren), bleibt es bei der aktuellen Zeit - der Zusatz kommt trotzdem.
-function resend_stamped_body(array $config, string $startedEvent, ?array $onlyIds, string $text): string
+// hielte die Nachsendung für einen zweiten Alarm. Die Zeit des ursprünglichen
+// Versands schickt das Dashboard mit ($origAt, aus dessen Antwort
+// 'started_at'; akzeptiert nur aus den letzten 24 h). Fehlt sie, gilt der
+// jüngste $startedEvent ohne resend im Verlauf - aber nur, wenn er höchstens
+// RESEND_LOG_MAX_AGE alt ist: Konnte der Verlauf beim Alarm nicht schreiben
+// (Datenordner gestört), träfe die Suche sonst einen Wochen alten Alarm. Sonst
+// bleibt es bei der aktuellen Zeit - der Zusatz kommt trotzdem.
+const RESEND_LOG_MAX_AGE = 6 * 3600;
+
+function resend_stamped_body(array $config, string $startedEvent, ?array $onlyIds, string $text, int $origAt = 0): string
 {
     if ($onlyIds === null) {
         return date('[d.m.Y H:i] ') . $text;
     }
-    $found = read_command_log_matching($config, 1,
-        static fn(string $line): bool => strpos($line, '"event":"' . $startedEvent . '"') !== false,
-        static fn(array $entry): bool => (string)($entry['event'] ?? '') === $startedEvent
-            && empty($entry['resend']));
-    $at = (int)($found[0]['log_at'] ?? 0);
-    return date('[d.m.Y H:i] ', $at > 0 ? $at : time()) . $text . ' (verspaetet zugestellt)';
+    $now = time();
+    $at = ($origAt > 0 && $origAt <= $now && $now - $origAt <= 86400) ? $origAt : 0;
+    if ($at === 0) {
+        $found = read_command_log_matching($config, 1,
+            static fn(string $line): bool => strpos($line, '"event":"' . $startedEvent . '"') !== false,
+            static fn(array $entry): bool => (string)($entry['event'] ?? '') === $startedEvent
+                && empty($entry['resend']));
+        $logAt = (int)($found[0]['log_at'] ?? 0);
+        $at = ($logAt > 0 && $now - $logAt <= RESEND_LOG_MAX_AGE) ? $logAt : $now;
+    }
+    return date('[d.m.Y H:i] ', $at) . $text . ' (verspaetet zugestellt)';
 }
 
 // ENTWARNUNG (Fehlalarm): CRITICAL ALERT mit kurzem, normalem Ton an alle
@@ -2203,7 +2723,9 @@ function resend_stamped_body(array $config, string $startedEvent, ?array $onlyId
 // wurde. Muss genauso durchdringen wie der Alarm selbst, sonst fährt jemand
 // umsonst los. Nutzt dieselbe Empfängerliste wie der Alarm (im Demo-Modus also
 // nur den Test-Empfänger, so lässt sich auch die Entwarnung gefahrlos üben).
-function bark_send_false_alarm_all(array $config, ?array $onlyIds = null): array
+// $snapshot/$origAt: siehe bark_broadcast() bzw. resend_stamped_body().
+// 'demo' im Ergebnis sagt, ob im Demo-Modus gesendet wurde (für den Verlauf).
+function bark_send_false_alarm_all(array $config, ?array $onlyIds = null, ?array $snapshot = null, int $origAt = 0): array
 {
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'message' => 'PHP-cURL fehlt. In Web Station im PHP-Profil die Erweiterung "curl" aktivieren.', 'results' => []];
@@ -2211,17 +2733,19 @@ function bark_send_false_alarm_all(array $config, ?array $onlyIds = null): array
     // Bark-Texte bewusst ASCII (ae/ue/oe).
     $title = 'ENTWARNUNG - Fehlalarm';
     $body = resend_stamped_body($config, 'false_alarm_started', $onlyIds,
-        'Der letzte Alarm war ein FEHLALARM - kein Einsatz.');
+        'Der letzte Alarm war ein FEHLALARM - kein Einsatz.', $origAt);
     $sent = bark_broadcast($config, static fn(array $entry): array => bark_false_alarm_fields(
-        $config, $title, $body, !empty($entry['muted']), (int)($entry['mute_volume'] ?? 0)), $onlyIds);
+        $config, $title, $body, !empty($entry['muted']), (int)($entry['mute_volume'] ?? 0)), $onlyIds, $snapshot);
 
     if ($sent['count'] === 0) {
         return ['ok' => false, 'message' => $onlyIds !== null
             ? BARK_RESEND_EMPTY_MESSAGE
-            : 'Keine Empfänger: Liste im Dashboard pflegen (Panel "Alarm-Empfänger").', 'results' => []];
+            : 'Keine Empfänger: Liste im Dashboard pflegen (Panel "Alarm-Empfänger").', 'results' => [],
+            'demo' => $sent['demo']];
     }
     return [
         'ok' => $sent['ok_count'] === $sent['count'],
+        'demo' => $sent['demo'],
         // Diese Zusammenfassung geht nur an Dashboard und Verlauf (nie an
         // Bark) - darf deshalb, anders als $title/$body, echte Umlaute haben.
         'message' => ($sent['demo'] ? 'DEMO-MODUS: Entwarnung nur an den Test-Empfänger. ' : '')
@@ -2238,7 +2762,8 @@ function bark_send_false_alarm_all(array $config, ?array $onlyIds = null): array
 // Führend ist die im Dashboard gepflegte Liste (im Demo-Modus nur der
 // Demo-Key); die statische Liste aus config.php dient nur noch als Fallback,
 // solange keine gepflegt ist.
-function bark_send_alarm_all(array $config, ?array $onlyIds = null): array
+// $snapshot/$origAt: siehe bark_broadcast() bzw. resend_stamped_body().
+function bark_send_alarm_all(array $config, ?array $onlyIds = null, ?array $snapshot = null, int $origAt = 0): array
 {
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'message' => 'PHP-cURL fehlt. In Web Station im PHP-Profil die Erweiterung "curl" aktivieren.', 'results' => []];
@@ -2247,17 +2772,19 @@ function bark_send_alarm_all(array $config, ?array $onlyIds = null): array
     // Bewusst KEIN Demo-Zusatz im Text: Ein Demo-Alarm soll exakt so aussehen
     // und klingen wie ein echter - er geht nur an weniger Empfänger.
     $body = resend_stamped_body($config, 'nas_alarm_started', $onlyIds,
-        (string)($config['bark_alarm_body'] ?? 'Manuelle Alarmierung ueber das NAS-Dashboard!'));
+        (string)($config['bark_alarm_body'] ?? 'Manuelle Alarmierung ueber das NAS-Dashboard!'), $origAt);
     $sent = bark_broadcast($config, static fn(array $entry): array => bark_alarm_fields(
-        $config, $body, !empty($entry['muted']), (int)($entry['mute_volume'] ?? 0)), $onlyIds);
+        $config, $body, !empty($entry['muted']), (int)($entry['mute_volume'] ?? 0)), $onlyIds, $snapshot);
 
     if ($sent['count'] === 0) {
         return ['ok' => false, 'message' => $onlyIds !== null
             ? BARK_RESEND_EMPTY_MESSAGE
-            : 'Keine Alarm-Empfänger: Liste im Dashboard pflegen (Panel "Alarm-Empfänger").', 'results' => []];
+            : 'Keine Alarm-Empfänger: Liste im Dashboard pflegen (Panel "Alarm-Empfänger").', 'results' => [],
+            'demo' => $sent['demo']];
     }
     return [
         'ok' => $sent['ok_count'] === $sent['count'],
+        'demo' => $sent['demo'],
         // Deutlich machen, wenn die statische Fallback-Liste zum Einsatz kam -
         // sonst glaubt man, die (leere) Dashboard-Liste sei maßgeblich gewesen.
         // Geht nur an Dashboard/Verlauf (nie an Bark) - echte Umlaute erlaubt.

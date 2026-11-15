@@ -2,32 +2,43 @@
 # ablegen (Besitzer root, Gruppe fwwatch, Rechte 640). Enthält Geheimnisse:
 # NIE ins Git, NIE in die Vorlage eintragen.
 #
+# Unter Windows bearbeitet? Auf der VM vor dem Installieren die
+# Windows-Zeilenenden entfernen:  sed -i 's/\r$//' fw-alarm-watch.conf
+# Das Skript prüft alle Werte beim Start und bricht bei ungültigen mit einer
+# Meldung im Journal ab (exit 2, dann auch kein Aufruf beim NAS).
+#
 # >>> HIER STEHEN ALLE WERTE, DIE DU EDITIEREN MUSST/KANNST <<<
 
 # Öffentliche Adresse von api/alive.php (dieselbe Adresse, über die man das
-# Dashboard von unterwegs erreicht - NICHT die LAN-IP).
+# Dashboard von unterwegs erreicht - NICHT die LAN-IP). Nur https://.
 NAS_ALIVE_URL="https://dein-name.synology.me/fw_alarm/api/alive.php"
 
 # Klartext des Wächter-Tokens. In config.php des NAS steht nur der SHA-256-
 # Hash davon (watcher_token_sha256). Token UND Hash in einem Schritt erzeugen:
 # php -r '$t=bin2hex(random_bytes(32)); echo $t, PHP_EOL, hash("sha256", $t), PHP_EOL;'
+# Eigenes Token - NICHT das Maschinen-Token der Box (gleicher Hash wie
+# machine_token_sha256 lehnt alive.php mit 404 ab).
 WATCHER_TOKEN=""
 
-# Bark-Server und Status-Key des Admins (derselbe wie bark_key_status in
-# config.php bzw. BARK_KEY_STATUS in config.h).
+# Bark-Server (nur https://) und Status-Key des Admins (sinnvollerweise
+# derselbe wie bark_key_status in config.php bzw. BARK_KEY_STATUS in config.h).
 BARK_HOST="https://api.day.app"
 BARK_KEY=""
 
 # Dringlichkeit der Meldungen: passive (leise) | active (normal, mit Ton) |
 # timeSensitive (durchbricht Fokus) | critical (durchbricht auch Stummschalter).
+# Gilt für ALLE Meldungen der VM. Die Einstellungen im Dashboard-Panel
+# "Meldungen an den Admin" (Dringlichkeit, Ruhezeit, Ton, Stellvertreter)
+# gelten NUR für Meldungen des NAS, nicht für diese VM.
 BARK_LEVEL="active"
 
 # Nach so vielen Fehlschlägen in Folge melden (Takt 5 min; 3 = ca. 10-15 min,
-# übersteht einen normalen NAS-Neustart ohne Fehlalarm).
+# übersteht einen normalen NAS-Neustart ohne Fehlalarm). Gilt auch für
+# "NAS kann Bark nicht erreichen" (so viele Läufe in Folge). Ganze Zahl.
 FAIL_THRESHOLD=3
 
 # Erinnern, solange das NAS weg bleibt bzw. der NAS-Wächter nicht läuft
-# (Stunden, 0 = nur einmal).
+# (Stunden, 0 = nur einmal). Ganze Zahl.
 REPEAT_HOURS=24
 
 # Ab diesem Alter (Sekunden) gilt der Cron-Wächter auf dem NAS als

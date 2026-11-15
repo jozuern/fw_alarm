@@ -273,6 +273,16 @@ Poll-Protokoll Alarme auslösen oder die Empfängerliste ersetzen.
 `REMOTE_MACHINE_TOKEN` ist ein anderes Geheimnis als deine Bark-Keys. Auf der
 Synology steht davon nur der SHA-256-Hash in `nas_dashboard/config.php`.
 
+`REMOTE_DEVICE_ID` kannst du zusätzlich in `config.php` als `box_device_id`
+eintragen (optional, gleicher Wert). Dann zählen für Online-Anzeige,
+Offline-Wächter und Demo-Sicherung nur die Status-Pushs **dieser** Box, und nur
+sie bekommt Befehle (TEST, DEMO-ALARM). Ein Bastel- oder Ersatz-ESP32 mit
+demselben Token wird weiter angenommen, aber nur als Hinweis „fremdes Board
+meldet sich" geführt – ohne den Eintrag könnte ein weiter pushendes
+Bastel-Board den Ausfall der echten Box verdecken. Leer gelassen zählt wie
+bisher jeder Push mit dem Token; melden sich dann mehrere Boards, warnt das
+Dashboard.
+
 ---
 
 ## 6. Flashen – Variante A: Arduino IDE
@@ -400,9 +410,12 @@ externer Dienst, der **dich** alarmiert, wenn der erwartete Ping **ausbleibt**.
 > ✅ **Schon eingebaut, wenn du das NAS-Dashboard nutzt:** Der Offline-Wächter
 > `cron/check_offline.php` (per DSM-Aufgabenplaner alle paar Minuten) meldet dir
 > **einmal** leise per Bark, wenn die Box zu lange keinen Status mehr gepusht hat –
-> und **einmal**, wenn sie wieder da ist. Für echte Unabhängigkeit vom eigenen
-> Netz kannst du zusätzlich einen externen Dienst wie **healthchecks.io** nutzen
-> (siehe [TODO](#13-sicherheit--offene-punkte-todo)).
+> und **einmal**, wenn sie wieder da ist. Fällt das NAS selbst aus (Strom oder
+> Internet am Standort), meldet das der optionale **Außen-Wächter**
+> ([`cloud_watcher/`](cloud_watcher/README.md), eine kostenlose Cloud-VM, die das
+> NAS alle 5 Minuten von außen prüft; NAS und VM überwachen sich gegenseitig).
+> Die Box zusätzlich direkt bei einem externen Dienst zu überwachen, bleibt
+> optional (siehe [TODO](#13-sicherheit--offene-punkte-todo)).
 
 ### 10a. Wöchentlicher Probealarm der ILS = automatischer Wochentest
 
@@ -473,7 +486,7 @@ Funktionen:
   mitbekommen wie den Alarm – also auch durch Stummschalter und Fokus hindurch.
   Wer im **Arbeitsmodus** (stumm) steht, bekommt die Entwarnung mit derselben
   Stumm-Lautstärke wie den Alarm.
-- `DEMO-ALARM über ESP32` (nur im Demo-Modus sichtbar): löst den Alarm über
+- `DEMO-ALARM über die Box` (nur im Demo-Modus sichtbar): löst den Alarm über
   die **komplette** ESP32-Kette aus (Poll → Alarm-Zustandsmaschine → Bark),
   geht dank Demo-Modus aber nur an den Test-Empfänger. Der Server erlaubt den
   Befehl nur, wenn der ESP32 die Demo-Liste nachweislich übernommen hat und
@@ -489,9 +502,10 @@ Funktionen:
   ist sie führend. Der letzte Empfänger lässt sich nicht löschen.
 - Dashboard mit Login, Offline-Anzeige, Aktionsknöpfen (`TEST`, `REAL ALARM`
   und `ENTWARNUNG` – beide mit zusätzlicher Bestätigung und Ergebnis pro
-  Empfänger – sowie im Demo-Modus `DEMO-ALARM über ESP32`) und einem
+  Empfänger – sowie im Demo-Modus `DEMO-ALARM über die Box`) und einem
   Abbrechen-Knopf für noch nicht abgeholte Befehle.
-- **Demo-Modus** (Panel „Betriebsmodus", nur Admin): leitet **alle** Alarme –
+- **Demo-Modus** (im Panel „Auslösen & Testen", aufklappbar „Demo-Modus", nur
+  Admin): leitet **alle** Alarme –
   Relaisalarm über den ESP32 und `REAL ALARM` vom NAS – auf genau **einen**
   Test-Empfänger aus der gepflegten Liste um, damit du gefahrlos üben kannst.
   Der Alarm ist dabei zeichengenau identisch mit einem echten (gleicher
@@ -505,18 +519,21 @@ Funktionen:
   bekommt den Alarm **leise oder lautlos** (derselbe Critical Alert, nur mit der
   pro Empfänger einstellbaren **Stumm-Lautstärke** 0–10; Standard 0 = lautlos)
   – er bleibt aber in der Liste und **sieht** jeden Alarm
-  weiterhin. Umschaltbar im Dashboard (Knopf „Stumm/Laut schalten") oder per
+  weiterhin. Umschaltbar im Dashboard (dreiteiliger Schalter
+  „Laut | Stumm | Dauerhaft stumm" am Eintrag; beenden = „Laut" wählen) oder per
   persönlichem Kurzbefehl-Link, siehe Abschnitt unten. Sicherheitsnetz: Nach
   12 Stunden (`mute_max_seconds` in `config.php`) schaltet das NAS automatisch
   zurück auf laut, und der Offline-Wächter erinnert dich max. 1×/Tag, solange
   jemand stumm ist.
-- **Dauerhaft stumm** (Knopf „Dauerhaft stumm" am Eintrag, nur Admin): schaltet
+- **Dauerhaft stumm** (Stellung „Dauerhaft stumm" des Schalters am Eintrag, nur
+  Admin): schaltet
   genau dieses Sicherheitsnetz **für einen einzelnen Empfänger ab** – gedacht für
   längere Abwesenheiten (Schichtdienst, Krankheit, Urlaub), bei denen jemand in
   der Liste bleiben, aber auf unbestimmte Zeit keinen Ton bekommen soll. Die
   Stummschaltung läuft dann **nicht** mehr nach 12 Stunden aus, sondern gilt, bis
-  ein Mensch sie beendet: über „Dauer beenden", über „Laut schalten" oder über
-  den persönlichen Laut-Kurzbefehl der Person. Der Alarm kommt weiterhin als
+  ein Mensch sie beendet: am Schalter („Laut" wählen – oder „Stumm", dann gilt
+  wieder die automatische Rückschaltung) oder über den persönlichen
+  Laut-Kurzbefehl der Person. Der Alarm kommt weiterhin als
   Critical Alert an und bleibt auf dem Sperrbildschirm **sichtbar** – niemand
   fällt aus der Alarmierung heraus. In der Liste trägt so ein Eintrag einen
   roten Badge „Dauerhaft stumm"; der Offline-Wächter erinnert zusätzlich
@@ -526,13 +543,17 @@ Funktionen:
 - **Offline-Wächter** (`cron/check_offline.php`, DSM-Aufgabenplaner): meldet leise
   per Bark, wenn die Box zu lange keinen Status mehr pusht (und wenn sie wieder
   da ist). Details in `nas_dashboard/SETUP.md`.
+- **Außen-Wächter** (optional, `cloud_watcher/`): eine kostenlose Cloud-VM prüft
+  das NAS alle 5 Minuten von außen und meldet, wenn es nicht erreichbar ist –
+  das kann der Wächter auf dem NAS nicht, er fällt ja mit aus. Einrichtung in
+  [`cloud_watcher/README.md`](cloud_watcher/README.md).
 
 ### Arbeitsmodus per iPhone-Kurzbefehl (automatisch beim Betreten der Arbeit)
 
 Jeder Empfänger kann seinen Eintrag selbst stumm/laut schalten, indem er einen
 persönlichen Link aufruft. Den fertigen Link kopierst du als Admin im Dashboard
-direkt am Eintrag der Person (🔗-Knöpfe „Link Stumm" / „Link Laut") – als
-Kennung dient ein zufälliger Geheim-Token:
+am Eintrag der Person unter „Mehr" → „Kurzbefehl-Link kopieren: Stumm | Laut"
+– als Kennung dient ein zufälliger Geheim-Token:
 
 ```text
 https://dein-name.synology.me/fw_alarm/api/mute.php?t=GEHEIM_TOKEN&state=on    (stumm)
@@ -551,7 +572,8 @@ Das lässt sich auf dem iPhone vollautomatisch machen (App **Kurzbefehle**):
 
 Beim Umschalten kommt bewusst **keine** Bestätigungs-Nachricht mehr aufs
 iPhone (das störte nur). Ob es geklappt hat, sieht man im Dashboard am
-🔇-Badge; die **automatische** Rückschaltung nach spätestens 12 Stunden
+Badge „Stumm bis ~HH:MM" (bzw. „Dauerhaft stumm") am Eintrag; die
+**automatische** Rückschaltung nach spätestens 12 Stunden
 (falls die Verlassen-Automation mal nicht auslöst) meldet sich weiterhin –
 die passiert ja ohne eigenes Zutun.
 
@@ -560,8 +582,8 @@ der im Dashboard pro Person einstellbaren **Stumm-Lautstärke** (0–10, Standar
 0 = lautlos; ohne `call=1`-Tonwiederholung) – die Meldung durchbricht also
 weiterhin Stummschalter und Fokus-Modi und erscheint prominent auf dem
 Sperrbildschirm. Der ESP32 übernimmt jeden Wechsel wie eine Listenänderung beim
-nächsten Poll (wenige Sekunden); das Dashboard zeigt stumme Empfänger mit
-🔇-Badge.
+nächsten Poll (wenige Sekunden); das Dashboard zeigt stumme Empfänger mit dem
+Badge „Stumm bis ~HH:MM" bzw. „Dauerhaft stumm".
 
 Die Dashboard-URL sieht typischerweise so aus:
 
@@ -632,7 +654,7 @@ separates Login mit Passwort-Hash und CSRF-Schutz.
 | **`config.h: No such file`** | Du hast noch keine `config.h`. Kopiere `config.example.h` → `config.h`. |
 | **WLAN verbindet nicht** | SSID/Passwort prüfen (Groß/Klein!). ESP32 kann **nur 2,4-GHz-WLAN**, **kein** reines 5-GHz. Ggf. im Router ein 2,4-GHz-Netz aktivieren. |
 | **Bark-POST liefert nicht HTTP 200** | Im Monitor erscheint z. B. `HTTP 400/404`. → Device-Key falsch/Tippfehler. `HTTP -1`/`-11` → kein Internet/Timeout. |
-| **Dashboard bleibt OFFLINE** | Prüfe `REMOTE_BASE_URL`, `REMOTE_MACHINE_TOKEN`, Synology-HTTPS-Zertifikat, Portweiterleitung TCP 443 und Schreibrechte für `data_dir` in `nas_dashboard/config.php`. |
+| **Dashboard bleibt OFFLINE** | Prüfe `REMOTE_BASE_URL`, `REMOTE_MACHINE_TOKEN`, Synology-HTTPS-Zertifikat, Portweiterleitung TCP 443 und Schreibrechte für `data_dir` in `nas_dashboard/config.php`. Ist dort `box_device_id` gesetzt, muss es exakt `REMOTE_DEVICE_ID` aus `config.h` entsprechen – sonst gilt die Box als „fremdes Board". |
 | **Dashboard-Befehl bleibt „delivered"** | Der ESP32 hat den Befehl vom NAS abgeholt, aber die ACK kam nicht zurück. Aus Sicherheitsgründen wird dieselbe ID nicht erneut ausgeliefert; bei Bedarf neuen Befehl senden. |
 | **Dashboard-Befehl wird „expired"** | Der ESP32 hat innerhalb der TTL (Standard 5 min) nicht gepollt – Box offline? Absichtliches Verhalten: Ein liegengebliebener Befehl darf nicht Stunden später noch ausgeführt werden. |
 | **REAL ALARM meldet „PHP-cURL fehlt"** | In DSM → Web Station → PHP-Profil bearbeiten → Erweiterung `curl` aktivieren. |
@@ -672,22 +694,21 @@ separates Login mit Passwort-Hash und CSRF-Schutz.
   **Lese-Benutzer**.
 - ✅ **NAS-Offline-Wächter** (`cron/check_offline.php`): meldet leise per Bark,
   wenn die Box zu lange schweigt bzw. wieder da ist (Dead-Man's-Switch auf dem NAS).
+- ✅ **Außen-Wächter** (`cloud_watcher/`, Cloud-VM im Always-Free-Kontingent):
+  prüft das NAS alle 5 Minuten von außen und meldet per Bark, wenn es nicht
+  erreichbar ist, der NAS-Wächter nicht läuft oder das NAS Bark nicht erreicht;
+  umgekehrt meldet das NAS, wenn die VM verstummt.
 
 **Noch offen / bewusst nicht eingebaut (TODO):**
 - 🔧 **OTA-Update (drahtlos flashen):** Auf Wunsch nicht eingebaut (kleinere
   Angriffsfläche). Wer es nachrüsten will: `ArduinoOTA`-Bibliothek (im Core),
   `ArduinoOTA.begin()` in `setup()` und `ArduinoOTA.handle()` in `loop()`,
   unbedingt mit Passwort. Dann kann man die Box ohne USB-Kabel neu flashen.
-- 🔧 **Externer Dead-Man's-Switch fürs Heartbeat-Monitoring:** Der NAS-Offline-Wächter
-  oben deckt das schon ab, hängt aber am selben Heim-Netz/NAS. Für echte
-  Unabhängigkeit empfiehlt sich zusätzlich ein **externer** Dienst, der **dich**
-  alarmiert, wenn der erwartete Ping ausbleibt. Zwei einfache Wege:
-  1. Einen kostenlosen Dienst wie **healthchecks.io** nutzen: Dort einen „Check"
-     mit erwarteter Periode (z. B. täglich) anlegen, dessen Ping-URL die Box
-     zusätzlich zum Bark-Heartbeat aufruft. Bleibt der Ping aus, alarmiert dich
-     healthchecks.io aktiv.
-  2. Falls du einen **eigenen Bark-Server** betreibst: serverseitig prüfen, ob
-     der tägliche Status-Ping ankam, und sonst Alarm schlagen.
+- 🔧 **Box direkt extern überwachen (optional):** Offline-Wächter und
+  Außen-Wächter decken Ausfälle von Box und NAS schon ab; die Box selbst meldet
+  sich dabei aber nur beim NAS. Wer zusätzlich davon unabhängig sein will, lässt
+  die Box einen externen Dienst wie **healthchecks.io** anpingen (Ping-URL
+  zusätzlich zum Bark-Heartbeat; braucht eine Firmware-Änderung).
 - 🔧 **TLS-Zertifikatsprüfung:** Aktuell `setInsecure()` (keine Prüfung) – einfach
   und robust gegen abgelaufene Root-Zertifikate, theoretisch aber MITM-anfällig.
   Wer es härten will, kann das Root-CA-Zertifikat des Bark-Servers einpinnen.
@@ -701,5 +722,6 @@ Risiko. Nochmals: **Zusatz, kein Ersatz** für die offizielle Melder-Alarmierung
 
 Das Repository enthält **keine Geheimnisse** – WLAN-Zugang, Bark-Keys, Tokens und
 Passwort-Hashes stehen ausschließlich in den lokalen, per `.gitignore`
-ausgeschlossenen Dateien `config.h` bzw. `config.php`. Lege dir diese aus den
-mitgelieferten `*.example.*`-Vorlagen an.
+ausgeschlossenen Dateien `config.h` bzw. `config.php` und – beim Außen-Wächter –
+in `/etc/fw-alarm-watch.conf` auf der VM. Lege dir diese aus den mitgelieferten
+`*.example*`-Vorlagen an.

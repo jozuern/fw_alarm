@@ -37,19 +37,33 @@ return [
     // Nach so vielen Sekunden ohne Status-Push gilt die Box als offline.
     'offline_after_seconds' => 180,
 
-    // ==== Offline-Wächter + Sicherheits-Meldungen (optional) ================
-    // Bark-Key des Owners für LEISE Statusmeldungen (level=passive):
-    // 1. cron/check_offline.php (DSM-Aufgabenplaner, siehe SETUP.md) meldet
-    //    einmalig, wenn die Box zu lange keinen Status gepusht hat - und
-    //    einmalig, wenn sie wieder da ist.
-    // 2. Das Dashboard meldet, wenn eine IP wegen zu vieler Login-Fehlversuche
-    //    gesperrt wurde (jemand rüttelt am Login).
-    // Leer ('') = beides aus. Sinnvoll: derselbe Key wie BARK_KEY_STATUS in
-    // config.h des ESP32.
-    // WELCHE Meldungen an diesen Key gehen und wie dringend (ein/aus pro Art,
-    // Ruhezeit, Ton, Stellvertreter, Wiederholungen), stellst du im Dashboard
-    // ein: Panel "Meldungen an den Admin". Die Werte hier darunter sind nur
-    // die Standards, solange dort nichts anderes gewählt ist.
+    // Optional: Kennung der ECHTEN Box - derselbe Wert wie REMOTE_DEVICE_ID in
+    // config.h (z.B. 'boss925-01'). Gesetzt zählen für Online-Anzeige,
+    // Offline-Wächter und Demo-Sicherung nur die Status-Pushs dieser Box, und
+    // nur sie bekommt Befehle (TEST/DEMO-ALARM). Pushs anderer Boards mit
+    // demselben Maschinen-Token (Bastel-/Ersatz-ESP32) werden angenommen, aber
+    // nur als Hinweis "fremdes Board meldet sich" im Dashboard geführt - ohne
+    // den Eintrag würde ein weiter pushendes Bastel-Board den Ausfall der
+    // echten Box verdecken. Leer ('') = jeder Push mit dem Token zählt; melden
+    // sich dann mehrere Boards, warnt das Dashboard.
+    'box_device_id' => '',
+
+    // ==== Meldungen an den Admin + Offline-Wächter (optional) ===============
+    // Bark-Key des Owners für ALLE Statusmeldungen des NAS an den Admin:
+    // cron/check_offline.php (DSM-Aufgabenplaner, siehe SETUP.md) meldet,
+    // wenn die Box zu lange keinen Status gepusht hat (und wenn sie wieder da
+    // ist), wenn das Dashboard nicht mehr in den data_dir schreiben kann
+    // ("NAS-Dashboard DEFEKT"), wenn der Außen-Wächter verstummt, und erinnert
+    // an Demo-Modus und Stummschaltungen; dazu kommen die Meldung bei einer
+    // Login-IP-Sperre und die optionalen Arten (Anmeldung, Neustart der Box,
+    // Wochenbericht ...). WELCHE Meldungen an diesen Key gehen und wie dringend
+    // (ein/aus pro Art, Dringlichkeit, Ruhezeit, Ton, Stellvertreter,
+    // Wiederholungen), stellst du im Dashboard ein: Panel "Meldungen an den
+    // Admin" (Standard: leise). Die Werte hier darunter sind nur die
+    // Standards, solange dort nichts anderes gewählt ist.
+    // Leer ('') = ALLE Admin-Meldungen des NAS aus (das meldet dann auch der
+    // Außen-Wächter). Sinnvoll: derselbe Key wie BARK_KEY_STATUS in config.h
+    // des ESP32 und BARK_KEY in /etc/fw-alarm-watch.conf der Cloud-VM.
     'bark_key_status' => '',
     // Wächter-Schwelle in Sekunden (großzügiger als offline_after_seconds,
     // damit nicht jeder kurze WLAN-Schluckauf eine Meldung auslöst).
@@ -73,15 +87,17 @@ return [
     // Tokens (eigenes Token, NICHT das Maschinen-Token der Box); der Klartext
     // kommt in /etc/fw-alarm-watch.conf auf der VM. Erzeugen wie oben:
     // php -r '$t=bin2hex(random_bytes(32)); echo $t, PHP_EOL, hash("sha256", $t), PHP_EOL;'
-    // Leer = aus (api/alive.php antwortet dann 404).
+    // Leer = aus (api/alive.php antwortet dann 404). Derselbe Hash wie
+    // machine_token_sha256 wird ebenfalls mit 404 abgelehnt - die VM darf nie
+    // das Token der Box kennen.
     'watcher_token_sha256' => '',
 
     // ==== Arbeitsmodus (Stummschaltung per Kurzbefehl-Link) =================
     // Jeder Empfänger kann seinen Eintrag über einen persönlichen Link stumm
     // schalten (z.B. iPhone-Kurzbefehl beim Betreten/Verlassen der Arbeit):
     //   .../api/mute.php?t=<GEHEIM-TOKEN>&state=on|off
-    // Den fertigen Link kopiert der Admin im Dashboard am jeweiligen Eintrag
-    // (🔗-Knöpfe). Die alte Form ?key=<EIGENER_BARK_KEY> bleibt für
+    // Den fertigen Link kopiert der Admin im Dashboard unter "Mehr" am
+    // Eintrag. Die alte Form ?key=<EIGENER_BARK_KEY> bleibt für
     // Bestands-Kurzbefehle gültig. Stumm = der Alarm kommt weiterhin als
     // Critical Alert an, aber mit der im Dashboard eingestellten
     // Stumm-Lautstärke (Standard 0 = lautlos). Sicherheitsnetz: Nach so
@@ -145,9 +161,11 @@ return [
     // unter dem ausgelieferten Verzeichnis (z.B. /volume1/web/...) ist nur
     // durch die .php-Guard-Zeile geschützt - das ist eine EINZIGE,
     // zerbrechliche Schicht (hängt an der Nginx-Weiterleitung an PHP). Besser
-    // physisch draußen: Auf Synology z.B. /volume1/web_packages/... oder eine
-    // eigene Freigabe außerhalb von /volume1/web (sicherstellen, dass der
-    // PHP-Benutzer dort schreiben darf). Die Guard-Zeile bleibt als zweite
-    // Schicht erhalten.
-    'data_dir' => '/volume1/web_packages/fw_alarm_data',
+    // physisch draußen: Auf Synology am besten eine eigene DSM-Freigabe
+    // außerhalb von /volume1/web (z.B. "fw_alarm_data", Gruppe http
+    // Lesen/Schreiben, siehe SETUP.md). Alternative /volume1/web_packages/...
+    // - dort kann aber ein Web-Station-Update die Rechte zurücksetzen (dann
+    // scheitern Login und Status-Pushs still). Die Guard-Zeile bleibt als
+    // zweite Schicht erhalten.
+    'data_dir' => '/volume1/fw_alarm_data',
 ];

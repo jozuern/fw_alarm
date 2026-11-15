@@ -899,6 +899,17 @@ details.explain li {
   color: var(--crit-text);
 }
 
+/* Laut-Rückschaltung fällig, aber nicht gespeichert: Die Box alarmiert
+   evtl. noch stumm - rot wie "dauerhaft stumm", der Text darf umbrechen
+   (er ist länger als die übrigen Badges). */
+.badge-muted.badge-overdue {
+  background: var(--crit-bg);
+  border-color: var(--crit-line);
+  color: var(--crit-text);
+  white-space: normal;
+  cursor: default;
+}
+
 .keys-row.muted strong,
 .keys-row.muted code {
   color: var(--faint);
@@ -1254,6 +1265,16 @@ main > :nth-child(7) { animation-delay: 0.18s; }
   font-weight: 400;
 }
 
+/* Befehl nicht wie gewünscht ausgeführt (Bark-Versand gescheitert,
+   übersprungen, abgelaufen, vom NAS verworfen): gelb mit Zeichen - nicht grau
+   wie ein Erfolg. */
+.cmd-line.cmd-warn {
+  color: var(--warn-text);
+  font-weight: 600;
+}
+
+.cmd-line.cmd-warn::before { content: "! "; }
+
 .hero .cmd-line {
   margin-top: 14px;
   padding-top: 12px;
@@ -1276,6 +1297,20 @@ main > :nth-child(7) { animation-delay: 0.18s; }
 .msg-ok::before { content: "✓ "; }
 .msg-error::before { content: "✕ "; }
 .msg-warn::before { content: "! "; }
+
+/* Nur für Screenreader (Live-Region der Zeilen-Rückmeldungen, app.js). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 /* ---- ?-Hilfe: .help ist die Tippfläche, .help-dot der sichtbare Kreis ---- */
 .tele-label .help {
@@ -1388,6 +1423,23 @@ details.demo-block[open] summary { margin-bottom: 10px; }
   font-size: var(--fs-ui);
   color: var(--muted);
 }
+
+.keys-sub.keys-sub-warn { color: var(--warn-text); }
+
+/* Empfängerliste samt Sicherung auf dem NAS unlesbar: unübersehbar, damit
+   es nicht wie "keine eingetragen" aussieht. */
+.keys-corrupt {
+  padding: 10px 12px;
+  font-size: var(--fs-ui);
+  font-weight: 600;
+  color: var(--crit-text);
+  background: var(--crit-bg);
+  border: 1px solid var(--crit-line);
+  border-radius: var(--r-ctl);
+  overflow-wrap: anywhere;
+}
+
+.keys-corrupt::before { content: "✕ "; }
 
 .badge-demo,
 .badge-level {

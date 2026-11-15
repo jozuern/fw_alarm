@@ -33,7 +33,18 @@ $config = load_config();
 // echter Kurzbefehl ("URL abrufen") sendet GET/POST mit iOS-Kennung.
 $method = (string)($_SERVER['REQUEST_METHOD'] ?? 'GET');
 $agent = (string)($_SERVER['HTTP_USER_AGENT'] ?? '');
+// Ebenso Vorab-Abrufe des BROWSERS selbst: Chrome lädt Adressen aus der
+// Adresszeile/Verlauf vorab (Sec-Purpose: prefetch / prerender), Firefox
+// kennzeichnet das mit X-Moz/Purpose. Sonst schaltete schon das Eintippen
+// eines bekannten Links am PC unbemerkt um.
+$purpose = strtolower(implode(' ', [
+    (string)($_SERVER['HTTP_SEC_PURPOSE'] ?? ''),
+    (string)($_SERVER['HTTP_PURPOSE'] ?? ''),
+    (string)($_SERVER['HTTP_X_PURPOSE'] ?? ''),
+    (string)($_SERVER['HTTP_X_MOZ'] ?? ''),
+]));
 $isPreview = !in_array($method, ['GET', 'POST'], true)
+    || preg_match('/prefetch|prerender|preview/', $purpose) === 1
     || preg_match('/facebookexternalhit|facebot|twitterbot|whatsapp|telegrambot|slackbot|discordbot|'
         . 'linkedinbot|skypeuripreview|signal|bingpreview|embedly|ms-office|safelinks|'
         . 'preview|crawler|spider|bot\/|\bbot\b/i', $agent) === 1;
@@ -165,14 +176,31 @@ function mute_entry_matches($entry, string $token, string $key): bool
         : hash_equals((string)($entry['key'] ?? ''), $key);
 }
 
+// Speichern gescheitert, Liste unlesbar oder Datenordner gesperrt: ehrlich
+// melden (für Browser als Seite) - und NICHT als Fehlversuch zählen.
+function mute_storage_failed(): void
+{
+    http_response_code(500);
+    mute_answer("ok=0\nerror=speichern fehlgeschlagen\n", 'crit', 'Nicht gespeichert',
+        'Die Änderung konnte gerade nicht gespeichert werden. Bitte später erneut versuchen '
+        . 'oder den Admin informieren.');
+}
+
 if ($token !== '' ? !valid_mute_token($token) : !valid_bark_key($key)) {
     mute_reject($config);
+}
+
+// Liste samt Sicherung unlesbar? Dann ist JEDER Link "unbekannt" - das wäre
+// gelogen und zählte gültige Links als Fehlversuche.
+$keysState = read_alarm_keys_state($config);
+if ($keysState === null) {
+    mute_storage_failed();
 }
 
 // Erst lock-frei nachsehen, ob es den Empfänger überhaupt gibt: Fehlversuche
 // brauchen so weder den 'keys'-Lock noch den Mute-Ablauf darunter.
 $known = false;
-foreach ((load_alarm_keys($config)['keys'] ?? []) as $entry) {
+foreach (($keysState['keys'] ?? []) as $entry) {
     if (mute_entry_matches($entry, $token, $key)) {
         $known = true;
         break;
@@ -183,11 +211,14 @@ if (!$known) {
 }
 
 // Abgelaufene Stummschaltungen zuerst aufräumen (nimmt selbst den keys-Lock,
-// deshalb VOR dem eigenen Lock unten).
-expire_stale_mutes($config);
+// deshalb VOR dem eigenen Lock unten). Nicht fatal - ein gesperrter
+// Datenordner meldet sich gleich unten verständlich.
+expire_stale_mutes($config, true);
 
 $wantMuted = ($stateParam === 'on');
 
+// $soft = true: Lässt sich der Lock nicht öffnen, kommt write_failed zurück
+// statt eines Abbruchs mit Rohtext (Browser bekämen sonst keine Seite).
 $result = mutate_alarm_keys($config, function (array &$state) use ($token, $key, $wantMuted): array {
     $idx = -1;
     foreach (($state['keys'] ?? []) as $i => $entry) {
@@ -205,27 +236,19 @@ $result = mutate_alarm_keys($config, function (array &$state) use ($token, $key,
         // keine Versions-Erhöhung und kein Log-Spam.
         return ['found' => true, 'changed' => false, 'entry' => $entry];
     }
-    $wasPermanent = mute_is_permanent($entry);
-    $state['keys'][$idx]['muted'] = $wantMuted;
-    $state['keys'][$idx]['muted_at'] = $wantMuted ? time() : 0;
-    // "Laut" (state=off) beendet auch eine DAUERHAFTE Stummschaltung: Der
-    // Kurzbefehl darf immer in die sichere Richtung wirken - wer sich selbst
-    // wieder laut schaltet, soll danach nicht heimlich weiter vom
-    // Sicherheitsnetz ausgenommen sein. Umgekehrt kann der Link eine
-    // Dauer-Stummschaltung NICHT beginnen (das geht nur im Dashboard).
-    if (!$wantMuted) {
-        $state['keys'][$idx]['mute_permanent'] = false;
-    }
+    // "Laut" (state=off) beendet auch eine DAUERHAFTE Stummschaltung (Regel
+    // in apply_mute_change): Wer sich selbst wieder laut schaltet, soll danach
+    // nicht heimlich weiter vom Sicherheitsnetz ausgenommen sein. Umgekehrt
+    // kann der Link eine Dauer-Stummschaltung NICHT beginnen (das geht nur im
+    // Dashboard).
+    $permanentEnded = apply_mute_change($state['keys'][$idx], $wantMuted);
     return ['found' => true, 'changed' => true, 'write' => true, 'bump' => true,
-        'entry' => $state['keys'][$idx], 'permanent_ended' => ($wasPermanent && !$wantMuted)];
-});
+        'entry' => $state['keys'][$idx], 'permanent_ended' => $permanentEnded];
+}, true);
 
 if (!empty($result['write_failed']) || (!isset($result['found']) && empty($result['ok']))) {
     // Speichern gescheitert bzw. Liste unlesbar: ehrlich melden.
-    http_response_code(500);
-    mute_answer("ok=0\nerror=speichern fehlgeschlagen\n", 'crit', 'Nicht gespeichert',
-        'Die Änderung konnte gerade nicht gespeichert werden. Bitte später erneut versuchen '
-        . 'oder den Admin informieren.');
+    mute_storage_failed();
 }
 if (empty($result['found'])) {
     mute_reject($config);
@@ -236,14 +259,8 @@ if (empty($result['found'])) {
 // der Kurzbefehl sieht den Erfolg an der ok=1-Antwort, das Dashboard am Badge.
 if (!empty($result['changed'])) {
     $entry = $result['entry'];
-    append_command_log($config, [
-        'event' => $wantMuted ? 'key_muted' : 'key_unmuted',
-        'by' => 'Kurzbefehl-Link',
-        'source' => 'shortcut',
-        'label' => (string)($entry['label'] ?? ''),
-        'key' => mask_bark_key((string)($entry['key'] ?? '')),
-        'version' => (int)($result['version'] ?? 0),
-    ]);
+    $logExtra = ['source' => 'shortcut', 'version' => (int)($result['version'] ?? 0)];
+    log_key_event($config, $wantMuted ? 'key_muted' : 'key_unmuted', $entry, 'Kurzbefehl-Link', $logExtra);
     // Optionale Admin-Meldung (Art mute_changed, Standard: aus - sonst käme
     // bei jedem Kurzbefehl der Kollegen ein Push). Erst NACH der Antwort,
     // damit der Kurzbefehl nicht auf den Bark-Versand wartet.
@@ -259,15 +276,7 @@ if (!empty($result['changed'])) {
     // festhalten - sonst wäre im Verlauf nicht zu sehen, dass eine bewusst
     // gesetzte Dauer-Einstellung nebenbei aufgehoben wurde.
     if (!empty($result['permanent_ended'])) {
-        append_command_log($config, [
-            'event' => 'key_mute_permanent',
-            'by' => 'Kurzbefehl-Link',
-            'source' => 'shortcut',
-            'label' => (string)($entry['label'] ?? ''),
-            'key' => mask_bark_key((string)($entry['key'] ?? '')),
-            'permanent' => false,
-            'version' => (int)($result['version'] ?? 0),
-        ]);
+        log_key_event($config, 'key_mute_permanent', $entry, 'Kurzbefehl-Link', $logExtra + ['permanent' => false]);
     }
 }
 

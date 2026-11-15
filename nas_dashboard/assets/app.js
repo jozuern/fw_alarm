@@ -1,5 +1,11 @@
 (function () {
-  const csrf = document.querySelector('meta[name="csrf"]')?.content || '';
+  // CSRF-Token der Sitzung: Startwert aus der Seite, danach aus jeder
+  // Status-Antwort aktualisiert (let statt const) - sonst scheiterte ein alter
+  // Tab nach einer Neuanmeldung in einem anderen Tab an einem veralteten Token.
+  let csrf = document.querySelector('meta[name="csrf"]')?.content || '';
+  // Liefert der Server das Token mit der Status-Antwort aus? (Ältere Stände
+  // nicht - dann hilft bei einem CSRF-Fehler nur Neuladen.)
+  let csrfFromServer = false;
   // Nur-Lese-Benutzer: Knöpfe fehlen dann im HTML; hier zusätzlich nichts
   // rendern, was Änderungen auslösen würde (der Server blockt ohnehin).
   const readOnly = (document.querySelector('meta[name="role"]')?.content || 'admin') !== 'admin';
@@ -93,8 +99,21 @@
   // bevor der Hero auf "Status veraltet" (gelb) wechselt.
   const STALE_AFTER_MS = 15000;
   // Alle Zeitangaben in der Zeitzone der Wache - egal, wie die Uhr des
-  // anzeigenden Geräts eingestellt ist.
-  const TZ = 'Europe/Berlin';
+  // anzeigenden Geräts eingestellt ist. Der Server meldet sie mit der
+  // Status-Antwort (timezone); bis dahin bzw. bei älteren Ständen gilt Berlin.
+  let TZ = 'Europe/Berlin';
+
+  // Zeitzone aus der Status-Antwort übernehmen - nur, wenn der Browser sie
+  // kennt (ein unbekannter Name ließe sonst jede Zeitformatierung scheitern).
+  function applyTimezone(name) {
+    if (typeof name !== 'string' || !name || name === TZ) return;
+    try {
+      new Intl.DateTimeFormat('de-DE', { timeZone: name });
+      TZ = name;
+    } catch (err) {
+      // unbekannte Zeitzone -> bisherige behalten
+    }
+  }
 
   // Große Statuslampe im Held-Bereich + Mini-Lampe in der Kopfzeile in einem
   // Rutsch setzen. cls: 'ok' (grün), 'stale' (gelb = Aussage unsicher bzw.
@@ -119,6 +138,9 @@
 
   // Sitzung serverseitig abgelaufen (HTTP 401): deutlich machen statt still
   // mit veralteten Daten weiterzulaufen, dann zur Login-Seite neu laden.
+  // Läuft gerade ein REAL ALARM/eine ENTWARNUNG, wird NICHT neu geladen: Die
+  // Anfrage war schon angemeldet und läuft auf dem NAS weiter - ihr Ergebnis
+  // (wer NICHT erreicht wurde) muss lesbar bleiben. Dann nur ein Hinweis.
   let authLost = false;
   function handleAuthLoss() {
     if (authLost) return;
@@ -126,8 +148,20 @@
     stopPolling();
     document.title = '\u{1F512} ' + PAGE_TITLE;
     setState('Abgemeldet', 'stale');
+    const keepText = 'Sitzung abgelaufen – bitte nach dem Lesen des Alarm-Ergebnisses die Seite neu laden (Anmeldung).';
+    if (alarmInFlight) {
+      updatedEl.textContent = keepText;
+      return;
+    }
     updatedEl.textContent = 'Sitzung abgelaufen – die Anmeldeseite wird geladen…';
-    setTimeout(() => location.reload(), 1500);
+    setTimeout(() => {
+      // Inzwischen doch ein Versand gestartet? Dann ebenfalls stehen lassen.
+      if (alarmInFlight) {
+        updatedEl.textContent = keepText;
+        return;
+      }
+      location.reload();
+    }, 1500);
   }
 
   function formatTime(epoch) {
@@ -227,9 +261,15 @@
     });
     // Den Demo-Knopf erst freigeben, wenn der Demo-Zustand bekannt ist.
     if (demoToggleBtn) demoToggleBtn.disabled = busy || !demoInfo;
-    [alarmBtn, espAlarmBtn, falseAlarmBtn, retryBtn].forEach((btn) => {
-      if (btn) btn.disabled = busy || alarmInFlight;
+    // REAL ALARM, ENTWARNUNG und die Nachsendung hängen NUR an alarmInFlight
+    // (Doppelklick-Schutz): Ein langsamer Test-Push oder eine hängende
+    // Listen-Aktion darf den Alarm nicht bis zu 30 s sperren. Der DEMO-Alarm
+    // über die Box teilt sich die Befehls-Warteschlange mit TEST und bleibt
+    // deshalb auch an den Zähler gekoppelt.
+    [alarmBtn, falseAlarmBtn, retryBtn].forEach((btn) => {
+      if (btn) btn.disabled = alarmInFlight;
     });
+    if (espAlarmBtn) espAlarmBtn.disabled = busy || alarmInFlight;
   }
 
   function setBusy(busy) {
@@ -306,20 +346,46 @@
   const kindOf = (data) => (data && data.ok ? 'ok' : 'error');
   const errorKind = (err) => (err instanceof ApiError && err.kind === 'timeout' ? 'warn' : 'error');
 
+  // Unsichtbare Live-Region für Screenreader: Die Zeilen-Rückmeldungen
+  // entstehen per innerHTML bei jedem Neuzeichnen neu - ein darin
+  // eingebettetes role="status" wird je nach Screenreader gar nicht oder
+  // mehrfach angesagt. Deshalb wird jede Zeilen-Meldung zusätzlich hier
+  // hinein gespiegelt (sichtbar bleibt sie nur in ihrer Zeile). index.php hat
+  // keine passende unsichtbare Region, darum legt app.js sie selbst an.
+  const srLiveEl = (() => {
+    const node = document.createElement('p');
+    node.className = 'sr-only';
+    node.setAttribute('role', 'status');
+    node.setAttribute('aria-live', 'polite');
+    document.body.append(node);
+    return node;
+  })();
+  let srLiveTimer = null;
+  function announce(text) {
+    clearTimeout(srLiveTimer);
+    // Erst leeren, dann (kurz danach) setzen: So wird auch derselbe Text ein
+    // zweites Mal angesagt.
+    srLiveEl.textContent = '';
+    if (text) srLiveTimer = setTimeout(() => { srLiveEl.textContent = text; }, 60);
+  }
+
   // Rückmeldung an EINER Listenzeile (Empfänger, Art von Meldung): Die Listen
   // werden per innerHTML neu aufgebaut, deshalb lebt die Meldung als Zustand
-  // und wird beim Zeichnen über html(id) mit eingesetzt.
+  // und wird beim Zeichnen über html(id) mit eingesetzt. Angesagt wird sie
+  // über announce() (siehe oben), nicht über die Zeile selbst.
   function makeRowMsg(container, render) {
     let current = null;
     let timer = null;
     return {
       html(id) {
         return current && current.id === String(id)
-          ? `<p class="msg msg-${current.kind}" role="status">${escapeHtml(current.text)}</p>` : '';
+          ? `<p class="msg msg-${current.kind}">${escapeHtml(current.text)}</p>` : '';
       },
       set(id, text, kind) {
         clearTimeout(timer);
         current = text ? { id: String(id), text, kind } : null;
+        // Das Zeichen (✓ ✕ !) steht nur im CSS - für die Ansage als Wort.
+        if (text) announce(({ error: 'Fehler: ', warn: 'Achtung: ' }[kind] || '') + text);
         render();
         if (current && kind === 'ok') {
           const clear = () => {
@@ -393,6 +459,10 @@
   // Warnschwellen für den Speicher: insgesamt frei bzw. größter freier Block
   // (ein zerstückelter Heap lässt TLS-Verbindungen scheitern, obwohl in Summe
   // noch genug frei ist).
+  // ACHTUNG, doppelt gepflegt: Dieselben Schwellen (HEAP_WARN, MAX_ALLOC_WARN,
+  // weakWifi -80 dBm, heartbeatFailed) prüft der Wächter-Cron für die Meldung
+  // "box_health" (nas_dashboard/cron/check_offline.php) - Änderungen immer an
+  // BEIDEN Stellen nachziehen.
   const HEAP_WARN = 50000;
   const MAX_ALLOC_WARN = 30000;
   const lowBytes = (v, limit) => { const b = parseInt(v, 10); return !isNaN(b) && b < limit; };
@@ -403,7 +473,23 @@
   const heartbeatFailed = (s) => !na(s.heartbeat_ok) && !flagged(s.heartbeat_ok)
     && !na(s.last_heartbeat) && s.last_heartbeat !== 'nie';
 
-  // Woher kam der letzte Alarm? (Feld alarm_source neuerer Firmware)
+  // Zustellung des letzten Alarms der Box unvollständig? key_progress ist
+  // "erreicht/gesamt". Gilt nur, wenn seit dem Neustart ein Alarm war und die
+  // Box nicht mehr nachsendet (alarm_pending=0) - dann bleibt der Rest ohne
+  // Alarm. Vorsicht: Die Box zählt gegen ihre AKTUELLE Liste; wurde die Liste
+  // nach dem Alarm geändert, kann sich die Gesamtzahl verschoben haben.
+  function keyProgressParts(s) {
+    const match = /^(\d+)\s*\/\s*(\d+)$/.exec(String(s.key_progress ?? '').trim());
+    return match ? [Number(match[1]), Number(match[2])] : null;
+  }
+  const deliveryIncomplete = (s) => {
+    if (flagged(s.alarm_pending) || na(s.last_alarm) || s.last_alarm === 'nie') return false;
+    const parts = keyProgressParts(s);
+    return !!parts && parts[0] < parts[1];
+  };
+
+  // Woher kam der letzte Alarm? (Feld alarm_source - sendet die aktuelle
+  // Firmware noch nicht; die Auswertung bleibt für künftige Stände.)
   const ALARM_SOURCES = {
     relay: 'Melder-Relais',
     remote: 'DEMO-Alarm über die Box (Dashboard-Befehl)'
@@ -440,15 +526,24 @@
       cls: (s) => (flagged(s.alarm_pending) || flagged(s.isr_latched)
         || flagged(s.waiting_for_release) || flagged(s.cooldown)) ? 'warn' : '' },
     { group: 'Alarmkette', label: 'Zustellung',
-      tip: 'Wie viele Empfänger beim letzten/laufenden Alarm erfolgreich benachrichtigt wurden (erreicht/gesamt). Läuft die Zustellung noch, versucht die Box automatisch weiter, bis alle versorgt sind (Nachsende-Puffer).',
+      tip: 'Wie viele Empfänger beim letzten/laufenden Alarm erfolgreich benachrichtigt wurden (erreicht/gesamt). Läuft die Zustellung noch, versucht die Box automatisch weiter, bis alle versorgt sind (Nachsende-Puffer). Gelb heißt: Die Box sendet nicht mehr nach, aber nicht alle wurden erreicht – die übrigen ggf. per „REAL ALARM“ bzw. telefonisch verständigen. Achtung: Die Box zählt gegen ihre AKTUELLE Empfängerliste – wurde die Liste nach dem Alarm geändert (auch ein Demo-Wechsel), kann sich die Gesamtzahl verschoben haben.',
       value: (s) => {
         if (flagged(s.alarm_pending)) return `läuft – bisher ${show(s.key_progress)}`;
         if (na(s.last_alarm) || s.last_alarm === 'nie') return '–';
+        if (deliveryIncomplete(s)) return `nur ${show(s.key_progress)} erreicht – NICHT alle`;
         return `${show(s.key_progress)} erreicht`;
       },
-      cls: (s) => flagged(s.alarm_pending) ? 'crit' : '' },
+      cls: (s) => {
+        if (flagged(s.alarm_pending)) return 'crit';
+        return deliveryIncomplete(s) ? 'warn' : '';
+      },
+      hint: (s) => deliveryIncomplete(s),
+      // Eigener Text für den Held-Bereich: dort zählt, was jetzt zu tun ist.
+      hintText: (s) => `Nicht alle Empfänger erreicht (letzter Alarm der Box: ${show(s.key_progress)}) – ${readOnly
+        ? 'ggf. einen Admin verständigen, er kann per „REAL ALARM“ nachsenden'
+        : 'ggf. per „REAL ALARM“ nachsenden bzw. die übrigen anders verständigen'}. Wurde die Empfängerliste seit dem Alarm geändert, kann die Zählung verschoben sein.` },
     { group: 'Alarmkette', label: 'Letzter Alarm',
-      tip: 'Zeitpunkt und Text des letzten ausgelösten Alarms aus Sicht der Box (seit ihrem letzten Neustart) und – bei neuerer Firmware – woher er kam: Melder-Relais oder DEMO-Alarm per Dashboard-Befehl. "nie" heißt: kein Alarm seit dem letzten Einschalten. Den dauerhaften Verlauf führt das NAS (Panel "Verlauf").',
+      tip: 'Zeitpunkt und Text des letzten ausgelösten Alarms aus Sicht der Box (seit ihrem letzten Neustart) und – falls die Firmware es meldet – woher er kam: Melder-Relais oder DEMO-Alarm per Dashboard-Befehl. "nie" heißt: kein Alarm seit dem letzten Einschalten. Den dauerhaften Verlauf führt das NAS (Panel "Verlauf").',
       value: (s) => {
         const text = show(s.last_alarm);
         if (na(s.alarm_source) || na(s.last_alarm) || s.last_alarm === 'nie') return text;
@@ -499,7 +594,7 @@
         : (flagged(s.ack_pending) ? 'offen – wird nachgereicht' : 'keine offen'),
       cls: (s) => flagged(s.ack_pending) ? 'warn' : '' },
     { group: 'Box & Wartung', label: 'Box / Firmware',
-      tip: 'Name der Box (device_id aus config.h), der Kompilier-Zeitpunkt der laufenden Firmware und – bei neuerer Firmware – die Version des Arduino-ESP32-Cores. So sieht man, ob wirklich der neueste Stand läuft.',
+      tip: 'Name der Box (device_id aus config.h) und die Firmware-Kennung FW_BUILD_MARKER aus config.h – ein frei gewählter Text, kein automatischer Kompilier-Zeitpunkt; nur aussagekräftig, wenn er bei jeder neuen Firmware angepasst wird. Falls die Firmware es meldet, zusätzlich die Version des Arduino-ESP32-Cores.',
       value: (s) => (na(s.device_id) && na(s.fw_build)) ? 'n/a'
         : `${show(s.device_id)} · ${show(s.fw_build)}${na(s.core) ? '' : ` · Core ${s.core}`}` },
     { group: 'Box & Wartung', liveWhenOffline: true,
@@ -519,7 +614,7 @@
       // wochenlang stehen und würde als Dauer-Hinweis nur noch übersehen.
       hint: (s) => RESET_WARN.includes(String(s.reset_reason)) && parseInt(s.uptime_s, 10) < 86400 },
     { group: 'Box & Wartung', label: 'Freier Speicher',
-      tip: 'Freier Arbeitsspeicher (Heap) der Box. Normal sind grob 150–250 kB. Sinkt der Wert über Tage stetig, deutet das auf ein Speicherleck hin; unter ~50 kB wird es kritisch. "Größter Block" (neuere Firmware) ist das größte zusammenhängende freie Stück – unter ~30 kB können HTTPS-Verbindungen scheitern, obwohl in Summe noch genug frei ist.',
+      tip: 'Freier Arbeitsspeicher (Heap) der Box. Normal sind grob 150–250 kB. Sinkt der Wert über Tage stetig, deutet das auf ein Speicherleck hin; unter ~50 kB wird es kritisch. "Größter Block" (nur, falls die Firmware ihn meldet) ist das größte zusammenhängende freie Stück – unter ~30 kB können HTTPS-Verbindungen scheitern, obwohl in Summe noch genug frei ist.',
       value: (s) => {
         if (na(s.free_heap)) return 'n/a';
         const maxAlloc = parseInt(s.max_alloc_heap, 10);
@@ -593,6 +688,9 @@
   // Abgeschlossene Befehle (bestätigt/abgelaufen/abgebrochen) nur noch so
   // lange anzeigen, danach ausblenden – sonst steht der letzte Befehl ewig da.
   const COMMAND_LINGER_S = 600;
+  // Ausgeliefert, aber nach so langer Zeit noch keine Quittung: Die kommt
+  // dann voraussichtlich nicht mehr (Box neu gestartet, ACK verloren).
+  const COMMAND_ACK_GIVEUP_S = 600;
 
   // Zeile zum laufenden/letzten Box-Befehl (TEST, DEMO-ALARM). Beim Admin
   // steht sie direkt unter den Knöpfen, bei der Lese-Rolle im Held-Bereich.
@@ -614,7 +712,14 @@
       if (cancelBtn) cancelBtn.hidden = true;
       return;
     }
-    const label = STATE_LABELS[command.state] || command.state;
+    // Ausgeliefert, aber seit COMMAND_ACK_GIVEUP_S keine Quittung: nicht mehr
+    // als "läuft" zeigen - das Ergebnis ist dann schlicht unbekannt.
+    const deliveredAt = Number(command.delivered_at) || 0;
+    const ackLost = command.state === 'delivered' && serverTime && deliveredAt > 0
+      && serverTime - deliveredAt > COMMAND_ACK_GIVEUP_S;
+    const label = ackLost
+      ? 'an die Box ausgeliefert – Bestätigung nicht angekommen'
+      : (STATE_LABELS[command.state] || command.state);
     let text = `Befehl #${command.id} ${command.type}: ${label}`;
     if (command.state === 'acked' && command.ack_result) {
       text += ` – ${fmtAckResult(command.ack_result)}`;
@@ -627,8 +732,17 @@
     }
     if (commandEl.textContent !== text) commandEl.textContent = text;
     commandEl.hidden = false;
-    // Nur was noch läuft, bekommt die volle Textfarbe.
-    commandEl.classList.toggle('cmd-done', !['pending', 'delivered'].includes(command.state));
+    // Ausgang des Befehls: Alles, was NICHT wie gewünscht ausgeführt wurde
+    // (Quittung ≠ executed, abgelaufen, vom NAS mit Grund verworfen), ist gelb
+    // mit "!" - früher stand es grau wie ein Erfolg da. Erfolg, ein von Hand
+    // abgebrochener Befehl und eine verlorene Quittung sind grau; nur was noch
+    // läuft, bekommt die volle Textfarbe.
+    const warn = (command.state === 'acked' && !!command.ack_result && command.ack_result !== 'executed')
+      || command.state === 'expired'
+      || (command.state === 'cancelled' && !!command.cancel_reason);
+    const done = ackLost || !['pending', 'delivered'].includes(command.state);
+    commandEl.classList.toggle('cmd-warn', warn);
+    commandEl.classList.toggle('cmd-done', done && !warn);
     if (cancelBtn) cancelBtn.hidden = command.state !== 'pending';
   }
 
@@ -671,19 +785,28 @@
   }
 
   // Außen-Wächter (Cloud-VM): Sie klopft alle 5 min über api/alive.php an.
-  // Gewarnt wird erst nach 30 min Stille (sechs ausgefallene Läufe) - die
-  // Bark-Meldung des Cron-Wächters hat ihre eigene, einstellbare Frist.
+  // Ab wann sie als stumm gilt, meldet der Server (outside_silent_after_s -
+  // dieselbe Frist wie die Bark-Meldung des Cron-Wächters); ältere Stände
+  // ohne das Feld: eine Stunde.
   // null = nicht eingerichtet (die Zeile zeigt dann "nicht eingerichtet").
-  const OUTSIDE_SILENT_S = 1800;
+  const OUTSIDE_SILENT_FALLBACK_S = 3600;
   function outsideState(info, serverTime) {
     if (!info || info.outside_seen_at === undefined) return null;
     const seen = Number(info.outside_seen_at) || 0;
     if (!seen) return { warn: true, text: 'eingerichtet, hat sich aber noch nie gemeldet – läuft die VM?' };
     const age = Math.max(0, serverTime - seen);
-    if (age > OUTSIDE_SILENT_S) {
+    const silentAfter = Number(info.outside_silent_after_s) > 0
+      ? Number(info.outside_silent_after_s) : OUTSIDE_SILENT_FALLBACK_S;
+    if (age > silentAfter) {
       return { warn: true, text: `meldet sich seit ${fmtUptime(age)} nicht – VM in der Oracle-Konsole prüfen (gestoppt?)` };
     }
     const last = age < 60 ? 'gerade eben' : 'vor ' + fmtUptime(age);
+    // Wie beim Cron-Wächter: Die VM klopft zwar an, kann aber ihre eigenen
+    // Bark-Meldungen nicht zustellen - fiele das NAS aus, käme keine Warnung.
+    const barkFailedAt = Number(info.outside_bark_failed_at) || 0;
+    if (barkFailedAt > 0) {
+      return { warn: true, text: `meldet sich (zuletzt ${last}), kann aber nicht melden (Bark-Versand fehlgeschlagen seit ${fmtDayTime(barkFailedAt, serverTime)}) – BARK_KEY in /etc/fw-alarm-watch.conf auf der VM prüfen` };
+    }
     // Wie bei den beiden anderen sicherheitsrelevanten Meldungen: Hat der
     // Admin "Außen-Wächter meldet sich nicht" abgeschaltet, darf das nicht in
     // Vergessenheit geraten (outside_alert kommt nur für den Admin).
@@ -705,6 +828,9 @@
   let alarmInfo;              // undefined = noch nicht geladen, null = nichts im Verlauf
   let serverOffset = 0;       // Server-Zeit minus Browser-Zeit (s)
   let mismatchSince = 0;      // seit wann (ms) die Box eine andere Listen-Version meldet
+  let mismatchPair = '';      // für welches Versionspaar "Box|NAS" mismatchSince gilt
+  let keysCorrupt = '';       // Meldung, wenn die Empfängerliste samt Sicherung unlesbar ist
+  let deviceHint = '';        // Hinweis des Servers zu mehreren Boxen mit demselben Token
   const serverNow = () => Date.now() / 1000 + serverOffset;
 
   // Ein Alarm gilt so lange als "frisch" (rot hervorgehoben, mit "vor X min").
@@ -714,7 +840,8 @@
     demo_box: 'Demo-Alarm über die Box',
     manual: 'manueller Alarm (Dashboard)',
     manual_demo: 'Demo-Alarm (Dashboard)',
-    manual_open: 'manueller Alarm – Ergebnis offen'
+    manual_open: 'manueller Alarm – Ergebnis offen',
+    manual_demo_open: 'Demo-Alarm (Dashboard) – Ergebnis offen'
   };
 
   // Jüngsten Alarm aus den Verlaufs-Einträgen (neueste zuerst) ableiten.
@@ -725,7 +852,9 @@
   // - clearedOk sagt, ob die Entwarnung ALLE erreicht hat (ggf. erst mit der
   //   Nachsendung). Sonst bleibt der Alarm rot und die Zeile sagt es dazu.
   function deriveAlarmInfo(entries) {
-    const isDemo = (e) => /^DEMO-MODUS/.test(e.message || '');
+    // Demo-Versand: Neuere Server markieren ihn im Verlauf (demo); bei
+    // Alt-Einträgen ohne das Feld bleibt nur der Anzeigetext als Erkennung.
+    const isDemo = (e) => (typeof e.demo === 'boolean' ? e.demo : /^DEMO-MODUS/.test(e.message || ''));
     let cleared = null;        // jüngste Entwarnung nach dem Alarm: { at, ok, demo }
     let clearResent = null;    // Ergebnis der jüngsten Entwarnungs-Nachsendung
     let resent = null;         // Ergebnis der jüngsten Alarm-Nachsendung
@@ -751,7 +880,9 @@
         const demo = isDemo(e);
         return finish({ kind: demo ? 'manual_demo' : 'manual', at: e.at, ok: e.ok, resent }, demo);
       } else if (e.event === 'nas_alarm_started') {
-        return finish({ kind: 'manual_open', at: e.at }, false);
+        // Ohne demo-Feld (Alt-Eintrag) unbekannt - wie bisher als echter Alarm.
+        const demo = e.demo === true;
+        return finish({ kind: demo ? 'manual_demo_open' : 'manual_open', at: e.at }, demo);
       }
     }
     return null;
@@ -786,15 +917,20 @@
   }
 
   function recipientsFact() {
+    // Liste samt Sicherung unlesbar: Das ist NICHT "keine eingetragen".
+    if (keysCorrupt) return ['Liste auf dem NAS beschädigt – siehe „Alarm-Empfänger“', 'crit'];
     if (demoInfo && demoInfo.enabled) {
       return [`nur ${demoInfo.label || 'der Test-Empfänger'} (Demo-Modus)`, 'warn'];
     }
     if (!keysSummary) return ['…', ''];
-    const { total, muted, permanent } = keysSummary;
+    const { total, muted, permanent, overdue } = keysSummary;
     if (total === 0) return ['keine eingetragen – die Box nutzt ihre Startliste', 'warn'];
-    if (muted === 0) return [`${total}, alle laut`, ''];
-    if (muted === total) return [`${total}, ALLE stumm`, 'warn'];
-    return [`${total}, davon ${muted} stumm${permanent ? ` (${permanent} dauerhaft)` : ''}`, ''];
+    // Fällige, aber nicht gespeicherte Laut-Rückschaltung: Das NAS zählt den
+    // Eintrag als laut, die Box alarmiert ihn evtl. noch stumm.
+    const tail = overdue ? `; bei ${overdue} ist die Rückschaltung nicht gespeichert – die Box alarmiert evtl. noch stumm` : '';
+    if (muted === 0) return [`${total}, alle laut${tail}`, overdue ? 'warn' : ''];
+    if (muted === total) return [`${total}, ALLE stumm${tail}`, 'warn'];
+    return [`${total}, davon ${muted} stumm${permanent ? ` (${permanent} dauerhaft)` : ''}${tail}`, overdue ? 'warn' : ''];
   }
 
   function renderHeroExtras() {
@@ -811,12 +947,18 @@
       if (!demoOn && keysSummary && keysSummary.total > 0 && keysSummary.muted === keysSummary.total) {
         hints.push(`Alle ${keysSummary.total} Empfänger sind stumm geschaltet – ein Alarm käme bei niemandem mit vollem Ton an.`);
       }
+      // Fertiger Text vom Server: mehrere Boxen mit demselben Token bzw. ein
+      // ignoriertes fremdes Board (dann stimmen die Statuswerte evtl. nicht).
+      if (deviceHint) hints.push(deviceHint);
       if (lastWd && lastWd.warn) hints.push(`Offline-Wächter (NAS): ${lastWd.text}`);
       if (lastWd && lastWd.outside && lastWd.outside.warn) hints.push(`Außen-Wächter (Cloud): ${lastWd.outside.text}`);
       if (!lastOffline) {
         const ctx = { offline: false, seenAge: lastSeenAge, watchdog: lastWd };
         ROWS.forEach((row) => {
-          if (row.hint && row.hint(lastStatus)) hints.push(`${rowLabel(row, ctx)}: ${row.value(lastStatus, ctx)}`);
+          if (!row.hint || !row.hint(lastStatus)) return;
+          hints.push(row.hintText
+            ? row.hintText(lastStatus, ctx)
+            : `${rowLabel(row, ctx)}: ${row.value(lastStatus, ctx)}`);
         });
         // Kurz nach jeder Änderung ist die Abweichung normal (die Box holt
         // die Liste beim nächsten Abgleich) - erst melden, wenn sie anhält.
@@ -835,6 +977,14 @@
   // sagt klar, ob man schon gefahrlos testen kann.
 
   let prevDemoEnabled = null;
+  // Serverseitige Aussage "die Box hat die Demo-Liste übernommen" (status:
+  // demo_sync_ok) - berechnet mit DERSELBEN Regel wie die Sperre des
+  // DEMO-ALARMs (Version bestätigt, genau 1 Empfänger, Status frisch). null =
+  // älterer Server ohne das Feld. demoSyncFor = für welchen Modus
+  // (expectDemoOf) sie galt: Wechselt der Modus, bevor der nächste Status
+  // kommt, gilt sie nicht mehr.
+  let demoSyncOk = null;
+  let demoSyncFor = null;
 
   // Beschriftung der Auslöse-Knöpfe: Im Demo-Modus steht dran, wohin es geht.
   function setLabel(btn, text) {
@@ -848,8 +998,13 @@
     const enabled = !!(demoInfo && demoInfo.enabled);
     const target = enabled ? (demoInfo.label || 'Test-Empfänger') : '';
     const espVersion = status.keys_version;
-    const synced = !offline && espVersion !== undefined && nasKeysVersion !== null
-      && String(espVersion) === String(nasKeysVersion);
+    // "Übernommen" nur, wenn der Server es mit seiner Regel bestätigt (Versions-
+    // gleichheit allein sagt nichts über die Anzahl bzw. die Frische). Ohne das
+    // Feld (älterer Server): wie bisher der Versionsvergleich.
+    const synced = typeof demoSyncOk === 'boolean'
+      ? (!offline && demoSyncOk && demoSyncFor === expectDemoOf(demoInfo))
+      : (!offline && espVersion !== undefined && nasKeysVersion !== null
+        && String(espVersion) === String(nasKeysVersion));
 
     if (demoBannerEl) {
       if (enabled) {
@@ -937,11 +1092,19 @@
   // Bestätigung offen ist, passt deren Frage nicht mehr -> entschärfen.
   function updateDemoInfo(next) {
     if (!next) return;
+    // Hat sich Modus oder Test-Empfänger geändert, muss auch die
+    // Empfängerliste neu gezeichnet werden (Demo-Badge, pausierte Zeilen) -
+    // nicht erst beim nächsten 30-s-Abruf der Liste.
+    const changed = !demoInfo || !!demoInfo.enabled !== !!next.enabled
+      || String(demoInfo.key_id) !== String(next.key_id) || demoInfo.label !== next.label;
     demoInfo = next;
     if (armedExpect !== null && expectDemoOf(demoInfo) !== armedExpect) {
       disarm();
-      showResultNote('Der Demo-/LIVE-Modus hat sich gerade geändert – Bestätigung zurückgesetzt. Bitte Lage prüfen und bei Bedarf neu auslösen.', 'warn');
+      // Mit true: Eine gemerkte Nachsendung an die nicht Erreichten wird
+      // wieder angeboten (ihre Frage nennt dann den neuen Modus).
+      showResultNote('Der Demo-/LIVE-Modus hat sich gerade geändert – Bestätigung zurückgesetzt. Bitte Lage prüfen und bei Bedarf neu auslösen.', 'warn', true);
     }
+    if (changed) renderKeys();
   }
 
   // HTTP 409 mode_changed: Der Server hat NICHTS gesendet, weil sein Modus
@@ -1094,7 +1257,7 @@
       case 'auth':
         return 'Sitzung abgelaufen – die Anmeldeseite wird geladen…';
       case 'csrf':
-        return 'Sicherheits-Token veraltet – Seite neu laden. Aktion wurde NICHT ausgeführt.';
+        return `${csrfHint()}. Aktion wurde NICHT ausgeführt.`;
       case 'readonly':
         return err.message || 'Nur Lesezugriff – Aktion wurde NICHT ausgeführt.';
       case 'mode_changed':
@@ -1159,8 +1322,17 @@
       const data = await api('dashboard_api.php?action=status', {}, TIMEOUT_POLL_MS);
       if (!data.ok) throw new ApiError('http', data.message || 'Unerwartete Antwort vom NAS.', 200, data);
       const status = data.status || {};
+      // Aktuelles CSRF-Token der Sitzung übernehmen (siehe csrf oben).
+      if (typeof data.csrf === 'string' && data.csrf) {
+        setCsrf(data.csrf);
+        csrfFromServer = true;
+      }
+      applyTimezone(data.timezone);
       updateDemoInfo(data.demo);
       nasKeysVersion = data.nas_keys_version ?? nasKeysVersion;
+      demoSyncOk = typeof data.demo_sync_ok === 'boolean' ? data.demo_sync_ok : null;
+      demoSyncFor = expectDemoOf(demoInfo);
+      deviceHint = typeof data.device_hint === 'string' ? data.device_hint.trim() : '';
       statusProblem = null;
       problemRenderKey = null;
       lastOkAt = Date.now();
@@ -1173,9 +1345,13 @@
       // Einschränkungen (Kontakt klemmt, Demo-Modus), sonst grün.
       const alarmActive = !offline && flagged(status.alarm_pending);
       // Klemmender Kontakt: Die Box ist zwar online, kann aber keinen NEUEN
-      // Alarm erkennen. Maßgeblich ist allein stuck_warned: Das setzt die Box
-      // erst, wenn der Kontakt UNGEWÖHNLICH lange zu bleibt (30 min).
-      const stuck = !offline && flagged(status.stuck_warned);
+      // Alarm erkennen. stuck_warned setzt die Box erst, wenn der Kontakt
+      // UNGEWÖHNLICH lange zu bleibt (30 min) - sie setzt es aber beim
+      // Öffnen/Wiederbewaffnen NICHT zurück (erst beim nächsten Alarm). Deshalb
+      // zählt es nur, solange der Kontakt laut Box auch wirklich noch
+      // geschlossen ist (relay=closed); sonst bliebe die Lampe nach dem Öffnen
+      // auf "Kontakt klemmt" stehen.
+      const stuck = !offline && flagged(status.stuck_warned) && status.relay === 'closed';
       // Zustellung durch, Kontakt noch geschlossen: Der Melder steht weiter
       // auf Alarm. Das ist nach jedem Alarm normal (bis der Melder quittiert
       // ist) und KEINE Störung - aber eben auch nicht "alles ruhig": Früher
@@ -1198,7 +1374,9 @@
         icon = '⚠️ ';
       } else if (alarmStanding) {
         setState('Alarm ausgelöst', 'crit',
-          `Zustellung abgeschlossen (${show(status.key_progress)} erreicht). Der Melder-Kontakt ist noch geschlossen – ein neuer Alarm wird erst erkannt, wenn er wieder offen war.`);
+          `${deliveryIncomplete(status)
+            ? `Zustellung beendet, aber nur ${show(status.key_progress)} erreicht – NICHT alle.`
+            : `Zustellung abgeschlossen (${show(status.key_progress)} erreicht).`} Der Melder-Kontakt ist noch geschlossen – ein neuer Alarm wird erst erkannt, wenn er wieder offen war.`);
         icon = '\u{1F6A8} ';
       } else if (demoOn) {
         setState('Demo-Modus', 'stale',
@@ -1218,10 +1396,20 @@
       const wdState = watchdogState(data.watchdog, serverTime);
       if (wdState) wdState.outside = outsideState(data.watchdog, serverTime);
       // Hält die Abweichung der Listen-Version an? (Hinweis im Held-Bereich)
+      // Die Messung gilt für EIN Versionspaar Box|NAS: Ändert sich eine der
+      // beiden (neue Änderung im Dashboard, Box hat einen Zwischenstand
+      // übernommen), beginnt sie von vorn - sonst meldete eine frische
+      // Änderung sofort "seit 10 min nicht übernommen".
       const versionsDiffer = !offline && !na(status.keys_version) && nasKeysVersion !== null
         && String(status.keys_version) !== String(nasKeysVersion);
-      if (!versionsDiffer) mismatchSince = 0;
-      else if (!mismatchSince) mismatchSince = Date.now();
+      const versionPair = `${status.keys_version}|${nasKeysVersion}`;
+      if (!versionsDiffer) {
+        mismatchSince = 0;
+        mismatchPair = '';
+      } else if (!mismatchSince || mismatchPair !== versionPair) {
+        mismatchSince = Date.now();
+        mismatchPair = versionPair;
+      }
       lastStatus = status;
       lastOffline = offline;
       lastSeenAge = seenAge;
@@ -1283,11 +1471,25 @@
     // jede Sekunde - nur neu aufbauen, wenn sich an der Lage etwas geändert
     // hat. Sonst würde der Ticker während einer Störung das ganze
     // Statuspanel sekündlich neu zusammensetzen.
-    const renderKey = [word, text, lastOkAt, nasKeysVersion,
+    const renderKey = [word, text, lastOkAt, nasKeysVersion, lastOffline,
       demoInfo ? `${demoInfo.enabled}:${demoInfo.key_id}` : ''].join('|');
     if (renderKey === problemRenderKey) return;
     problemRenderKey = renderKey;
-    setState(word, 'stale', 'Das Dashboard bekommt gerade keine frischen Daten. Die Alarmierung der Box über Bark läuft davon unabhängig weiter.');
+    // War die Box beim letzten erfolgreichen Abruf OFFLINE, ist das die
+    // wichtigste Aussage - und der Hinweis auf REAL ALARM darf mit der
+    // NAS-Störung nicht verschwinden. Der beruhigende Satz ("läuft unabhängig
+    // weiter") nur ohne diesen Stand, und auch dann vorsichtig: Ob die Box
+    // gerade läuft, lässt sich ohne NAS nicht sehen.
+    let sub;
+    if (lastOffline) {
+      sub = readOnly
+        ? 'Letzter bekannter Stand: Box OFFLINE – Relaisalarme kamen da NICHT an. Bitte einen Admin verständigen – er kann manuell alarmieren.'
+        : 'Letzter bekannter Stand: Box OFFLINE – Relaisalarme kamen da NICHT an. Manuell alarmieren: „REAL ALARM“ direkt hier darunter (läuft über das NAS – kommt keine Antwort, die Mannschaft anders verständigen).';
+    } else {
+      sub = 'Das Dashboard bekommt gerade keine frischen Daten. Die Box alarmiert über Bark auch ohne das NAS – ob sie gerade läuft, lässt sich von hier aus aber nicht prüfen.';
+    }
+    // Rot bleibt rot: Eine NAS-Störung macht einen Box-Ausfall nicht harmloser.
+    setState(word, lastOffline ? 'crit' : 'stale', sub);
     document.title = '⚠️ ' + PAGE_TITLE;
     const note = `Keine aktuellen Daten vom NAS – die gedimmten Werte sind der letzte bekannte Stand${lastOkAt ? ` (abgerufen um ${fmtClockMs(lastOkAt)} Uhr)` : ''}.`;
     if (lastStatus) {
@@ -1309,15 +1511,38 @@
     if (statusProblem || (lastOkAt && Date.now() - lastOkAt > STALE_AFTER_MS)) showStatusProblem();
   }
 
-  function post(fields, timeoutMs = TIMEOUT_POST_MS) {
+  // Neues CSRF-Token übernehmen - auch im Abmelde-Formular der Seite, das
+  // sonst mit dem Token vom Seitenaufruf abgeschickt würde.
+  function setCsrf(token) {
+    if (token === csrf) return;
+    csrf = token;
+    document.querySelectorAll('form input[name="csrf"]').forEach((input) => { input.value = token; });
+  }
+
+  // Bei einem CSRF-Fehler sofort den Status neu holen - er bringt das
+  // aktuelle Token mit. Bewusst KEIN automatischer Neuversuch: Die Person
+  // bestätigt die Aktion noch einmal selbst (siehe errorText()).
+  async function post(fields, timeoutMs = TIMEOUT_POST_MS) {
     const form = new FormData();
     Object.entries(fields).forEach(([key, value]) => form.set(key, value));
-    return api('dashboard_api.php', {
-      method: 'POST',
-      headers: { 'X-CSRF-Token': csrf },
-      body: form
-    }, timeoutMs);
+    try {
+      return await api('dashboard_api.php', {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': csrf },
+        body: form
+      }, timeoutMs);
+    } catch (err) {
+      if (err instanceof ApiError && err.kind === 'csrf') refresh();
+      throw err;
+    }
   }
+
+  // Text für einen CSRF-Fehler: Liefert der Server das Token mit dem Status
+  // aus, ist es nach dem refresh() oben schon erneuert - sonst hilft nur
+  // Neuladen der Seite.
+  const csrfHint = () => (csrfFromServer
+    ? 'Sicherheits-Token erneuert – bitte erneut bestätigen'
+    : 'Sicherheits-Token veraltet – Seite neu laden');
 
   // ==== Auslösen & Testen ===================================================
 
@@ -1390,24 +1615,118 @@
 
   // Wer zuletzt NICHT erreicht wurde, bleibt hier stehen, bis ein neueres
   // Ergebnis es ersetzt oder der Admin "Ausblenden" klickt - auch wenn
-  // danach eine Nachsendung läuft, scheitert oder unklar endet oder sich der
-  // Demo-/LIVE-Modus ändert. Diese Namen braucht man zum Telefonieren; der
-  // Verlauf führt sie nicht.  { what, at (ms), names: [...] } oder null.
+  // danach eine Nachsendung läuft, scheitert, unklar endet oder gar nichts
+  // sendet oder sich der Demo-/LIVE-Modus ändert. Diese Namen braucht man zum
+  // Telefonieren; der Verlauf führt sie nicht. Zusätzlich in sessionStorage
+  // gespiegelt: Ein Neuladen der Seite (z.B. nach Ablauf der Anmeldung)
+  // verliert sie so nicht.
+  //   { action ('alarm'|'false_alarm'), what, at (ms, Server-Zeit des
+  //     Ergebnisses), startedAt (s, Server-Zeit des URSPRÜNGLICHEN Versands,
+  //     0 = unbekannt), entries: [{ id (0 = ohne id), name, reason }] } oder null.
   let lastUnreached = null;
+  const UNREACHED_STORE = 'fwAlarm.lastUnreached';
+  const whatOf = (action) => (action === 'alarm' ? 'REAL ALARM' : 'ENTWARNUNG');
+
+  function setUnreached(value) {
+    lastUnreached = value;
+    try {
+      if (value) sessionStorage.setItem(UNREACHED_STORE, JSON.stringify(value));
+      else sessionStorage.removeItem(UNREACHED_STORE);
+    } catch (err) {
+      // Speicher gesperrt (privates Fenster o.ä.) - dann nur in dieser Seite.
+    }
+  }
+
+  // Gemerkten Stand nach einem Neuladen zurückholen. Streng geprüft: Was
+  // nicht genau so aussieht wie von setUnreached() geschrieben, wird verworfen
+  // - ebenso ein Stand, der älter als ein halber Tag ist (der Tab kann lange
+  // offen bleiben; dann sind die Namen kein aktueller Auftrag mehr).
+  const UNREACHED_MAX_AGE_MS = 12 * 3600 * 1000;
+  function restoreUnreached() {
+    let raw = null;
+    try {
+      raw = sessionStorage.getItem(UNREACHED_STORE);
+    } catch (err) {
+      return null;
+    }
+    if (!raw) return null;
+    try {
+      const v = JSON.parse(raw);
+      const okEntry = (e) => !!e && Number.isInteger(e.id) && e.id >= 0
+        && typeof e.name === 'string' && typeof e.reason === 'string';
+      if (v && (v.action === 'alarm' || v.action === 'false_alarm') && Number.isFinite(v.at)
+          && Date.now() - v.at < UNREACHED_MAX_AGE_MS
+          && Array.isArray(v.entries) && v.entries.length > 0 && v.entries.every(okEntry)) {
+        return {
+          action: v.action,
+          what: whatOf(v.action),
+          at: v.at,
+          startedAt: Number(v.startedAt) > 0 ? Number(v.startedAt) : 0,
+          entries: v.entries.map((e) => ({ id: e.id, name: e.name, reason: e.reason }))
+        };
+      }
+    } catch (err) {
+      // kaputter Eintrag -> unten verwerfen
+    }
+    try {
+      sessionStorage.removeItem(UNREACHED_STORE);
+    } catch (err) {
+      // egal
+    }
+    return null;
+  }
+
+  function unreachedList() {
+    const list = el('ul', 'result-list');
+    lastUnreached.entries.forEach((e) => list.append(el('li', '', `${e.name} (${e.reason})`)));
+    return list;
+  }
 
   function unreachedNodes() {
     if (!lastUnreached) return [];
-    const list = el('ul', 'result-list');
-    lastUnreached.names.forEach((n) => list.append(el('li', '', n)));
     return [el('p', 'result-label',
-      `Zuletzt NICHT erreicht (${lastUnreached.what}, ${fmtClockMs(lastUnreached.at)} Uhr) – bitte anders verständigen (Telefon):`), list];
+      `Zuletzt NICHT erreicht (${lastUnreached.what}, ${fmtClockMs(lastUnreached.at)} Uhr) – bitte anders verständigen (Telefon):`), unreachedList()];
+  }
+
+  // "Nur an die nicht Erreichten erneut senden" - immer aus dem gemerkten
+  // Stand gebaut, damit der Knopf auch nach einem Hinweis (Modus-Wechsel)
+  // oder einem Ergebnis ohne Versand wieder angeboten werden kann.
+  // Nachsenden geht nur an Einträge der gepflegten Liste (mit id) - nicht an
+  // die Not-Liste aus config.php.
+  function retryButton() {
+    const u = lastUnreached;
+    if (!u) return null;
+    const retry = u.entries.filter((e) => e.id > 0);
+    if (!retry.length) return null;
+    const ids = retry.map((e) => e.id);
+    const names = retry.map((e) => e.name).join(', ');
+    const btn = el('button', '', retry.length === 1
+      ? `Nur an ${retry[0].name} erneut senden`
+      : `Nur an die ${retry.length} nicht Erreichten erneut senden`);
+    btn.type = 'button';
+    btn.addEventListener('click', () => {
+      if (alarmInFlight || btn.disabled) return;
+      // Auch die Nachsendung bestätigt den Modus, der JETZT gilt - und die
+      // Frage nennt ihn ausdrücklich. Der Server sendet nur, wenn er noch
+      // stimmt, und nur an Empfänger, die in der aktuellen (im Demo-Modus:
+      // auf den Test-Empfänger verkürzten) Liste stehen.
+      const snapshot = demoInfo;
+      const expect = expectDemoOf(snapshot);
+      const mode = snapshot && snapshot.enabled
+        ? `Aktuell DEMO-MODUS (alarmiert wird nur „${snapshot.label || 'Test-Empfänger'}“)`
+        : 'Aktuell LIVE';
+      armInline(btn, `${mode}: ${u.what} erneut senden – NUR an: ${names}?`,
+        'Ja, erneut senden', () => sendNasAlarm(u.action, expect, ids, u.startedAt), expect);
+    });
+    retryBtn = btn;
+    return btn;
   }
 
   function clearResult() {
     if (!alarmResultEl) return;
     if (armedBtn && alarmResultEl.contains(armedBtn)) disarm();
     retryBtn = null;
-    lastUnreached = null;
+    setUnreached(null);
     alarmResultEl.hidden = true;
     alarmResultEl.className = 'result';
     alarmResultEl.replaceChildren();
@@ -1421,8 +1740,10 @@
   }
 
   // Einfache Meldung im Ergebnis-Kasten (Versand läuft, Fehler, Hinweis).
-  // kind: '' (läuft), 'fail' oder 'warn'.
-  function showResultNote(text, kind) {
+  // kind: '' (läuft), 'fail' oder 'warn'. offerRetry: den Nachsende-Knopf
+  // für die gemerkten nicht Erreichten wieder anbieten (z.B. nach einem
+  // Modus-Wechsel - sonst verschwände er ersatzlos).
+  function showResultNote(text, kind, offerRetry = false) {
     if (!alarmResultEl) return;
     if (armedBtn && alarmResultEl.contains(armedBtn)) disarm();
     retryBtn = null;
@@ -1431,57 +1752,78 @@
     const nodes = [el('p', 'result-head', text), ...unreachedNodes()];
     if (kind) {
       const row = el('div', 'actions result-actions');
+      const retry = offerRetry ? retryButton() : null;
+      if (retry) row.append(retry);
       row.append(dismissButton());
       nodes.push(row);
     }
     alarmResultEl.replaceChildren(...nodes);
+    applyBusy();
   }
 
-  function showSendResult(action, what, data) {
+  // resend: { ids, origAt } bei einer Nachsendung, sonst null.
+  function showSendResult(action, what, data, resend) {
     const results = Array.isArray(data.results) ? data.results : [];
     const failed = results.filter((r) => !r.ok);
     const reached = results.filter((r) => r.ok);
     const name = (r) => r.label || r.key || '?';
+    // Uhrzeit nach der Uhr des NAS (wie der Rest der Seite), nicht nach der
+    // evtl. falsch gehenden Uhr dieses Geräts.
+    const nowMs = serverNow() * 1000;
     retryBtn = null;
     alarmResultEl.hidden = false;
     alarmResultEl.className = 'result ' + (data.ok === false ? 'result-fail' : 'result-ok');
     const nodes = [el('p', 'result-head',
-      `${fmtClockMs(Date.now())} Uhr, ${what}: ${data.message || (data.ok ? 'Gesendet.' : 'Fehler.')}`)];
-    // Ein neues Ergebnis ersetzt die gemerkte Liste: Nach einer Nachsendung
-    // sind nur noch die dabei erneut Gescheiterten offen, nach einem
-    // vollständigen Erfolg niemand mehr.
-    lastUnreached = failed.length
-      ? { what, at: Date.now(), names: failed.map((r) => `${name(r)} (${failReason(r)})`) }
-      : null;
-    if (failed.length) {
-      nodes.push(el('p', 'result-label', 'NICHT erreicht – bitte anders verständigen (Telefon):'));
-      const list = el('ul', 'result-list');
-      failed.forEach((r) => list.append(el('li', '', `${name(r)} (${failReason(r)})`)));
-      nodes.push(list);
-      if (reached.length) nodes.push(el('p', 'result-reached', `Erreicht: ${reached.map(name).join(', ')}`));
+      `${fmtClockMs(nowMs)} Uhr, ${what}: ${data.message || (data.ok ? 'Gesendet.' : 'Fehler.')}`)];
+    // Nur ein Ergebnis MIT Versand ändert die gemerkte Liste. "Nichts
+    // gesendet" (keine results, z.B. leere Schnittmenge einer Nachsendung)
+    // lässt sie stehen - sonst wären die Namen weg, obwohl niemand erreicht
+    // wurde.
+    if (results.length) {
+      const entryOf = (r) => ({ id: Number(r.id) > 0 ? Number(r.id) : 0, name: name(r), reason: failReason(r) });
+      let entries = failed.map(entryOf);
+      // Server-Zeit des URSPRÜNGLICHEN Versands - für weitere Nachsendungen.
+      let startedAt = Number(data.started_at) > 0 ? Number(data.started_at) : 0;
+      if (resend) {
+        // Nachsendung: Die alte Liste bleibt die Grundlage - gestrichen wird
+        // nur, wer JETZT erreicht wurde; wer erneut scheitert, bekommt den
+        // neuen Grund. Wer nicht mitgesendet wurde (ohne id, oder inzwischen
+        // aus der Liste gelöscht), bleibt offen.
+        startedAt = resend.origAt > 0 ? resend.origAt
+          : (lastUnreached && lastUnreached.startedAt) || 0;
+        if (lastUnreached && lastUnreached.action === action) {
+          const fresh = new Map(entries.filter((e) => e.id > 0).map((e) => [e.id, e]));
+          const reachedIds = new Set(reached.map((r) => Number(r.id)).filter((id) => id > 0));
+          const merged = [];
+          lastUnreached.entries.forEach((e) => {
+            if (e.id > 0 && reachedIds.has(e.id)) return;
+            if (e.id > 0 && fresh.has(e.id)) {
+              merged.push(fresh.get(e.id));
+              fresh.delete(e.id);
+              return;
+            }
+            merged.push(e);
+          });
+          entries.forEach((e) => { if (!(e.id > 0) || fresh.has(e.id)) merged.push(e); });
+          entries = merged;
+        }
+      }
+      setUnreached(entries.length ? { action, what, at: nowMs, startedAt, entries } : null);
+      if (lastUnreached) {
+        nodes.push(el('p', 'result-label', resend
+          ? 'Weiterhin NICHT erreicht – bitte anders verständigen (Telefon):'
+          : 'NICHT erreicht – bitte anders verständigen (Telefon):'));
+        nodes.push(unreachedList());
+        if (reached.length) {
+          nodes.push(el('p', 'result-reached', `${resend ? 'Jetzt erreicht' : 'Erreicht'}: ${reached.map(name).join(', ')}`));
+        }
+      }
+    } else {
+      nodes.push(...unreachedNodes());
     }
     const row = el('div', 'actions result-actions');
-    // Nachsenden geht nur an Einträge der gepflegten Liste (mit id) - nicht
-    // an die Not-Liste aus config.php.
-    const retry = failed.filter((r) => Number(r.id) > 0);
-    if (retry.length) {
-      const ids = retry.map((r) => Number(r.id));
-      const btn = el('button', '', retry.length === 1
-        ? `Nur an ${name(retry[0])} erneut senden`
-        : `Nur an die ${retry.length} nicht Erreichten erneut senden`);
-      btn.type = 'button';
-      btn.addEventListener('click', () => {
-        if (alarmInFlight || btn.disabled) return;
-        // Auch die Nachsendung bestätigt den Modus, der JETZT angezeigt wird;
-        // der Server sendet nur, wenn er noch stimmt, und nur an Empfänger,
-        // die noch in der aktuellen Liste stehen.
-        const expect = expectDemoOf(demoInfo);
-        armInline(btn, `${what} erneut senden – NUR an: ${retry.map(name).join(', ')}?`,
-          'Ja, erneut senden', () => sendNasAlarm(action, expect, ids), expect);
-      });
-      retryBtn = btn;
-      row.append(btn);
-    }
+    const retry = retryButton();
+    if (retry) row.append(retry);
     row.append(dismissButton());
     nodes.push(row);
     alarmResultEl.replaceChildren(...nodes);
@@ -1493,18 +1835,25 @@
   // bleiben alle Alarm-Knöpfe gesperrt (alarmInFlight). Im Fehlerfall
   // entscheidet die Fehlerart über die Aussage: "NICHT gesendet" nur dann,
   // wenn das sicher ist - sonst "Antwort unklar", damit niemand blind ein
-  // zweites Mal alarmiert. onlyIds = Nachsendung nur an diese Empfänger.
-  async function sendNasAlarm(action, expectDemo, onlyIds = null) {
+  // zweites Mal alarmiert. onlyIds = Nachsendung nur an diese Empfänger,
+  // origAt = Server-Zeit (s) des ursprünglichen Versands (0 = unbekannt).
+  // expect_demo geht IMMER mit (der Server lehnt ohne das Feld ab).
+  async function sendNasAlarm(action, expectDemo, onlyIds = null, origAt = 0) {
     if (!alarmResultEl) return;
-    const what = action === 'alarm' ? 'REAL ALARM' : 'ENTWARNUNG';
+    const what = whatOf(action);
     alarmInFlight = true;
     setBusy(true);
     showResultNote(`${what} wird gesendet… (kann bis zu einer Minute dauern – Seite nicht schließen)`, '');
     try {
       const fields = { action, expect_demo: expectDemo };
-      if (onlyIds) fields.only_ids = onlyIds.join(',');
+      if (onlyIds) {
+        fields.only_ids = onlyIds.join(',');
+        // So trägt die Nachsendung die Uhrzeit des ERSTEN Versands (plus
+        // "verspätet zugestellt") - nicht die der Nachsendung.
+        if (origAt > 0) fields.orig_at = String(Math.floor(origAt));
+      }
       const data = await post(fields, TIMEOUT_ALARM_MS);
-      showSendResult(action, what, data);
+      showSendResult(action, what, data, onlyIds ? { ids: onlyIds, origAt } : null);
     } catch (err) {
       const kind = err instanceof ApiError ? err.kind : 'network';
       let text;
@@ -1512,7 +1861,7 @@
       if (kind === 'auth') {
         text = `${what} NICHT gesendet – Sitzung abgelaufen, bitte neu anmelden.`;
       } else if (kind === 'csrf') {
-        text = `${what} NICHT gesendet – Sicherheits-Token veraltet, Seite neu laden.`;
+        text = `${what} NICHT gesendet – ${csrfHint()}.`;
       } else if (kind === 'readonly') {
         text = `${what} NICHT gesendet – ${err.message || 'nur Lesezugriff'}`;
       } else if (kind === 'mode_changed') {
@@ -1530,7 +1879,10 @@
         else if (kind === 'http') detail = `HTTP ${err.status}${err.message ? `: ${err.message}` : ''}`;
         text = `Antwort unklar (${detail}) – ${what} wurde evtl. gesendet. Erst Verlauf prüfen, nicht sofort erneut auslösen!`;
       }
-      showResultNote(text, unclear ? 'warn' : 'fail');
+      // Ist eine NACHSENDUNG sicher nicht rausgegangen, wird sie wieder
+      // angeboten (mit neuer Bestätigung). Bei "Antwort unklar" bewusst
+      // nicht - erst den Verlauf prüfen.
+      showResultNote(text, unclear ? 'warn' : 'fail', !!onlyIds && !unclear);
       // Der Verlauf zeigt nach ein paar Sekunden, ob der Versand gestartet
       // bzw. abgeschlossen wurde (nas_alarm_started / nas_alarm).
       if (unclear) [5000, 40000].forEach((ms) => setTimeout(refreshLog, ms));
@@ -1565,8 +1917,17 @@
   const volWords = (vol) => (vol === 0 ? 'lautlos' : `leise (Lautstärke ${vol} von 10)`);
 
   function renderKeys() {
+    if (!keysListEl) return;
+    // Offene Bestätigungsfrage in der Liste? Dann später neu zeichnen.
+    if (deferWhileArmed(keysListEl, renderKeys)) return;
+    // Liste samt Sicherung auf dem NAS unlesbar: deutlich sagen, statt
+    // "keine eingetragen" bzw. eine veraltete Liste zu zeigen.
+    if (keysCorrupt) {
+      setHtml(keysListEl, `<p class="keys-corrupt">${escapeHtml(keysCorrupt)}</p>`);
+      return;
+    }
     const data = lastKeys;
-    if (!data || !keysListEl) return;
+    if (!data) return;
     const demoOn = !!(demoInfo && demoInfo.enabled);
     if (!data.keys.length) {
       setHtml(keysListEl, '<p class="keys-empty">Noch keine Empfänger eingetragen – die Box nutzt solange ihre fest eingebaute Startliste.</p>');
@@ -1595,11 +1956,19 @@
         badge = `<span class="badge-muted">Stumm${until ? ` bis ~${escapeHtml(fmtClock(until))}` : ''}</span>`;
       }
       if (isDemoTarget) badge += '<span class="badge-demo">Demo-Empfänger</span>';
+      // muted ist der WIRKSAME Zustand (überfällige Stummschaltung = laut).
+      // mute_overdue: Die Rückschaltung ist fällig, konnte aber nicht
+      // gespeichert werden - die Box kennt noch "stumm" und alarmiert diesen
+      // Empfänger dann evtl. noch mit der Stumm-Lautstärke.
+      const overdue = !!entry.mute_overdue;
+      if (overdue) badge += '<span class="badge-muted badge-overdue">Rückschaltung nicht gespeichert – Box evtl. noch stumm</span>';
 
       // Was "stumm" für diese Person gerade heißt - als lesbare Zeile (stand
       // früher nur im Maus-Tooltip des Badges und war am Handy unerreichbar).
       let sub = '';
-      if (state !== 'loud') {
+      if (overdue) {
+        sub = `<p class="keys-sub keys-sub-warn">${escapeHtml(`Die automatische Laut-Rückschaltung ist fällig, konnte auf dem NAS aber nicht gespeichert werden (Datenordner nicht beschreibbar?). Der REAL ALARM vom NAS kommt laut an – die Box alarmiert evtl. noch ${volWords(vol)}.`)}</p>`;
+      } else if (state !== 'loud') {
         const since = entry.muted_at ? ` Stumm seit ${fmtDayClock(entry.muted_at)} Uhr` : '';
         let tail = '';
         if (state === 'permanent') tail = `${since ? ',' : ''} keine automatische Rückschaltung`;
@@ -1647,17 +2016,34 @@
     }).join(''));
   }
 
+  // Antwort "Liste samt Sicherung unlesbar" (code keys_corrupt) - kommt je
+  // nach Server-Stand als normale Antwort oder als HTTP-Fehler mit JSON.
+  function showKeysCorrupt(data) {
+    keysCorrupt = (data && typeof data.message === 'string' && data.message)
+      || 'Empfängerliste auf dem NAS beschädigt (Liste und Sicherung unlesbar) – bitte die Dateien im Datenordner prüfen.';
+    lastKeys = null;
+    keysSummary = null;
+    renderKeys();
+    renderHeroExtras();
+  }
+
   const refreshKeys = makePoller(async () => {
     try {
       const data = await api('dashboard_api.php?action=keys_list', {}, TIMEOUT_POLL_MS);
-      if (!data.ok) return;
+      if (!data.ok) {
+        if (data.code === 'keys_corrupt') showKeysCorrupt(data);
+        return;
+      }
+      if (!Array.isArray(data.keys)) return;
+      keysCorrupt = '';
       updateDemoInfo(data.demo);
       nasKeysVersion = data.version ?? nasKeysVersion;
       lastKeys = data;
       keysSummary = {
         total: data.keys.length,
         muted: data.keys.filter((entry) => entry.muted).length,
-        permanent: data.keys.filter((entry) => entry.muted && entry.mute_permanent).length
+        permanent: data.keys.filter((entry) => entry.muted && entry.mute_permanent).length,
+        overdue: data.keys.filter((entry) => entry.mute_overdue).length
       };
       // Zeilen, die es nicht mehr gibt, nicht als "aufgeklappt" mitschleppen.
       const ids = new Set(data.keys.map((entry) => String(entry.id)));
@@ -1679,6 +2065,10 @@
       // durch die Fehlerzeile zu ersetzen (das sah nach Datenverlust aus).
       // Nur wenn noch nie etwas geladen wurde, erscheint der Fehler direkt.
       if (err instanceof ApiError && err.kind === 'auth') return;
+      if (err instanceof ApiError && err.data && err.data.code === 'keys_corrupt') {
+        showKeysCorrupt(err.data);
+        return;
+      }
       if (keysListEl.__lastHtml === undefined) {
         setHtml(keysListEl, '<p class="keys-empty">Empfängerliste konnte nicht geladen werden – neuer Versuch läuft automatisch.</p>');
       }
@@ -1902,6 +2292,8 @@
   function renderNotify() {
     const data = notifyData;
     if (!data || !notifyListEl) return;
+    // Offene Bestätigungsfrage (wichtige Meldung abschalten)? Später zeichnen.
+    if (deferWhileArmed(notifyListEl, renderNotify)) return;
     if (notifyNoteEl) {
       notifyNoteEl.hidden = !!data.configured;
       notifyNoteEl.textContent = data.configured ? ''
@@ -2079,6 +2471,9 @@
         return { text: `Demo-Modus EIN – Alarme nur an "${entry.label}"${who}`, cls: 'log-warn' };
       case 'demo_disabled':
         return { text: `Demo-Modus AUS – wieder LIVE${who}`, cls: '' };
+      case 'demo_repaired':
+        // Vom NAS selbst erkannt und behoben (keine weiteren Felder).
+        return { text: 'Demo-Zustand war beschädigt – automatisch auf LIVE zurückgesetzt, die Box holt die volle Empfängerliste', cls: 'log-warn' };
       case 'key_added':
         return { text: `Empfänger "${entry.label}" (${entry.key}) hinzugefügt${who}`, cls: '' };
       case 'key_removed':
@@ -2113,14 +2508,16 @@
       // *_started wird VOR dem Versand geschrieben: Steht danach kein
       // Abschluss-Eintrag (nas_alarm/false_alarm) im Verlauf, ist der Versand
       // abgebrochen - wichtig nach einer "Antwort unklar"-Meldung.
+      // demo (neuere Server): Versand lief im Demo-Modus, also nur an den
+      // Test-Empfänger. Die Abschluss-Einträge sagen das schon im Text.
       case 'nas_alarm_started':
-        return { text: entry.resend
-          ? `REAL ALARM: Nachsendung an ${entry.resend} Empfänger gestartet${who}`
-          : `REAL ALARM gestartet${who}`, cls: 'log-alarm' };
+        return { text: (entry.resend
+          ? `REAL ALARM: Nachsendung an ${entry.resend} Empfänger gestartet`
+          : 'REAL ALARM gestartet') + (entry.demo === true ? ' (DEMO-MODUS)' : '') + who, cls: 'log-alarm' };
       case 'false_alarm_started':
-        return { text: entry.resend
-          ? `ENTWARNUNG: Nachsendung an ${entry.resend} Empfänger gestartet${who}`
-          : `ENTWARNUNG gestartet${who}`, cls: 'log-warn' };
+        return { text: (entry.resend
+          ? `ENTWARNUNG: Nachsendung an ${entry.resend} Empfänger gestartet`
+          : 'ENTWARNUNG gestartet') + (entry.demo === true ? ' (DEMO-MODUS)' : '') + who, cls: 'log-warn' };
       case 'nas_alarm':
         return { text: `REAL ALARM direkt vom NAS: ${entry.message || ''}${who}`, cls: 'log-alarm' };
       case 'false_alarm':
@@ -2276,6 +2673,25 @@
   // Bestätigungsfrage beschreibt. updateDemoInfo() entschärft, sobald der
   // tatsächliche Modus davon abweicht.
   let armedExpect = null;
+  // Fortlaufende Nummer für die ids der Bestätigungsfragen (aria-Bezüge).
+  let armSeq = 0;
+
+  // Neuaufbau einer Liste aufschieben, solange darin eine Bestätigungsfrage
+  // offen ist: Sonst verschwände die Frage beim 30-s-Abruf (oder durch die
+  // Rückmeldung einer anderen Zeile) kommentarlos, mitten im Lesen. Nach dem
+  // Entschärfen wird nachgeholt. render prüft dabei selbst erneut - wurde
+  // inzwischen wieder etwas in derselben Liste geschärft, wartet es weiter.
+  const deferredRenders = new Map();   // Listen-Element -> render()
+  function deferWhileArmed(listEl, render) {
+    if (!armedBtn || !listEl || !listEl.contains(armedBtn)) return false;
+    deferredRenders.set(listEl, render);
+    return true;
+  }
+  function flushDeferredRenders() {
+    const pending = [...deferredRenders.values()];
+    deferredRenders.clear();
+    pending.forEach((render) => render());
+  }
 
   function disarm() {
     if (disarmFn) disarmFn();
@@ -2286,30 +2702,42 @@
   // anderes Element, hinter dem die Frage erscheinen soll; opts.hide = was
   // währenddessen versteckt wird (null = nichts - z.B. bleibt der dreiteilige
   // Stumm-Schalter sichtbar). Funktioniert auch für Knöpfe in neu gezeichneten
-  // Listen: Wird die Liste währenddessen neu aufgebaut, verschwindet die
-  // Frage einfach mit - es kann nichts unbeabsichtigt ausgelöst werden.
+  // Listen: Deren Neuaufbau wartet, solange die Frage offen ist
+  // (deferWhileArmed); wird eine Liste trotzdem neu aufgebaut, verschwindet
+  // die Frage einfach mit - es kann nichts unbeabsichtigt ausgelöst werden.
   // Der Countdown rechnet gegen eine feste Frist (Date.now()) statt Ticks zu
   // zählen: iOS pausiert Timer im Hintergrund - eine Bestätigung darf nach
   // der Rückkehr nicht noch minutenlang scharf sein.
+  // Barrierefreiheit: Die Bestätigung ist eine Gruppe, benannt durch ihre
+  // Frage; beide Knöpfe verweisen zusätzlich per aria-describedby darauf -
+  // so liest ein Screenreader beim Fokus auf "Abbrechen" die Frage mit vor.
   function armInline(btn, questionText, confirmLabel, onConfirm, expectDemo = null, opts = {}) {
     disarm();
     const anchor = opts.after || btn;
     const hideEl = opts.hide === undefined ? btn : opts.hide;
     const timeoutS = armTimeoutFor(questionText);
+    const questionId = `arm-q-${++armSeq}`;
     const box = document.createElement('div');
     box.className = 'arm-confirm';
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-labelledby', questionId);
     const question = document.createElement('span');
     question.className = 'arm-question';
+    question.id = questionId;
     question.textContent = questionText;
     const yes = document.createElement('button');
     yes.type = 'button';
     yes.className = 'danger';
     yes.textContent = confirmLabel;
+    yes.setAttribute('aria-describedby', questionId);
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.textContent = 'Abbrechen';
+    cancel.setAttribute('aria-describedby', questionId);
     const countdown = document.createElement('span');
     countdown.className = 'arm-count';
+    // Der Viertelsekunden-Countdown wäre vorgelesen nur Rauschen.
+    countdown.setAttribute('aria-hidden', 'true');
     const deadline = Date.now() + timeoutS * 1000;
     const secondsLeft = () => Math.ceil((deadline - Date.now()) / 1000);
     countdown.textContent = `${timeoutS} s`;
@@ -2337,6 +2765,10 @@
       armedBtn = null;
       armedExpect = null;
       disarmFn = null;
+      // Aufgeschobenen Neuaufbau nachholen - im nächsten Takt: Schärft
+      // armInline() gleich danach einen anderen Knopf derselben Liste, würde
+      // ein sofortiger Neuaufbau genau diesen Knopf aus dem DOM werfen.
+      if (deferredRenders.size) setTimeout(flushDeferredRenders, 0);
     };
     cancel.addEventListener('click', disarm);
     yes.addEventListener('click', () => {
@@ -2451,7 +2883,12 @@
   // Tab im Hintergrund: Polling aus UND jede offene Bestätigung entschärfen -
   // wer zurückkommt, soll nicht eine (evtl. veraltete) Alarm-Frage mit einem
   // Tipp bestätigen können.
+  // Die Messung "Box hat die Liste seit X nicht übernommen" beginnt nach der
+  // Rückkehr neu: Während der Tab im Hintergrund lag, wurde nichts
+  // beobachtet - die Zeit dazwischen darf nicht als "nicht übernommen" zählen.
   document.addEventListener('visibilitychange', () => {
+    mismatchSince = 0;
+    mismatchPair = '';
     if (document.hidden) {
       disarm();
       stopPolling();
@@ -2459,6 +2896,17 @@
       startPolling();
     }
   });
+
+  // Gemerkte nicht Erreichte dieser Browser-Sitzung (z.B. vor einem
+  // Neuladen nach Ablauf der Anmeldung) wieder anzeigen - samt Nachsende-
+  // Knopf, dessen Frage den dann aktuellen Modus nennt.
+  if (alarmResultEl) {
+    const restored = restoreUnreached();
+    if (restored) {
+      lastUnreached = restored;
+      showResultNote('Aus dieser Browser-Sitzung gemerkt (vor dem Neuladen der Seite):', 'warn', true);
+    }
+  }
 
   startPolling();
 })();

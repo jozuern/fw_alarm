@@ -14,10 +14,20 @@ $lastCommandId = max(0, (int)($_POST['last_command_id'] ?? 0));
 // Dashboard offen hat oder der Cron-Wächter läuft. Der Vorab-Check ist ohne
 // Lock billig; die Info-Pushs laufen erst NACH der Antwort. Nicht fatal.
 expire_stale_mutes($config, true);
+// Kaputten/verlorenen Demo-Zustand reparieren (LIVE + neue Listen-Version):
+// sonst bliebe die Box still auf der Demo-Liste. Billig, wenn alles ok ist.
+repair_broken_demo_mode($config);
 
 // Version der Empfängerliste immer mitliefern: Der ESP32 vergleicht sie mit
 // seinem NVS-Stand und holt sich bei Abweichung die Liste über api/keys.php.
 $keysVersion = (int)(load_alarm_keys($config)['version'] ?? 0);
+$noCommand = "ok=1\nnonce={$nonce}\nid=0\ntype=NONE\nkeys_version={$keysVersion}\n";
+
+// Befehle (TEST, DEMO-ALARM) nur an die eingestellte Box (box_device_id) -
+// ein Bastel-Board mit demselben Token darf sie ihr nicht wegschnappen.
+if (!is_expected_box($config, $deviceId)) {
+    text_response($noCommand);
+}
 
 // Darf ein DEMO-ALARM JETZT noch ausgeliefert werden? Beim Anlegen wurde
 // geprüft, dass der ESP32 die Demo-Liste hat. Hat sich seitdem der Demo-Stand
@@ -36,7 +46,12 @@ function demo_alarm_still_safe(array $config, array $command): bool
     return (int)($latest['keys_count'] ?? 0) === 1;
 }
 
-$response = with_lock($config, 'command', function () use ($config, $deviceId, $nonce, $keysVersion, $lastCommandId): string {
+// Nicht fatal: Lässt sich der Befehls-Lock nicht öffnen (Datenordner nicht
+// beschreibbar), antwortet der Poll trotzdem - ohne Befehl, aber mit der
+// Listen-Version. Ein HTTP 500 schickte die Box in ihren Fehler-Backoff, in
+// dem sie auch keinen Status mehr pusht ("Box OFFLINE", obwohl sie läuft).
+// at-most-once bleibt gewahrt: Ohne Lock wird nichts ausgeliefert.
+$response = with_lock_soft($config, 'command', function () use ($config, $deviceId, $nonce, $keysVersion, $lastCommandId, $noCommand): string {
     $path = data_path($config, 'command_state.json');
     $state = read_json_file($path, command_state_default());
 
@@ -67,7 +82,7 @@ $response = with_lock($config, 'command', function () use ($config, $deviceId, $
 
     $current = $state['current'] ?? null;
     if (!is_array($current) || ($current['state'] ?? '') !== 'pending') {
-        return "ok=1\nnonce={$nonce}\nid=0\ntype=NONE\nkeys_version={$keysVersion}\n";
+        return $noCommand;
     }
 
     if (($current['type'] ?? '') === 'ALARM' && !demo_alarm_still_safe($config, $current)) {
@@ -79,7 +94,7 @@ $response = with_lock($config, 'command', function () use ($config, $deviceId, $
         if (write_json_file($path, $state)) {
             append_command_log($config, ['event' => 'cancelled', 'command' => $current]);
         }
-        return "ok=1\nnonce={$nonce}\nid=0\ntype=NONE\nkeys_version={$keysVersion}\n";
+        return $noCommand;
     }
 
     $current['state'] = 'delivered';
@@ -96,6 +111,10 @@ $response = with_lock($config, 'command', function () use ($config, $deviceId, $
 
     return "ok=1\nnonce={$nonce}\nid=" . (int)$current['id'] . "\ntype=" . $current['type']
          . "\nkeys_version={$keysVersion}\n";
-});
+}, null);
+if ($response === null) {
+    error_log('fw_alarm: poll.php ohne Befehls-Lock beantwortet (Datenordner nicht beschreibbar?)');
+    $response = $noCommand;
+}
 
 text_response($response);

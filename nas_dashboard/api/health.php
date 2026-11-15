@@ -24,4 +24,5 @@ if (!$result['ok']) {
     http_response_code(500);
 }
 text_response('ok=' . ($result['ok'] ? '1' : '0') . "\nstep=" . $result['step'] . "\n"
-    . (isset($result['file']) ? 'file=' . $result['file'] . "\n" : ''));
+    . (isset($result['file']) ? 'file=' . $result['file'] . "\n" : '')
+    . (isset($result['files']) ? 'files=' . implode(',', $result['files']) . "\n" : ''));

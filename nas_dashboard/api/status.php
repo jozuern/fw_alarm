@@ -7,6 +7,19 @@ require_machine_auth($config);
 $status = clipped_post_fields(['token']);
 $status['seen_at'] = time();
 $status['remote_addr'] = $_SERVER['REMOTE_ADDR'] ?? '';
+$pushDevice = substr((string)($status['device_id'] ?? ''), 0, 80);
+
+// Ist box_device_id gesetzt und meldet sich ein ANDERES Board mit dem Token
+// (Bastel-/Ersatz-ESP32): annehmen (sonst ginge es in den Fehler-Backoff),
+// aber nur für den Dashboard-Hinweis merken - es darf weder den Status der
+// echten Box überschreiben noch deren Ausfall verdecken, und seine Alarme
+// gehören nicht in den Verlauf.
+if (!is_expected_box($config, $pushDevice)) {
+    with_lock_soft($config, 'status', static function () use ($config, $pushDevice, $status): void {
+        remember_device_push($config, $pushDevice, $status);
+    });
+    text_response("OK\n");
+}
 
 // Kam der Alarm, den der ESP32 gerade meldet, vom DEMO-Alarm des Dashboards
 // (ALARM-Befehl kurz zuvor ausgeliefert) statt vom Relais? Dann im Verlauf
@@ -41,7 +54,13 @@ function last_alarm_source(array $config, array $status): string
 // device_id): Das verhindert Doppel-Einträge (derselbe Wert kommt ja mit
 // jedem Push erneut) und funktioniert auch, wenn ein zweites Board mit
 // demselben Token (Bastel-/Ersatz-ESP32) dazwischen pusht - latest_status.json
-// hält nur den jeweils letzten Push, egal von wem.
+// hält nur den jeweils letzten Push, egal von wem (außer box_device_id ist
+// gesetzt, siehe oben).
+// "Demo oder Relais?" (last_alarm_source) ist eine Heuristik, solange die
+// Firmware alarm_source nicht selbst meldet: Die Box pusht ihren Status VOR
+// der ACK, deshalb gilt ein ausgelieferter ALARM-Befehl innerhalb von 60 s als
+// Demo-Quelle - auch wenn die ACK danach "skipped_busy" sagt. Die Fenster
+// (300 s / 60 s) setzen voraus, dass COOLDOWN_MS in config.h nicht kürzer ist.
 // Neustart der Box erkannt? Wird im Lock gesetzt und erst NACH der Antwort
 // ausgewertet (Verlauf, optionale Admin-Meldung) - der ESP32 wartet nicht.
 $restart = null;
@@ -49,11 +68,28 @@ $restart = null;
 $alarmInfo = with_lock($config, 'status', function () use ($config, $status, &$restart) {
     $path = data_path($config, 'latest_status.json');
     $previous = read_json_file($path, [], $previousStatus);
+    $device = substr((string)($status['device_id'] ?? ''), 0, 80);
+    $sameDevice = $previousStatus === 'ok' && (string)($previous['device_id'] ?? '') === (string)($status['device_id'] ?? '');
+
+    // Veralteter Push, der NACH einem jüngeren ankommt? Das passiert, wenn das
+    // NAS hängt (Platte wacht auf): Push A läuft bei der Box in den Timeout,
+    // Push B kommt durch, dann wird A doch noch verarbeitet. Erkennbar daran,
+    // dass A früher eintraf (seen_at = Ankunft) und eine kleinere Laufzeit hat.
+    // Würde er verarbeitet, spränge der Status zurück, ein alter Alarm
+    // landete erneut im Verlauf, und ein "Neustart" würde gemeldet. Deshalb
+    // nur bestätigen. Fenster 60 s: Eine rückwärts gestellte NAS-Uhr (NTP)
+    // kann so höchstens eine Minute lang Pushs verschlucken.
+    if ($sameDevice && isset($previous['seen_at'], $previous['uptime_s'], $status['uptime_s'])) {
+        $lag = (int)$previous['seen_at'] - (int)$status['seen_at'];
+        if ($lag > 0 && $lag < 60 && (int)$status['uptime_s'] < (int)$previous['uptime_s']) {
+            return null;
+        }
+    }
+
     if (!write_json_file($path, $status)) {
         return false;   // Schreibfehler -> HTTP 500 (siehe unten)
     }
-
-    $device = substr((string)($status['device_id'] ?? ''), 0, 80);
+    remember_device_push($config, $device, $status);
     // Hat DIESELBE Box seit ihrem vorigen Push neu gestartet? reset_reason
     // sagt dann, warum. Zwei Anzeichen:
     // - die Laufzeit ist kleiner als beim vorigen Push, oder
@@ -67,14 +103,15 @@ $alarmInfo = with_lock($config, 'status', function () use ($config, $status, &$r
     //   Anzeichen nur, wenn die Box auch erst NACH dem vorigen Push gestartet
     //   sein KANN (Laufzeit nicht länger als der Abstand) - eine seit Wochen
     //   laufende Box meldet sonst nach jeder Uhr-Korrektur einen "Neustart".
-    if ($previousStatus === 'ok' && (string)($previous['device_id'] ?? '') === (string)($status['device_id'] ?? '')
-        && isset($previous['uptime_s'], $previous['seen_at'], $status['uptime_s'])) {
+    // Beide Anzeichen nur, wenn die Box überhaupt NACH dem vorigen Push
+    // gestartet sein KANN - bei einem echten Neustart gilt das immer.
+    if ($sameDevice && isset($previous['uptime_s'], $previous['seen_at'], $status['uptime_s'])) {
         $prevUptime = (int)$previous['uptime_s'];
         $newUptime = (int)$status['uptime_s'];
         $gap = max(0, (int)$status['seen_at'] - (int)$previous['seen_at']);
         $bootShift = ((int)$status['seen_at'] - $newUptime) - ((int)$previous['seen_at'] - $prevUptime);
         $couldHaveBooted = $newUptime <= $gap + 10;
-        if ($newUptime < $prevUptime || ($couldHaveBooted && $bootShift > 10 + 0.001 * $gap)) {
+        if ($couldHaveBooted && ($newUptime < $prevUptime || $bootShift > 10 + 0.001 * $gap)) {
             $reason = (string)($status['reset_reason'] ?? '');
             $restart = [
                 'reason' => $reason,

@@ -8,17 +8,39 @@ Type=oneshot
 User=fwwatch
 Group=fwwatch
 ExecStart=/usr/local/bin/fw-alarm-watch
-# Zustand (Fehlerzähler, Zeitpunkte der Meldungen) unter /var/lib/fw-alarm-watch
+# Zustand (Fehlerzähler, Zeitpunkte der Meldungen) und Sperrdatei unter
+# /var/lib/fw-alarm-watch
 StateDirectory=fw-alarm-watch
 StateDirectoryMode=0700
-TimeoutStartSec=240
-# Härtung: Das Skript braucht nur Netz, seine Konfiguration und sein Zustandsverzeichnis.
+# Schlimmster Fall: NAS-Aufruf 3 x 20 s + 2 x 5 s Pause = 70 s, dazu bis zu
+# drei Bark-Meldungen in einem Lauf (wieder erreichbar, NAS-Wächter, Bark am
+# NAS) mit je bis zu 70 s = 280 s. Großzügig darüber, damit systemd keinen
+# Lauf mitten im Versand abbricht (Meldung raus, Zustand nicht gespeichert).
+TimeoutStartSec=330
+# Härtung: Das Skript braucht nur Netz (curl), seine Konfiguration, sein
+# Zustandsverzeichnis und ein paar Standardwerkzeuge (flock, date, od, sed).
 NoNewPrivileges=yes
+CapabilityBoundingSet=
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProcSubset=pid
+# AF_NETLINK: getaddrinfo() von glibc fragt darüber die eigenen Adressen ab
+# (AI_ADDRCONFIG) - ohne könnte die Namensauflösung scheitern und der
+# Wächter jeden Lauf "Name nicht aufloesbar" melden.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
 RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
