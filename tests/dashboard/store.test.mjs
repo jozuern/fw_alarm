@@ -1035,6 +1035,109 @@ test('Hinzufügen gescheitert: Fehler sofort, ohne auf die Liste zu warten', asy
   assert.deepEqual(plain(r), { ok: false, text: 'Dieser Key ist bereits eingetragen.', kind: 'error' });
 });
 
+test('Fix 1+3: nach „Antwort unklar“ keine Nachsendung – weder über confirmResend noch über einen Moduswechsel', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  await h.store.refreshStatus();
+  await h.store.refreshKeys();
+  h.routes.alarm = () => reply(200, partialResult);
+  await h.store.sendNasAlarm('alarm', '0');
+  h.routes.alarm = () => { throw new TypeError('Failed to fetch'); };
+  await h.store.sendNasAlarm('alarm', '0');
+  await settle();
+  assert.equal(h.s().result.offerRetry, false);
+  assert.equal(h.s().unreached.entries.length, 1);   // Liste steht noch da ...
+  assert.equal(h.store.confirmResend(), null);        // ... aber keine Nachsendung
+  assert.equal(h.s().confirm, null);
+  // Moduswechsel, während eine Alarm-Bestätigung offen ist.
+  assert.ok(h.store.confirmAlarm('alarm'));
+  h.routes.status = () => reply(200, statusBody({ demo: { enabled: true, key_id: 2, label: 'Tom' } }));
+  await h.store.refreshStatus();
+  assert.equal(h.s().confirm, null);
+  assert.match(h.s().result.head, /Demo-\/LIVE-Modus hat sich gerade geändert/);
+  assert.equal(h.s().result.offerRetry, false);
+  assert.equal(h.d().retry, null);
+  assert.equal(h.store.confirmResend(), null);
+  // Auch eine Frage aus überholtem Stand macht kein Angebot daraus.
+  assert.equal(h.store.openConfirm({ title: 'A', text: 'x', hold: true, expectDemo: '0', onConfirm: () => {} }), null);
+  assert.equal(h.s().result.offerRetry, false);
+  assert.equal(h.posts('alarm').length, 2);
+  // Gegenprobe: Nach einem Ergebnis MIT Angebot bleibt es nach dem Wechsel.
+  const g = harness();
+  g.store.init(ADMIN);
+  await g.store.refreshStatus();
+  g.routes.alarm = () => reply(200, partialResult);
+  await g.store.sendNasAlarm('alarm', '0');
+  await settle();
+  assert.ok(g.store.confirmAlarm('alarm'));
+  g.routes.status = () => reply(200, statusBody({ demo: { enabled: true, key_id: 2, label: 'Tom' } }));
+  await g.store.refreshStatus();
+  assert.equal(g.s().result.offerRetry, true);
+  assert.equal(g.d().retry.label, 'Nur an Tom erneut senden');
+});
+
+test('Fix 2: nicht gespeichert → neue Referenz und Revision, auch bei gleichen Daten', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  await h.store.refreshStatus();
+  await h.store.refreshKeys();
+  h.store.setRoute('einstellungen/meldungen');
+  await settle();
+  const notify0 = h.s().notify;
+  assert.ok(notify0);
+  h.routes.notify_set = () => reply(200, { ok: false, message: 'Einstellung konnte nicht gespeichert werden (data_dir prüfen).' });
+  const r = await h.store.notifySet('box_offline', 'enabled', '0');
+  assert.equal(r.ok, false);
+  assert.notEqual(h.s().notify, notify0);
+  assert.deepEqual(plain(h.s().notify), plain(notify0));
+  assert.equal(h.s().rev.notify, 1);
+  await settle();                                   // Nachladen mit gleichen Daten
+  assert.notEqual(h.s().notify, notify0);
+  // Gespeichert: keine Revision.
+  h.routes.notify_set = () => reply(200, { ok: true, message: 'Gespeichert.' });
+  await h.store.notifySet('box_offline', 'level', 'active');
+  assert.equal(h.s().rev.notify, 1);
+  // Empfänger (Fehler per Netz), Einstellungen, Demo.
+  const keys0 = h.s().keys;
+  h.routes.keys_set_mute_volume = () => { throw new TypeError('x'); };
+  await h.store.keyVolume(1, 4);
+  assert.notEqual(h.s().keys, keys0);
+  assert.equal(h.s().rev.keys, 1);
+  const settings0 = h.s().settings;
+  h.routes.settings_set = () => reply(200, { ok: false, message: 'Ungültiger Wert – nichts geändert.' });
+  await h.store.settingsSet('mute_max_seconds', 1);
+  assert.notEqual(h.s().settings, settings0);
+  assert.equal(h.s().rev.settings, 1);
+  await settle();
+  const demo0 = h.s().demo;
+  h.routes.demo_set = () => reply(200, { ok: false, message: 'Demo-Modus konnte nicht gespeichert werden (data_dir prüfen).' });
+  await h.store.demoSet(true, 2);
+  assert.notEqual(h.s().demo, demo0);
+  assert.equal(h.s().demo.enabled, false);
+  assert.equal(h.s().rev.demo, 1);
+});
+
+test('Fix 4: start() taktet sofort – alter Stand gilt gleich als veraltet', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  await h.store.refreshStatus();
+  h.clock.now += 20000;
+  h.routes.status = () => new Promise(() => {});   // Antwort kommt (noch) nicht
+  h.store.start();
+  assert.equal(h.s().stale, true);
+  assert.equal(h.s().nowMs, h.clock.now);
+  assert.equal(h.d().verdict.title, 'Status veraltet');
+  h.store.stop();
+  const g = harness();
+  g.store.init(ADMIN);
+  await g.store.refreshStatus();
+  g.clock.now += 20000;
+  g.store.start();
+  await settle();
+  assert.equal(g.s().stale, false);                 // frische Antwort beendet es
+  g.store.stop();
+});
+
 test('useStore: neu zeichnen nur bei Änderung des gewählten Werts', async () => {
   const h = harness();
   let renders = 0;

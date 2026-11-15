@@ -94,6 +94,9 @@
       result: null,
       confirm: null,
       browserAlert: false,
+      // Revision je Bereich: steigt, wenn eine Änderung NICHT gespeichert
+      // wurde (Bedienelemente auf den Stand des Servers zurücksetzen).
+      rev: { keys: 0, notify: 0, settings: 0, demo: 0 },
       nowMs: Date.now()
     };
   }
@@ -266,10 +269,16 @@
     const c = state.confirm;
     if (c && typeof c.expectDemo === 'string' && L.expectDemoOf(state.demo) !== c.expectDemo) {
       closeConfirm();
-      // Mit Nachsende-Angebot: Eine gemerkte Nachsendung wird wieder
-      // angeboten (ihre Frage nennt dann den neuen Modus).
-      showNote(MODE_CHANGED_NOTE, 'warn', true);
+      showModeChangedNote();
     }
+  }
+
+  // Hinweis "Modus geändert": Eine gemerkte Nachsendung wird wieder
+  // angeboten (ihre Frage nennt dann den neuen Modus) - aber NUR, wenn das
+  // bisherige Ergebnis sie anbot. Aus "Antwort unklar" darf ein Moduswechsel
+  // nie ein Nachsende-Angebot machen (erst Verlauf prüfen).
+  function showModeChangedNote() {
+    showNote(MODE_CHANGED_NOTE, 'warn', state.result ? !!state.result.offerRetry : true);
   }
 
   // HTTP 409 mode_changed: Der Server hat NICHTS gesendet, weil sein Modus
@@ -468,6 +477,9 @@
   function start() {
     if (state.authLost || timers.length) return;
     stopBackground();
+    // Sofort einmal takten: Nach langer Zeit im Hintergrund gilt der alte
+    // Stand gleich als veraltet - nicht erst nach dem ersten Sekundentakt.
+    tick();
     refreshStatus();
     refreshKeys();
     refreshLog();
@@ -590,7 +602,7 @@
     const expectDemo = typeof o.expectDemo === 'string' ? o.expectDemo : null;
     // Frage aus einem schon überholten Stand: gar nicht erst öffnen.
     if (expectDemo !== null && L.expectDemoOf(state.demo) !== expectDemo) {
-      showNote(MODE_CHANGED_NOTE, 'warn', true);
+      showModeChangedNote();
       return null;
     }
     const text = String(o.text || '');
@@ -631,7 +643,7 @@
     const modeChanged = c.expectDemo !== null && L.expectDemoOf(state.demo) !== c.expectDemo;
     closeConfirm();
     if (modeChanged) {
-      showNote(MODE_CHANGED_NOTE, 'warn', true);
+      showModeChangedNote();
       return Promise.resolve(null);
     }
     if (expired || !action) return Promise.resolve(null);
@@ -663,16 +675,18 @@
   }
 
   // "Nur an die nicht Erreichten erneut senden" - immer aus dem gemerkten
-  // Stand; die Frage nennt den Modus, der JETZT gilt.
+  // Stand; die Frage nennt den Modus, der JETZT gilt. Nur, solange das
+  // Ergebnis die Nachsendung anbietet (retryOf): Nach "Antwort unklar" steht
+  // die Liste zwar noch da, eine Nachsendung gibt es aber bewusst NICHT -
+  // auch nicht über einen veralteten Knopf.
   function confirmResend() {
     const u = state.unreached;
-    if (state.alarmInFlight || !u) return null;
-    const retry = u.entries.filter((e) => e.id > 0);
-    if (!retry.length) return null;
-    const ids = retry.map((e) => e.id);
+    const retry = retryOf(state);
+    if (state.alarmInFlight || !u || !retry) return null;
+    const ids = retry.ids;
     const demo = state.demo;
     const expect = L.expectDemoOf(demo);
-    const q = L.alarmQuestion('resend', demo, keyList(), { names: retry.map((e) => e.name), what: u.what, ids });
+    const q = L.alarmQuestion('resend', demo, keyList(), { names: retry.names, what: u.what, ids });
     return openConfirm({
       title: q.title, text: q.text, confirmLabel: 'Ja, erneut senden', hold: true, expectDemo: expect, tag: 'resend',
       onConfirm: () => sendNasAlarm(u.action, expect, ids, u.startedAt)
@@ -805,11 +819,15 @@
   // ---- Einfache Aktionen ---------------------------------------------------
   // EIN Muster: Zähler laufender Aktionen hoch, POST, Ergebnis als
   // {ok, text, kind}, danach nachladen, was die Aktion verändert haben kann.
+  // o.slice: Bereich, dessen Bedienelemente die Aktion verändert ('keys',
+  // 'notify', 'settings', 'demo') - siehe freshen().
   async function runAction(fields, opts) {
     const o = opts || {};
+    let failed = true;
     busyUp();
     try {
       const data = await api.post(fields, o.timeoutMs || api.TIMEOUT.POST);
+      failed = !data.ok;
       if (o.onData) o.onData(data);
       const text = o.text ? o.text(data) : (data.message || (data.ok ? (o.okText || 'Gespeichert.') : 'Fehler.'));
       return outcome(!!data.ok, text, api.kindOf(data));
@@ -818,8 +836,22 @@
       return outcome(false, api.errorText(err), api.errorKind(err));
     } finally {
       busyDown();
+      if (failed && o.slice) freshen(o.slice);
       (o.after || []).forEach((fn) => fn());
     }
+  }
+
+  // Nicht gespeichert: Ein umgestelltes Bedienelement (Schalter, Auswahl,
+  // Regler) zeigt sonst weiter den Wert, den die Person gewählt hat - der
+  // Server hat aber den alten, und unveränderte Daten behalten ihre Referenz
+  // (keep), also zeichnete nichts neu ("Box offline" sähe eingeschaltet aus,
+  // obwohl die Meldung aus ist). Deshalb: neue Referenz für den Bereich plus
+  // Revisionszähler (state.rev[slice]), an dem Ansichten ihren lokalen
+  // Bedienzustand verwerfen können (z.B. als key).
+  function freshen(slice) {
+    const patch = { rev: Object.assign({}, state.rev, { [slice]: (state.rev[slice] || 0) + 1 }) };
+    if (state[slice] !== null && state[slice] !== undefined) patch[slice] = JSON.parse(JSON.stringify(state[slice]));
+    set(patch);
   }
 
   // Doppelklick-Schutz für TEST, DEMO-ALARM, Abbrechen, Hinzufügen und den
@@ -871,6 +903,7 @@
       fields.id = String(id);
     }
     return runAction(fields, {
+      slice: 'demo',
       onData: (data) => { if (data.ok && data.demo) updateDemo(data.demo); },
       after: [refreshStatus, refreshKeys, refreshLog]
     });
@@ -878,7 +911,7 @@
 
   // Eine Aktion an EINEM Empfänger; danach Liste und Verlauf nachladen.
   function keyAction(fields, opts) {
-    return runAction(fields, Object.assign({ after: [refreshKeys, refreshLog] }, opts));
+    return runAction(fields, Object.assign({ slice: 'keys', after: [refreshKeys, refreshLog] }, opts));
   }
 
   // Neue id im Ergebnis (keys_add liefert keine): nach dem Nachladen der
@@ -923,7 +956,7 @@
   // dieser Einstellungen - deshalb auch den Status neu holen.
   function notifySet(type, key, value) {
     return runAction({ action: 'notify_set', type: String(type), key: String(key), value: String(value) },
-      { after: [refreshNotify, refreshLog, refreshStatus] });
+      { slice: 'notify', after: [refreshNotify, refreshLog, refreshStatus] });
   }
 
   async function notifyTest(type) {
@@ -939,7 +972,7 @@
   // "Automatisch wieder laut nach": ändert auch mute_until in der Liste.
   function settingsSet(key, value) {
     return runAction({ action: 'settings_set', key: String(key), value: String(value) },
-      { after: [refreshSettings, refreshKeys, refreshLog] });
+      { slice: 'settings', after: [refreshSettings, refreshKeys, refreshLog] });
   }
 
   // ---- Verlauf -------------------------------------------------------------
