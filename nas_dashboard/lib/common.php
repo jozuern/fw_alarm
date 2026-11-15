@@ -614,6 +614,9 @@ function end_dashboard_session(): void
         session_destroy();
     }
     if (!headers_sent()) {
+        // Eine zuvor in is_dashboard_authed() gesendete Erneuerung verwerfen,
+        // damit nur das Lösch-Cookie rausgeht.
+        header_remove('Set-Cookie');
         setcookie(session_name(), '', ['expires' => 1] + dashboard_cookie_options());
     }
 }
