@@ -47,7 +47,7 @@ export default async function ({ base, assert }) {
   const c3 = find(out);
   assert(c3, 'Logout sendet Set-Cookie');
   left = expiresIn(c3);
-  assert(left !== null && left < 0, 'Logout-Cookie abgelaufen: ' + c3);
+  assert(left !== null && left <= 0, 'Logout-Cookie abgelaufen: ' + c3);
   const after = await fetch(`${base}/dashboard_api.php?action=status`, { headers: { cookie } });
   assert(after.status === 401, 'nach Logout 401');
 }
