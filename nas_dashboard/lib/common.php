@@ -105,7 +105,7 @@ function fix_owner(string $path, ?string $dir = null): void
 function inplace_data_files(array $config): array
 {
     $names = ['commands.log', 'alarm_keys.json.bak', 'demo_mode.json.bak',
-        'keys.lock', 'command.lock', 'status.lock', 'log.lock', 'notify.lock',
+        'keys.lock', 'command.lock', 'status.lock', 'log.lock', 'notify.lock', 'settings.lock',
         'login_throttle.lock', 'mute_throttle.lock', 'health.lock'];
     return array_map(static fn(string $name): string => data_path($config, $name), $names);
 }
@@ -996,6 +996,10 @@ function log_event_types(): array
             'key' => $key,   // 'enabled' = Art ein/aus
             'option' => ['str', 'option'], 'value' => ['str', 'value'],
         ]],
+        // Dashboard-Einstellung (z.B. "Automatisch wieder laut nach") - nur Admin.
+        'setting_changed' => ['cat' => 'system', 'admin' => true, 'fields' => [
+            'by' => $by, 'label' => $label, 'value' => ['str', 'value'],
+        ]],
         'box_restart' => ['cat' => 'system', 'fields' => ['reason' => ['str', 'reason']]],
         'nas_alarm_started' => $started,
         'false_alarm_started' => $started,
@@ -1691,9 +1695,48 @@ function alarm_recipients(array $config, ?array $keysState = null, ?array $demo 
 // Der Alarm selbst kommt weiterhin als Critical Alert an: sichtbar auf dem
 // Sperrbildschirm, nur eben mit der Stumm-Lautstärke.
 
-function mute_max_seconds(array $config): int
+// Wert aus config.php (Standard 12 Std; 0 = keine Rückschaltung).
+function mute_max_config_seconds(array $config): int
 {
     return max(0, (int)($config['mute_max_seconds'] ?? 43200));
+}
+
+// Auswahl der Dauer in Sekunden (aufsteigend): feste Stufen plus der Wert aus
+// config.php, damit er unverändert angeboten wird (nie auf eine Stufe gerundet).
+function mute_max_choices(array $config): array
+{
+    $choices = [7200, 14400, 21600, 28800, 43200, 57600, 86400];
+    $choices[] = mute_max_config_seconds($config);
+    $choices = array_values(array_unique($choices));
+    sort($choices);
+    return $choices;
+}
+
+// Im Dashboard einstellbare Werte (app_settings.json, Lock 'settings'). Eine
+// fehlende oder kaputte Datei ergibt null = "nicht gesetzt" - dann gilt
+// config.php. Die Datei wird per rename() ersetzt (kein In-place-Schreiben).
+function load_app_settings(array $config): array
+{
+    $stored = read_json_file(data_path($config, 'app_settings.json'), []);
+    $mute = $stored['mute_max_seconds'] ?? null;
+    return ['mute_max_seconds' => is_int($mute) ? $mute : null];
+}
+
+// Wirksame Dauer bis zur automatischen Rückschaltung auf laut: Dashboard-
+// Einstellung, falls gesetzt und noch eine gültige Stufe, sonst config.php.
+// Läuft auf heißen Pfaden (poll.php) - pro Anfrage wird die Datei nur einmal
+// gelesen.
+function mute_max_seconds(array $config): int
+{
+    static $cache = [];
+    $id = data_path($config, 'app_settings.json') . '|' . mute_max_config_seconds($config);
+    if (!isset($cache[$id])) {
+        $override = load_app_settings($config)['mute_max_seconds'];
+        $cache[$id] = ($override !== null && in_array($override, mute_max_choices($config), true))
+            ? $override
+            : mute_max_config_seconds($config);
+    }
+    return $cache[$id];
 }
 
 // Ist dieser Eintrag dauerhaft stumm geschaltet (Sicherheitsnetz aus)?

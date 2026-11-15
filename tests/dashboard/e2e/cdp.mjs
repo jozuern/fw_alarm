@@ -150,3 +150,48 @@ export async function launch({ port = 9333, headless = true } = {}) {
   proc.kill();
   throw new Error('Chrome nicht erreichbar');
 }
+
+// Kleiner HTTP-Client für die Dashboard-API (ohne Browser): Cookie-Jar von Hand,
+// Login per Formular-POST, CSRF-Token aus der Status-Antwort.
+export async function apiSession(base, user, pass) {
+  let cookie = '';
+  let csrf = '';
+  const keep = (res) => {
+    for (const c of res.headers.getSetCookie?.() ?? []) {
+      const pair = c.split(';')[0];
+      if (pair.startsWith('boss925_dashboard=')) cookie = pair;
+    }
+  };
+  const api = (action, params = {}) => `${base}/dashboard_api.php?` + new URLSearchParams({ action, ...params });
+  const refreshCsrf = async () => {
+    const r = await fetch(api('status'), { headers: { cookie } });
+    csrf = (await r.json()).csrf || '';
+  };
+
+  const login = await fetch(`${base}/index.php`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ action: 'login', user, password: pass }),
+  });
+  keep(login);
+  if (!cookie) throw new Error(`Login fehlgeschlagen (HTTP ${login.status})`);
+  await refreshCsrf();
+
+  return {
+    async get(action, params = {}) {
+      const r = await fetch(api(action, params), { headers: { cookie } });
+      return { ...(await r.json()), status: r.status };
+    },
+    async post(fields) {
+      const r = await fetch(`${base}/dashboard_api.php`, {
+        method: 'POST',
+        headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(fields),
+      });
+      const body = { ...(await r.json()), status: r.status };
+      if (r.status === 403 && body.code === 'csrf') await refreshCsrf();
+      return body;
+    },
+  };
+}

@@ -347,7 +347,10 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   NAS bleiben so in sicheren Modi). `ensure_mute_tokens()` rüstet
   Bestandseinträgen Tokens nach (Lazy, ohne Versions-Bump, nimmt selbst den
   `keys`-Lock). Sicherheitsnetz `expire_stale_mutes()` (`mute_max_seconds`,
-  Default 12 h, 0 = aus): läuft in poll.php (damit es den Relaisweg auch OHNE
+  Default 12 h, 0 = aus; der wirksame Wert kommt aus `app_settings.json` – im
+  Dashboard einstellbar über `settings_list`/`settings_set` (nur Admin), Stufen
+  2/4/6/8/12/16/24 h plus der config.php-Wert, Lock `settings` – und fällt
+  sonst auf `config.php` zurück; EINE Stelle: `mute_max_seconds()`): läuft in poll.php (damit es den Relaisweg auch OHNE
   Cron erreicht), mute.php, keys.php, keys_list, nach `bark_send_alarm_all()`
   und im Cron-Wächter (dort auch ohne `bark_key_status`); die Leseseite
   rechnet überfällige Stummschaltungen schon vorher als laut

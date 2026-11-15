@@ -41,6 +41,7 @@ const DASHBOARD_ACTIONS = [
     // lesend, aber nur für den Admin: Welche Meldungen er bekommt, geht die
     // Lese-Rolle nichts an
     'notify_list'             => ['post' => false, 'csrf' => false, 'admin' => true],
+    'settings_list'           => ['post' => false, 'csrf' => false, 'admin' => true],
     // Ändern/Auslösen
     'enqueue'                 => ['post' => true, 'csrf' => true, 'admin' => true],
     'cancel'                  => ['post' => true, 'csrf' => true, 'admin' => true],
@@ -52,6 +53,7 @@ const DASHBOARD_ACTIONS = [
     'keys_set_mute_volume'    => ['post' => true, 'csrf' => true, 'admin' => true],
     'keys_test'               => ['post' => true, 'csrf' => true, 'admin' => true],
     'notify_set'              => ['post' => true, 'csrf' => true, 'admin' => true],
+    'settings_set'            => ['post' => true, 'csrf' => true, 'admin' => true],
     'notify_test'             => ['post' => true, 'csrf' => true, 'admin' => true],
     'alarm'                   => ['post' => true, 'csrf' => true, 'admin' => true],
     'false_alarm'             => ['post' => true, 'csrf' => true, 'admin' => true],
@@ -358,6 +360,7 @@ if ($action === 'keys_list') {
         'version' => (int)($state['version'] ?? 0),
         'keys' => $entries,
         'demo' => demo_mode_info($config),
+        'mute_max_seconds' => $maxMute,
     ]);
 }
 
@@ -887,6 +890,70 @@ if ($action === 'notify_set') {
             'key' => $key,
             'label' => $scopeLabel,
             'option' => $spec['label'],
+            'value' => (string)($result['value_text'] ?? ''),
+        ]);
+    }
+    unset($result['value_text']);
+    json_response($result);
+}
+
+// ==== Allgemeine Einstellungen (app_settings.json) ==========================
+// Bisher nur: nach wie vielen Sekunden Stummgeschaltete automatisch wieder
+// laut werden (mute_max_seconds). Nur Admin. Auswahl aus festen Stufen plus
+// dem Wert aus config.php; ein anderer Wert wird abgelehnt.
+if ($action === 'settings_list') {
+    $default = mute_max_config_seconds($config);
+    $choices = [];
+    foreach (mute_max_choices($config) as $seconds) {
+        $text = $seconds === 0 ? 'nie' : notify_duration_label($seconds);
+        $choices[] = ['value' => $seconds, 'text' => $text . ($seconds === $default ? ' (Standard)' : '')];
+    }
+    json_response([
+        'ok' => true,
+        'settings' => ['mute_max_seconds' => [
+            'value' => mute_max_seconds($config),
+            'default' => $default,
+            'choices' => $choices,
+        ]],
+    ]);
+}
+
+if ($action === 'settings_set') {
+    $key = (string)($_POST['key'] ?? '');
+    $raw = trim((string)($_POST['value'] ?? ''));
+    if ($key !== 'mute_max_seconds') {
+        json_response(['ok' => false, 'message' => 'Unbekannte Einstellung.']);
+    }
+    $picked = null;
+    foreach (mute_max_choices($config) as $choice) {
+        if ((string)$choice === $raw) {
+            $picked = $choice;
+            break;
+        }
+    }
+    if ($picked === null) {
+        json_response(['ok' => false, 'message' => 'Ungültiger Wert – nichts geändert.']);
+    }
+    $result = with_lock($config, 'settings', function () use ($config, $picked): array {
+        $path = data_path($config, 'app_settings.json');
+        $status = 'ok';
+        $stored = read_json_file($path, [], $status);
+        if (($stored['mute_max_seconds'] ?? null) === $picked) {
+            return ['ok' => true, 'changed' => false, 'message' => 'Ist bereits so eingestellt.'];
+        }
+        $stored['mute_max_seconds'] = $picked;
+        if (!write_json_file($path, $stored)) {
+            return ['ok' => false, 'message' => 'Einstellung konnte nicht gespeichert werden (data_dir prüfen).'];
+        }
+        $text = $picked === 0 ? 'nie' : notify_duration_label($picked);
+        return ['ok' => true, 'changed' => true, 'value_text' => $text,
+            'message' => 'Gespeichert – Automatisch wieder laut nach: ' . $text . '.'];
+    });
+    if (!empty($result['ok']) && !empty($result['changed'])) {
+        append_command_log($config, [
+            'event' => 'setting_changed',
+            'by' => $user,
+            'label' => 'Automatisch wieder laut nach',
             'value' => (string)($result['value_text'] ?? ''),
         ]);
     }
