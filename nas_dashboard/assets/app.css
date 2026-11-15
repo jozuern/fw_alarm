@@ -2238,6 +2238,12 @@ a.band-inner:focus-visible {
   margin-top: 2px;
   color: var(--text-2);
   font-size: 13px;
+  line-height: 1.35;
+}
+
+/* Rückschaltung fällig, aber nicht gespeichert: Warnung statt Hinweis. */
+.rcp-vol-hint.is-warn {
+  color: var(--warn-text);
 }
 
 /* Rückmeldung unter einer Zeile bzw. im Regler-Block. */

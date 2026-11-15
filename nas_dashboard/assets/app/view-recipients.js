@@ -159,11 +159,33 @@
       current=${selId === Number(e.id)}/>`)}</${ui.Group}>`;
   }
 
+  // ---- Lautstärke für die Stumm-Frage ------------------------------------------
+  // Die Frage muss die Lautstärke nennen, die der Regler ZEIGT - auch wenn
+  // deren Speicherung noch läuft bzw. die Liste sie noch nicht zurückgemeldet
+  // hat (Regler 4 -> 0, sofort „Stumm“: sonst hieße es „leise (4 von 10)“,
+  // ankommen würde aber lautlos). volRef hält die zuletzt abgeschickte Stufe
+  // samt dem Server-Wert, gegen den sie lief ({value, base}); sobald die
+  // Liste einen anderen Wert meldet, gilt wieder der Server.
+  function questionVolume(entry, volRef) {
+    const server = volOf(entry);
+    const p = volRef.current;
+    return p && p.base === server ? p.value : server;
+  }
+  // Per Tastatur gewählte, noch nicht gespeicherte Stufe (ui.Slider speichert
+  // erst nach 0,8 s bzw. beim Verlassen): vor der Frage abschicken. Ein
+  // echter Tipp auf „Stumm“ nimmt dem Regler meist schon selbst den Fokus -
+  // Safari am Mac fokussiert Knöpfe beim Klick aber nicht.
+  function flushSlider(id) {
+    const a = root.document && root.document.activeElement;
+    const person = a && a.closest ? a.closest('.rcp-person') : null;
+    if (person && a.classList.contains('slider-input') && person.getAttribute('data-id') === String(id)) a.blur();
+  }
+
   // ---- Person: Laut / Stumm / Dauerhaft stumm -------------------------------
   // Lauter geht sofort; leiser fragt nach und nennt die tatsächliche
   // Stumm-Lautstärke. Dauerhaft -> Stumm ist die sichere Richtung (das
   // Sicherheitsnetz greift wieder) und geht ohne Rückfrage.
-  function ModeControl({ entry, state }) {
+  function ModeControl({ entry, state, volRef }) {
     const rev = store.useStore((s) => s.rev.keys);
     const [msg, setMsg] = useState(null);
     const show = useShow(setMsg);
@@ -175,9 +197,10 @@
       if (want === 'loud') return store.keyMute(id, false).then(show);
       if (want === 'muted' && state === 'permanent') return store.keyPermanent(id, false).then(show);
       const permanent = want === 'permanent';
+      flushSlider(id);
       store.openConfirm({
         title: permanent ? 'Dauerhaft stumm schalten?' : 'Stumm schalten?',
-        text: L.muteQuestion(name, want, volOf(entry)),
+        text: L.muteQuestion(name, want, questionVolume(entry, volRef)),
         confirmLabel: permanent ? 'Ja, dauerhaft stumm' : 'Ja, stumm schalten',
         hold: false,
         onConfirm: () => (permanent ? store.keyPermanent(id, true) : store.keyMute(id, true)).then(show)
@@ -193,19 +216,32 @@
 
   // Regler 0–10: gespeichert beim Loslassen (Tastatur: nach 0,8 s bzw. beim
   // Verlassen - siehe ui.Slider). Gilt, sobald die Person stumm ist.
-  function VolumeControl({ entry, state }) {
+  // Überfällige Rückschaltung (NAS rechnet laut, nicht gespeichert): statt
+  // „gilt, wenn stumm“ die Warnung, dass die Box evtl. noch so alarmiert.
+  function VolumeControl({ entry, state, overdue, volRef }) {
     const rev = store.useStore((s) => s.rev.keys);
     const [msg, setMsg] = useState(null);
     const show = useShow(setMsg);
     const id = Number(entry.id);
     const commit = (v) => {
       setMsg(null);
-      return store.keyVolume(id, v).then(show);
+      const mine = { value: v, base: volOf(entry) };
+      volRef.current = mine;
+      return store.keyVolume(id, v).then((res) => {
+        if ((!res || !res.ok) && volRef.current === mine) volRef.current = null;
+        return show(res);
+      });
     };
+    let hint = null;
+    if (overdue) {
+      hint = html`<p class="rcp-vol-hint is-warn"><span aria-hidden="true">! </span>Die Box alarmiert evtl. noch mit dieser Lautstärke – die Rückschaltung auf laut ist nicht gespeichert.</p>`;
+    } else if (state === 'loud') {
+      hint = html`<p class="rcp-vol-hint">gilt, wenn stumm</p>`;
+    }
     return html`<section class="group rcp-vol"><div class="group-body rcp-vol-box">
       <${ui.Slider} key=${`vol:${id}:${rev}`} min=${0} max=${10} value=${volOf(entry)} onCommit=${commit}
         label="Stumm-Lautstärke" tone="warn" minLabel="0" maxLabel="10" valueText=${(v) => (v === 0 ? 'lautlos' : String(v))}/>
-      ${state === 'loud' ? html`<p class="rcp-vol-hint">gilt, wenn stumm</p>` : null}
+      ${hint}
       <${ui.Msg} msg=${msg} class="rcp-msg-vol"/>
     </div></section>`;
   }
@@ -247,11 +283,13 @@
       return store.keyPhone(id, next).then(show);
     };
     return [
+      // Die ganze 44-px-Zeile ist das Label: Ein Tipp irgendwo darauf setzt
+      // den Cursor ins Feld (das Feld selbst ist nur so hoch wie seine Schrift).
       html`<li class="row rcp-phone-row" key="phone">
-        <div class="row-main rcp-field">
-          <label class="row-label" for=${fieldId}>Telefon</label>
+        <label class="row-main rcp-field">
+          <span class="row-label">Telefon</span>
           <${PhoneInput} key=${`tel:${id}:${rev}`} id=${fieldId} value=${phone} onSave=${save}/>
-        </div>
+        </label>
         <${ui.Msg} msg=${msg} class="rcp-msg-phone"/>
       </li>`,
       tel ? html`<li class="row has-icon" key="call"><a class="row-main rcp-call" href=${`tel:${tel}`} aria-label=${`${entry.label} anrufen (${phone})`}>
@@ -525,6 +563,7 @@
 
   // ---- Person (Sheet bzw. Panel) -------------------------------------------------
   function Person({ entry, demo, readOnly, onDeleted }) {
+    const volRef = useRef(null);   // zuletzt abgeschickte Stumm-Lautstärke (siehe questionVolume)
     const v = L.recipientView(entry, demo, 0);
     const lines = stateLines(entry, v);
     let demoNote = '';
@@ -543,8 +582,8 @@
           <${ui.Row} label="Stumm-Lautstärke" value=${vol === 0 ? '0 (lautlos)' : `${vol} von 10`}/>
         </${ui.Group}>
         <p class="note">Ändern kann das nur ein Admin.</p>`
-      : html`<${ModeControl} entry=${entry} state=${v.state}/>
-        <${VolumeControl} entry=${entry} state=${v.state}/>
+      : html`<${ModeControl} entry=${entry} state=${v.state} volRef=${volRef}/>
+        <${VolumeControl} entry=${entry} state=${v.state} overdue=${v.overdue} volRef=${volRef}/>
         <${ui.Group} class="rcp-contact">
           <${PhoneRows} entry=${entry}/>
           <${LinkRows} entry=${entry}/>

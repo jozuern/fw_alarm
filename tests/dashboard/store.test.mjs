@@ -1146,6 +1146,27 @@ test('Fix 2: nicht gespeichert → neue Referenz und Revision, auch bei gleichen
   assert.equal(h.s().rev.demo, 1);
 });
 
+// Ein Test-Push ändert keine Listendaten: Scheitert er (bis zu 30 s später),
+// darf er die Bedienelemente der Empfänger NICHT zurücksetzen (sonst ginge
+// ein gerade gezogener Regler oder ein halb getipptes Telefon verloren).
+test('Fix-Runde Task 10: gescheiterter Test-Push setzt rev.keys und keys nicht zurück', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  await h.store.refreshKeys();
+  const keys0 = h.s().keys;
+  assert.ok(keys0);
+  h.routes.keys_test = () => reply(200, { ok: false, message: 'Test-Push an „Tom“ FEHLGESCHLAGEN (HTTP 400 – Bark-Key prüfen).' });
+  const r = await h.store.keyTest(2);
+  assert.equal(r.ok, false);
+  assert.equal(h.s().rev.keys, 0);
+  h.routes.keys_test = () => { throw new TypeError('Netz weg'); };
+  assert.equal((await h.store.keyTest(2)).ok, false);
+  assert.equal(h.s().rev.keys, 0);
+  await settle();
+  assert.equal(h.s().keys, keys0);   // gleiche Daten nachgeladen: gleiche Referenz
+  assert.equal(h.s().keyTestInFlight, false);
+});
+
 test('Fix 4: start() taktet sofort – alter Stand gilt gleich als veraltet', async () => {
   const h = harness();
   h.store.init(ADMIN);

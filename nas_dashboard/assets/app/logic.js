@@ -1046,12 +1046,15 @@
     const permanent = !!entry.mute_permanent;
     const state = !entry.muted ? 'loud' : (permanent ? 'permanent' : 'muted');
     const isDemoTarget = demoOn && Number(entry.id) === Number(demo.key_id);
-    const pill = state === 'loud' ? { text: 'Laut', tone: 'ok' }
-      : (state === 'permanent' ? { text: 'Dauerhaft', tone: 'crit' } : { text: 'Stumm', tone: 'warn' });
     // mute_overdue: Die Rückschaltung ist fällig, konnte aber nicht gespeichert
     // werden - die Box kennt noch "stumm" und alarmiert diesen Empfänger dann
-    // evtl. noch mit der Stumm-Lautstärke.
+    // evtl. noch mit der Stumm-Lautstärke. state bleibt der wirksame Zustand
+    // des NAS ('loud'), die Pille ist aber NIE das grüne "Laut" (grün heißt:
+    // alles in Ordnung).
     const overdue = !!entry.mute_overdue;
+    let pill = state === 'loud' ? { text: 'Laut', tone: 'ok' }
+      : (state === 'permanent' ? { text: 'Dauerhaft', tone: 'crit' } : { text: 'Stumm', tone: 'warn' });
+    if (overdue) pill = { text: 'Evtl. stumm', tone: 'warn' };
     let sub = '';
     let subTone = '';
     if (overdue) {
@@ -1064,7 +1067,7 @@
       else if (until) tail = `${since ? ',' : ''} automatisch wieder laut um ~${fmtClock(until)} Uhr`;
       sub = `Alarme kommen ${volWords(vol)} an.${since}${tail}${since || tail ? '.' : ''}`;
     }
-    return { state, pill, sub, subTone, isDemoTarget, paused: demoOn && !isDemoTarget };
+    return { state, pill, sub, subTone, overdue, isDemoTarget, paused: demoOn && !isDemoTarget };
   }
 
   // ---- Bestätigungsfragen --------------------------------------------------

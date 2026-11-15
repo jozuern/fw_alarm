@@ -951,11 +951,13 @@
   const keyPhone = (id, phone) => keyAction({ action: 'keys_set_phone', id: String(id), phone: String(phone || '').trim() });
 
   // Test-Push: höchstens einer gleichzeitig (der Versand dauert bis ~20 s).
+  // slice: null - er ändert keine Listendaten; scheitert er, darf er die
+  // Bedienelemente der Empfänger (Regler, Telefon-Feld …) nicht zurücksetzen.
   async function keyTest(id) {
     if (state.keyTestInFlight) return outcome(false, 'Es läuft bereits ein Test-Push – bitte kurz warten.', 'error');
     set({ keyTestInFlight: true, keyTestId: String(id) });
     try {
-      return await keyAction({ action: 'keys_test', id: String(id) }, { timeoutMs: api.TIMEOUT.SEND_ONE, okText: 'Gesendet.' });
+      return await keyAction({ action: 'keys_test', id: String(id) }, { slice: null, timeoutMs: api.TIMEOUT.SEND_ONE, okText: 'Gesendet.' });
     } finally {
       set({ keyTestInFlight: false, keyTestId: null });
     }

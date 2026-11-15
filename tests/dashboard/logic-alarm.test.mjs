@@ -121,6 +121,18 @@ test('recipient view', () => {
   assert.equal(L.recipientView({ id: 2, label: 'A', muted: false }, { enabled: false }, 0).pill.text, 'Laut');
 });
 
+// Rückschaltung fällig, aber nicht gespeichert: Das NAS rechnet „laut“
+// (muted=false), die Box alarmiert evtl. noch mit der Stumm-Lautstärke - das
+// darf nie wie ein grünes „Laut“ aussehen.
+test('fix round: überfällige Stummschaltung zeigt orange „Evtl. stumm“, nie grün', () => {
+  const o = L.recipientView({ id: 2, label: 'A', muted: false, mute_overdue: true, mute_volume: 4 }, { enabled: false }, 0);
+  assert.equal(o.state, 'loud');   // wirksamer Zustand des NAS
+  assert.equal(o.pill.text, 'Evtl. stumm');
+  assert.equal(o.pill.tone, 'warn');
+  assert.equal(o.overdue, true);
+  assert.equal(L.recipientView({ id: 2, label: 'A', muted: false }, { enabled: false }, 0).overdue, false);
+});
+
 test('fix round: resend question names only muted re-send targets', () => {
   const keys = [{ id: 1, label: 'Tom', muted: true, mute_volume: 2 }, { id: 2, label: 'Anna', muted: true, mute_volume: 3 }, { id: 3, label: 'Eva', muted: false }];
   const q = L.alarmQuestion('resend', { enabled: false }, keys, { names: ['Tom'], ids: [1], what: 'REAL ALARM' });

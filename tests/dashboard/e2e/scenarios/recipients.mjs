@@ -62,6 +62,53 @@ async function until(fn, ms, what) {
   throw new Error(`Zeitüberschreitung (${ms} ms): ${what}`);
 }
 
+// Echter Mausklick (Pointer-Ereignisse und Fokuswechsel wie bei einem Menschen).
+async function mouseClick(page, x, y) {
+  await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
+  await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
+}
+async function segCenter(page, label) {
+  return page.eval(`(() => { const b = Array.from(document.querySelectorAll('.rcp-person .seg')).find((x) => x.textContent.trim() === ${q(label)});
+    b.scrollIntoView({ block: 'center' });
+    const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+}
+
+// Antworten von keys_list in der Seite verändern (z.B. eine überfällige
+// Stummschaltung, die das NAS nicht wegschreiben konnte). null = aus.
+async function patchKeysList(page, id) {
+  await page.eval(`(() => {
+    if (!window.__realFetch) window.__realFetch = window.fetch;
+    if (${id === null ? 'true' : 'false'}) { window.fetch = window.__realFetch; return; }
+    window.fetch = async (url, opts) => {
+      const res = await window.__realFetch(url, opts);
+      if (!String(url).includes('action=keys_list')) return res;
+      const data = await res.json();
+      (data.keys || []).forEach((k) => { if (k.id === ${Number(id)}) { k.muted = false; k.mute_overdue = true; delete k.mute_until; } });
+      return new Response(JSON.stringify(data), { status: res.status, headers: { 'Content-Type': 'application/json' } });
+    };
+  })()`);
+  await page.eval('FW.store.refreshKeys()');
+}
+
+// Pixelzeilen (an der Stelle x), in denen ein Tipp das Telefon-Feld trifft:
+// das Feld selbst oder ein Label, das zu ihm gehört.
+async function phoneHitRows(page, where) {
+  return page.eval(`(() => {
+    const input = document.querySelector('.rcp-phone-input');
+    input.closest('.row').scrollIntoView({ block: 'center' });
+    const row = input.closest('.row').getBoundingClientRect();
+    const x = ${q(where)} === 'left' ? row.left + 6 : row.left + row.width / 2;
+    let n = 0;
+    for (let y = Math.floor(row.top) - 10; y <= Math.ceil(row.bottom) + 10; y++) {
+      const hit = document.elementFromPoint(x, y);
+      const label = hit && hit.closest('label');
+      if (hit && (hit === input || (label && label.control === input))) n++;
+    }
+    return n;
+  })()`);
+}
+
 // Genau 40 Zeichen (Höchstlänge des Namens).
 const longName = (i) => `Maximiliane-Sophie Brandmeister-Oberhof ${i}`.slice(0, 39) + String(i % 10);
 
@@ -173,6 +220,16 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert(await page.eval(`document.querySelector('.rcp-phone-input').value`) === '+49 171 2345678', 'Telefon im Sheet');
     assert(await page.eval(`document.querySelector('.rcp-call')?.getAttribute('href')`) === 'tel:+491712345678', 'Anrufen-Link');
     assert((await text(page, '.rcp-person .rcp-vol')).includes('gilt, wenn stumm'), 'laut: Hinweis „gilt, wenn stumm“');
+    // Telefon: die ganze 44-px-Zeile trifft das Feld (auch links im Rand).
+    for (const where of ['left', 'center']) {
+      const rows = await phoneHitRows(page, where);
+      assert(rows >= 44, `Telefon-Zeile (${where}): Tippfläche ${rows} px`);
+    }
+    const phoneRow = await page.eval(`(() => { const r = document.querySelector('.rcp-phone-input').closest('.row').getBoundingClientRect();
+      return { x: r.left + 6, y: r.top + 4 }; })()`);
+    await mouseClick(page, phoneRow.x, phoneRow.y);
+    assert(await page.eval(`document.activeElement?.classList.contains('rcp-phone-input')`), 'Tipp an den Rand der Telefon-Zeile fokussiert das Feld');
+    await page.eval('document.activeElement.blur()');
     await shot(page, 'person');
 
     await clickSeg(page, 'Stumm');
@@ -209,6 +266,21 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.waitFor(`(document.querySelector('#rcp-${ids.lena} .rcp-state-pill')?.textContent || '').trim() === 'Laut'`, 8000);
     assert((await entry(ids.lena)).muted === false, 'Lena laut gespeichert');
 
+    // ---- Rückschaltung fällig, aber nicht gespeichert -------------------------
+    // keys_list meldet dann muted=false (wirksam beim NAS) plus mute_overdue -
+    // die Box alarmiert evtl. noch mit der Stumm-Lautstärke. Das darf nirgends
+    // wie ein grünes „Laut“ aussehen.
+    await patchKeysList(page, ids.lena);
+    await page.waitFor(`(document.querySelector('#rcp-${ids.lena} .rcp-state-pill')?.textContent || '').trim() === 'Evtl. stumm'`, 5000);
+    assert(await page.eval(`!!document.querySelector('#rcp-${ids.lena} .rcp-state-pill.pill-warn') && !document.querySelector('#rcp-${ids.lena} .pill-ok')`), 'überfällig: Pille orange, nicht grün');
+    assert(await page.eval(`!!document.querySelector('.rcp-person .rcp-state-main.is-warn')`), 'überfällig: Warnung im Kopf der Person');
+    const overdueVol = await text(page, '.rcp-person .rcp-vol');
+    assert(!overdueVol.includes('gilt, wenn stumm') && await page.eval(`!!document.querySelector('.rcp-person .rcp-vol-hint.is-warn')`)
+      && overdueVol.includes('Box alarmiert evtl. noch'), 'überfällig: Warnung am Regler statt „gilt, wenn stumm“: ' + overdueVol);
+    await shot(page, 'overdue');
+    await patchKeysList(page, null);
+    await page.waitFor(`(document.querySelector('#rcp-${ids.lena} .rcp-state-pill')?.textContent || '').trim() === 'Laut'`, 5000);
+
     // ---- Live-Aktualisierung mitten in der Bedienung ------------------------
     // Umbenennen-Feld offen mit halb getipptem Namen, Regler mit dem Finger
     // gezogen (nicht losgelassen), Anna ändert sich auf einem anderen Gerät,
@@ -243,6 +315,23 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await shot(page, 'live-refresh');
     await page.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await until(async () => (await entry(ids.lena)).mute_volume === dragged, 6000, `Loslassen speichert ${dragged}`);
+
+    // ---- Frage nennt die Lautstärke, die der Regler zeigt --------------------
+    // Regler per Tastatur auf 0 und sofort „Stumm“ antippen (noch bevor die
+    // neue Lautstärke gespeichert und die Liste nachgeladen ist): Die Frage
+    // muss „OHNE Ton“ sagen, nicht die alte Lautstärke.
+    await page.eval(`document.querySelector('.rcp-person .slider-input').focus()`);
+    for (let i = 0; i < dragged; i++) await keyPress(page, 'ArrowLeft');
+    assert(await text(page, '.rcp-person .slider-value') === 'lautlos', 'Regler zeigt lautlos');
+    const stummAt = await segCenter(page, 'Stumm');
+    await mouseClick(page, stummAt.x, stummAt.y);
+    await waitConfirm(page);
+    const freshQ = await text(page, '.confirm-text');
+    assert(freshQ.includes('OHNE Ton') && !freshQ.includes(`Stumm-Lautstärke ${dragged}`), 'Frage mit der gezeigten Lautstärke: ' + freshQ);
+    await page.click('.confirm .btn-cancel');
+    await page.waitFor(`!document.querySelector('.confirm')`, 3000);
+    await until(async () => (await entry(ids.lena)).mute_volume === 0, 6000, 'Lautstärke 0 gespeichert');
+    assert((await entry(ids.lena)).muted === false, 'abgebrochen: Lena bleibt laut');
 
     // ---- Umbenennen, Key ersetzen -------------------------------------------
     await typeInto(page, '.rcp-rename-input', 'Lena Berger');
@@ -431,6 +520,11 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert(await page.eval(noControls), 'Lese-Rolle: Person nur lesend, ohne Telefon/Links');
     assert((await text(page, '.rcp-person')).includes('Stumm-Lautstärke'), 'Lese-Rolle sieht die Stumm-Lautstärke');
     await shot(page, 'readonly');
+    // Überfällige Stummschaltung auch für die Lese-Rolle nicht grün.
+    await patchKeysList(page, ids.phone);
+    await page.waitFor(`(document.querySelector('.rcp-facts .pill')?.textContent || '').trim() === 'Evtl. stumm'`, 5000);
+    assert(await page.eval(`!document.querySelector('.rcp-facts .pill-ok') && !document.querySelector('#rcp-${ids.phone} .pill-ok')`), 'Lese-Rolle: überfällig nicht grün');
+    await patchKeysList(page, null);
 
     assert(problems.length === 0, 'keine Konsolenfehler:\n' + problems.join('\n'));
   } finally {
