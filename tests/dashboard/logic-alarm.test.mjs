@@ -133,7 +133,7 @@ test('fix round: muted line in every sending question', () => {
   const fa = L.alarmQuestion('false_alarm', demo, keys).text;
   assert.match(fa, /Anna \(stumm\) mit Lautstärke 3/); assert.doesNotMatch(fa, /Alarm kommt/);
   assert.match(L.alarmQuestion('box_alarm', demo, keys).text, /Anna \(stumm\) mit Lautstärke 3/);
-  assert.match(L.alarmQuestion('false_alarm', { enabled: false }, keys).text, /kommt mit Stumm-Lautstärke): Anna/);
+  assert.match(L.alarmQuestion('false_alarm', { enabled: false }, keys).text, /kommt mit Stumm-Lautstärke\): Anna/);
 });
 
 test('fix round: empty vs. not loaded list', () => {
