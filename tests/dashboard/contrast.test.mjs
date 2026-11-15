@@ -133,6 +133,8 @@ function pairs() {
       add(theme, layer, 'Kachel blau (Symbol)', '#ffffff', [...CARD(layer), '--info'], LARGE);
       add(theme, layer, 'Kachel grau (Symbol)', '#ffffff', [...CARD(layer), '--tile-neutral'], LARGE);
     }
+    // Verlauf: Suchfeld (Platzhalter, Lupe, Leeren-Kreuz) liegt auf --field-bg.
+    add(theme, 'page', 'Verlauf Suchfeld Platzhalter', '--text-2', ['--bg', '--field-bg']);
     add(theme, 'page', 'Tab-Leiste inaktiv', '--text-2', ['--bg', '--bar-bg']);
     add(theme, 'page', 'Tab-Leiste aktiv', '--accent-text', ['--bg', '--bar-bg']);
     add(theme, 'page', 'Seitenleiste Eintrag', '--side-text', ['--side-bg']);

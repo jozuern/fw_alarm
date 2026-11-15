@@ -2423,6 +2423,105 @@ a.band-inner:focus-visible {
   }
 }
 
+/* ---- Verlauf (view-log.js) ---------------------------------------------- */
+.log-filter {
+  margin: 0 0 12px;
+}
+
+.log-searchbox {
+  position: relative;
+  margin: 0 0 6px;
+}
+
+.log-search {
+  padding-right: 44px;
+  padding-left: 38px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.log-search::-webkit-search-cancel-button {
+  display: none;
+}
+
+.log-search-icon {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  width: 18px;
+  height: 18px;
+  color: var(--text-2);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.log-search-clear {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+}
+
+.log-search-clear .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.log-hint {
+  margin: 0 4px 18px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.log-empty {
+  margin: 8px 4px 24px;
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.log-empty.is-error {
+  color: var(--crit-text);
+}
+
+.log-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 11px var(--row-pad-x);
+  --row-inset: 58px;
+}
+
+.log-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--row-font);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.log-time {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 2px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.log-more {
+  margin: 0 0 24px;
+}
+
 /* Bewegung reduzieren: alles aus. Die Füllung des Halten-Knopfs bleibt -
    sie ist Anzeige, keine Animation (ui.js setzt --p direkt). */
 @media (prefers-reduced-motion: reduce) {
