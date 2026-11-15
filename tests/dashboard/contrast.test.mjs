@@ -212,6 +212,18 @@ function pairs() {
       add(theme, 'page', `Einstellungen: Demo-Karte ${name}`, fg, ['--bg', '--surface']);
     }
     add(theme, 'page', 'Einstellungen: Demo beenden (Knopf)', '--crit-text', ['--bg', '--surface']);
+    // Anmeldeseite: Marke und Fuß auf der Seite, Felder in der Karte
+    // (--surface), Fehlerzeile, roter Knopf, Fokusring ums Feld.
+    add(theme, 'page', 'Anmeldung: Untertitel/Fuß', '--text-2', ['--bg']);
+    add(theme, 'page', 'Anmeldung: Feld-Bezeichnung', '--text-2', ['--bg', '--surface']);
+    add(theme, 'page', 'Anmeldung: Eingabe', '--text', ['--bg', '--surface']);
+    add(theme, 'page', 'Anmeldung: Fehler', '--crit-text', ['--bg']);
+    add(theme, 'page', 'Anmeldung: Anmelden (19 px fett)', '#ffffff', ['--bg', '--alarm'], LARGE);
+    add(theme, 'page', 'Anmeldung: Fokusring ums Feld', '--info', ['--bg', '--surface'], LARGE);
+    // Bestätigungsseite der Kurzbefehl-Links (api/mute.php).
+    for (const [name, fg] of [['grün', '--ok-text'], ['orange', '--warn-text'], ['rot', '--crit-text'], ['Text', '--text']]) {
+      add(theme, 'page', `Kurzbefehl-Seite: ${name}`, fg, ['--bg', '--surface']);
+    }
   }
   return list;
 }

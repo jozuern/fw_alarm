@@ -151,7 +151,8 @@
   // ACHTUNG, doppelt gepflegt: Dieselben Schwellen (HEAP_WARN, MAX_ALLOC_WARN,
   // weakWifi -80 dBm, heartbeatFailed) prüft der Wächter-Cron für die Meldung
   // "box_health" (nas_dashboard/cron/check_offline.php) - Änderungen immer an
-  // BEIDEN Stellen nachziehen.
+  // BEIDEN Stellen nachziehen (solange es sie gibt, auch in der eingefrorenen
+  // alten Ansicht assets/classic/app.js).
   const HEAP_WARN = 50000;
   const MAX_ALLOC_WARN = 30000;
   const lowBytes = (v, limit) => { const b = parseInt(v, 10); return !isNaN(b) && b < limit; };

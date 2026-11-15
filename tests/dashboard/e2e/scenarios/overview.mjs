@@ -1,4 +1,4 @@
-// Übersicht der neuen Oberfläche (next.php): Status-Karte samt Urteil,
+// Übersicht der neuen Oberfläche (index.php): Status-Karte samt Urteil,
 // Hinweise, Prüfliste, Auslösen mit Halten-zum-Senden, Ergebnis-Karte („wer
 // wurde NICHT erreicht“, Anrufen, Nachsendung), Schutz der offenen Bestätigung
 // (Tab versteckt, Moduswechsel, 409), Box offline auf kleinem iPhone, NAS
@@ -122,7 +122,8 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
     await page.login(base, 'admin', 'test');
     problems.length = 0;   // nur die neue Oberfläche zählt
-    await page.goto(`${base}/next.php`);
+    await page.goto('about:blank');
+    await page.goto(`${base}/index.php`);
     await page.waitFor(titleIs('Bereit – 1 Hinweis'), 10000);
     assert((await text(page, '.ov-hints')).includes('Offline-Wächter'), 'Hinweis nennt den Offline-Wächter');
     assert(await page.eval(`!!document.querySelector('.ov-hints .row.tone-warn')`), 'Hinweis-Zeile orange');
@@ -221,7 +222,8 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.eval('FW.ui.announce = window.__announce');
 
     // ---- Neuladen: die nicht Erreichten bleiben (localStorage) ---------------
-    await page.goto(`${base}/next.php`);
+    await page.goto('about:blank');
+    await page.goto(`${base}/index.php`);
     await page.waitFor(cardHas('Auf diesem Gerät gemerkt'), 10000);
     // Die Nummer kommt mit der Empfängerliste (eigene Abfrage nach dem Laden).
     await page.waitFor(`(() => { const li = document.querySelector('.result-list li');
@@ -376,7 +378,8 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert((await admin.post({ action: 'enqueue', type: 'TEST' })).ok, 'TEST angelegt (Admin)');
     await page.send('Network.clearBrowserCookies');
     await page.login(base, 'leser', 'test');
-    await page.goto(`${base}/next.php`);
+    await page.goto('about:blank');
+    await page.goto(`${base}/index.php`);
     await page.waitFor(`!!document.querySelector('.status-card') && !!document.querySelector('.ov-readonly')
       && (document.querySelector('.cmd-line')?.textContent || '').includes('wartet auf die Box')
       && !!document.querySelector('.demo-band') && ${cardHas('Tom')}`, 10000);

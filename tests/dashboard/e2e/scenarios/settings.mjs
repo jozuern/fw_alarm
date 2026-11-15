@@ -1,4 +1,4 @@
-// Einstellungen der neuen Oberfläche (next.php#/einstellungen): Liste,
+// Einstellungen der neuen Oberfläche (index.php#/einstellungen): Liste,
 // „Meldungen an mich“ (Schalter je Art, wichtige abschalten nur mit Rückfrage,
 // Detailseite mit Segment/Auswahl und „Probe senden“), „Ruhezeit &
 // Allgemein“, „Automatisch wieder laut nach“, Demo-Modus samt Band auf jeder
@@ -21,7 +21,7 @@ const own = (k) => /^set[ab][0-9a-z]{6,}$/.test(k.key);
 // Seite neu laden: Ein reiner Wechsel des #-Teils löst kein load-Ereignis aus.
 async function open(page, base, hash) {
   await page.goto('about:blank');
-  await page.goto(`${base}/next.php${hash}`);
+  await page.goto(`${base}/index.php${hash}`);
 }
 // Innerhalb der geladenen Seite wechseln (wie ein Tipp auf einen Link).
 const go = (page, hash) => page.eval(`location.hash = ${q(hash)}`);

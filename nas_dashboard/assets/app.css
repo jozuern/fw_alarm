@@ -2870,6 +2870,170 @@ a.band-inner:focus-visible {
   line-height: 1.45;
 }
 
+/* ---- Anmeldeseite (index.php) und Kurzbefehl-Seite (api/mute.php) ------- */
+/* Eine zentrierte Spalte: Marke mit Lämpchen, eine Karte mit großen Feldern
+   (wie eine gruppierte Liste: Feld = Zeile, Haarlinie dazwischen), darunter
+   der rote „Anmelden“-Knopf. Reines HTML - geht auch ohne JavaScript (dann
+   im Standard-Design Dunkel). Die Kurzbefehl-Seite nutzt denselben Rahmen. */
+.login {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: 100%;
+  max-width: 432px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0 auto;
+  padding:
+    calc(env(safe-area-inset-top) + 24px)
+    calc(env(safe-area-inset-right) + var(--gutter))
+    calc(env(safe-area-inset-bottom) + 24px)
+    calc(env(safe-area-inset-left) + var(--gutter));
+}
+
+.login-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 28px;
+  text-align: center;
+}
+
+.login-brand .lamp {
+  width: 14px;
+  height: 14px;
+  margin-bottom: 12px;
+}
+
+/* Markenzeichen: die rote Rundumleuchte - KEIN Status (vor der Anmeldung
+   ist der Zustand unbekannt), deshalb ruhig, ohne Pulsieren. */
+.lamp-brand {
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent), 0 0 26px var(--tint-crit);
+}
+
+.login-title {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.login-sub {
+  color: var(--text-2);
+  font-size: 15px;
+}
+
+.login-card {
+  overflow: hidden;
+  border-radius: var(--radius-group);
+  background: var(--surface);
+}
+
+.login-field {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 10px var(--row-pad-x) 4px;
+}
+
+.login-field + .login-field::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: var(--row-pad-x);
+  height: 1px;
+  background: var(--separator);
+  transform: scaleY(0.5);
+  transform-origin: top;
+  pointer-events: none;
+}
+
+/* Fokus: Ring um das ganze Feld statt um das (randlose) Eingabefeld; die
+   Karte rundet ihn an den Ecken mit ab. */
+.login-field:focus-within {
+  box-shadow: inset 0 0 0 2px var(--info);
+}
+
+.login-label {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* 17 px (über den 16 px, ab denen iOS nicht mehr in die Seite zoomt). */
+.login-input {
+  width: 100%;
+  min-height: 40px;
+  padding: 4px 0 6px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 17px;
+}
+
+.login-input:focus,
+.login-input:focus-visible {
+  outline: none;
+}
+
+.login-error {
+  margin: 12px 4px 0;
+  font-size: 15px;
+}
+
+.login-submit {
+  margin-top: 20px;
+}
+
+.login-foot {
+  margin: 24px 4px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+/* Kurzbefehl-Seite: Zustand groß und farbig (mit Lämpchen und Text - Farbe
+   nie allein), darunter der Satz, was das bedeutet. */
+.mute-card {
+  padding: 20px var(--row-pad-x);
+}
+
+.mute-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.mute-state .lamp {
+  width: 12px;
+  height: 12px;
+}
+
+.mute-state-ok {
+  color: var(--ok-text);
+}
+
+.mute-state-warn {
+  color: var(--warn-text);
+}
+
+.mute-state-crit {
+  color: var(--crit-text);
+}
+
+.mute-detail {
+  margin-top: 10px;
+  font-size: 16px;
+  line-height: 1.45;
+}
+
 /* Bewegung reduzieren: alles aus. Die Füllung des Halten-Knopfs bleibt -
    sie ist Anzeige, keine Animation (ui.js setzt --p direkt). */
 @media (prefers-reduced-motion: reduce) {

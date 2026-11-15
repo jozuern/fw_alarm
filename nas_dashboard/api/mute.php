@@ -63,9 +63,10 @@ define('MUTE_WANTS_HTML', $method === 'GET' && (
     || stripos((string)($_SERVER['HTTP_ACCEPT'] ?? ''), 'text/html') !== false));
 
 // Antwort je nach Aufrufer: Text (Kurzbefehl/Skript) oder kleine HTML-Seite
-// (Browser). $lamp = Statuslampe der Seite: ok (grün), stale (gelb), crit (rot).
-// Die Seite nutzt das Stylesheet des Dashboards (CSP: keine Inline-Styles)
-// und enthält bewusst weder den Token noch den Bark-Key.
+// (Browser). $lamp = Statuslampe der Seite: ok (grün), stale (orange), crit (rot).
+// Die Seite nutzt das Stylesheet des Dashboards (assets/app.css, Rahmen wie
+// die Anmeldeseite; CSP: keine Inline-Styles) und enthält bewusst weder den
+// Token noch den Bark-Key.
 function mute_answer(string $text, string $lamp, string $headline, string $detail): void
 {
     if (!MUTE_WANTS_HTML) {
@@ -77,19 +78,24 @@ function mute_answer(string $text, string $lamp, string $headline, string $detai
 function mute_page(string $lamp, string $headline, string $detail): void
 {
     $h = static fn(string $value): string => htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
-    $css = '../assets/style.css?v=' . (int)@filemtime(dirname(__DIR__) . '/assets/style.css');
+    $asset = static fn(string $rel): string => '../' . $rel . '?v=' . (int)@filemtime(dirname(__DIR__) . '/' . $rel);
+    $tone = ['ok' => 'ok', 'stale' => 'warn', 'crit' => 'crit'][$lamp] ?? 'warn';
     header('Content-Type: text/html; charset=utf-8');
     header('Cache-Control: no-store');
     echo '<!doctype html><html lang="de"><head><meta charset="utf-8">'
         . '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
-        . '<meta name="theme-color" content="#14181d"><title>Alarm-Wächter – Arbeitsmodus</title>'
-        . '<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">'
-        . '<link rel="stylesheet" href="' . $h($css) . '"></head><body>'
-        . '<main class="login mute-page"><section class="panel">'
-        . '<p class="state state-' . $h($lamp) . '">' . $h($headline) . '</p>'
+        . '<meta name="theme-color" content="#000000"><meta name="color-scheme" content="dark light">'
+        . '<title>Alarm-Wächter – Arbeitsmodus</title>'
+        . '<link rel="icon" href="' . $h($asset('assets/favicon.svg')) . '" type="image/svg+xml">'
+        . '<script src="' . $h($asset('assets/app/theme-boot.js')) . '"></script>'
+        . '<link rel="stylesheet" href="' . $h($asset('assets/app.css')) . '"></head><body>'
+        . '<main class="login"><section class="login-card mute-card">'
+        . '<h1 class="mute-state mute-state-' . $tone . '"><span class="lamp lamp-' . $tone . '" aria-hidden="true"></span>'
+        . '<span>' . $h($headline) . '</span></h1>'
         . '<p class="mute-detail">' . $h($detail) . '</p>'
-        . '<p class="hint">Alarm-Wächter, Arbeitsmodus. Diese Seite kannst du schließen.</p>'
-        . '</section></main></body></html>';
+        . '</section>'
+        . '<p class="login-foot">Alarm-Wächter, Arbeitsmodus. Diese Seite kannst du schließen.</p>'
+        . '</main></body></html>';
     exit;
 }
 

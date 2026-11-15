@@ -107,8 +107,8 @@ erzeugen). Dieser Benutzer sieht Status und Empfängerliste (Keys maskiert),
 kann aber weder TEST noch REAL ALARM auslösen und die Liste nicht ändern –
 die Sperre greift serverseitig, nicht nur im Browser. Beide Werte leer = Login aus.
 
-Bark-Keys der Alarm-Empfänger: **im Dashboard pflegen** (Panel
-„Alarm-Empfänger"). Die Liste ist versioniert, gilt für beide Alarmwege und
+Bark-Keys der Alarm-Empfänger: **im Dashboard pflegen** (Bereich
+„Empfänger“). Die Liste ist versioniert, gilt für beide Alarmwege und
 wird vom ESP32 automatisch übernommen und im NVS gespeichert.
 `bark_keys_alarm` in `config.php` und `BARK_KEYS_ALARM` in `config.h` sind nur
 Start-/Fallback-Listen, solange die Dashboard-Liste leer ist.
@@ -222,8 +222,8 @@ Das Skript ist auch per HTTPS aufrufbar (POST mit dem Maschinen-Token wie bei
 `bark_key_status` aktiviert außerdem eine Meldung, wenn eine IP wegen zu
 vieler Login-Fehlversuche gesperrt wurde.
 
-**Welche Meldungen du bekommst und wie**, stellst du im Dashboard ein (Panel
-„Meldungen an den Admin“, nur Admin) – ohne etwas an `config.php` zu ändern:
+**Welche Meldungen du bekommst und wie**, stellst du im Dashboard ein
+(Einstellungen → „Meldungen an mich“, nur Admin) – ohne etwas an `config.php` zu ändern:
 
 - pro Art von Meldung: ein/aus, Dringlichkeit (leise / normal / dringend /
   kritisch), Verhalten in der Ruhezeit und „Probe senden“;
@@ -289,15 +289,16 @@ meldet der Wächter oben bewusst nichts) und wenn das NAS selbst Bark nicht
 mehr erreicht (dann scheitert auch der manuelle REAL ALARM). Umgekehrt meldet
 der Wächter oben, wenn die VM verstummt, und das Dashboard zeigt, wenn die VM
 ihre eigenen Meldungen nicht bei Bark loswird. Die Einstellungen unter
-„Meldungen an den Admin“ gelten nur für das NAS, nicht für die VM.
+„Meldungen an mich“ gelten nur für das NAS, nicht für die VM.
 Einrichtung: [`cloud_watcher/README.md`](../cloud_watcher/README.md); auf dem
 NAS braucht es nur `api/alive.php` und `watcher_token_sha256` in `config.php`
 (eigenes Token – derselbe Hash wie `machine_token_sha256` wird abgelehnt).
 
 ### Backup der Laufzeitdaten
 
-Empfängerliste, Demo-Zustand und Verlauf leben im `data_dir`
-(außerhalb des Web-Roots, z. B. `/volume1/fw_alarm_data`).
+Empfängerliste, Demo-Zustand, Einstellungen (`notify_settings.json.php`,
+`app_settings.json.php` – z. B. „Automatisch wieder laut nach“) und Verlauf
+leben im `data_dir` (außerhalb des Web-Roots, z. B. `/volume1/fw_alarm_data`).
 Nimm den Ordner in dein NAS-Backup auf
 (z. B. Hyper Backup), wenn du eins hast. Zusätzlich hält das Dashboard vor
 jeder Änderung der Empfängerliste die letzte **lesbare** Vorversion als
@@ -342,6 +343,36 @@ sicher neu holt.
   herunterladbar. Nach Änderungen an Web Station kurz prüfen, dass
   `https://…/fw_alarm/config.php` eine leere Seite liefert.
 
+## 7. Dashboard als App auf dem iPhone
+
+Das Dashboard lässt sich wie eine App auf den Home-Bildschirm legen: in Safari
+die Seite öffnen → Teilen → **„Zum Home-Bildschirm“**. Es startet dann ohne
+Browser-Leisten, mit schwarzer Statusleiste und dem FW-Symbol (`manifest.json`,
+`assets/icons/`, `assets/apple-touch-icon.png`). Die Anmeldung hält bis 12 h
+nach der letzten Nutzung, auch wenn die App ganz geschlossen wird (das
+Sitzungs-Cookie hat eine Laufzeit und wird bei jeder Nutzung erneuert). Am PC
+geht dasselbe in Chrome/Edge über „App installieren“.
+
+Bewusst **ohne Offline-Modus** (kein Service Worker): Das Dashboard lädt immer
+frisch vom NAS. Ist das NAS nicht erreichbar, steht das so auf der Übersicht –
+alte Daten sehen nie wie aktuelle aus.
+
+Design (Dunkel/Hell/System) und „Hinweis im Browser bei Störung“ stellt jedes
+Gerät unter Einstellungen → „Dieses Gerät“ für sich ein (gespeichert im
+Browser, nicht auf dem NAS).
+
+### Alte Ansicht (`classic.php`)
+
+Für eine Übergangszeit gibt es die bisherige Oberfläche noch unter
+`classic.php` (Einstellungen → Konto → „Alte Ansicht öffnen“) – falls in der
+neuen etwas klemmt. Sie ist eingefroren (`assets/classic/`), nutzt dieselbe
+Anmeldung und dieselben Daten und wird nach einigen Wochen entfernt; bis dahin
+gehören `classic.php` und `assets/classic/` beim Kopieren aufs NAS mit dazu.
+
+Mit der Umstellung entfallen `next.php`, `assets/app.js` und
+`assets/style.css`. Ein Kopieren aufs NAS löscht sie nicht – nach dem Update
+dort von Hand entfernen.
+
 ## Design
 
 Der ESP32 sendet Status per Formular-POST an `api/status.php` und pollt
@@ -383,7 +414,8 @@ hängt auch nicht am Schreibrecht auf den `data_dir`. Wurde jemand nicht
 erreicht, nennt das Dashboard ihn zuerst und bietet an, **nur an die nicht
 Erreichten** nachzusenden (das gilt genauso für die ENTWARNUNG).
 
-Zum Einrichten eines neuen Empfängers gibt es unter „Mehr“ den **Test-Push**:
+Zum Einrichten eines neuen Empfängers gibt es in seiner Ansicht (Bereich
+„Empfänger“, Person antippen) den **Test-Push**:
 eine normale, nicht kritische Mitteilung mit dem Alarmton. Kommt sie mit dem
 Alarmton an, stimmen Key und Ton auf dem iPhone – ganz ohne Demo-Modus und
 ohne echten Alarm. Das Dashboard fragt vorher nach, weil dabei der Alarmton
@@ -397,21 +429,22 @@ speichert sie im NVS-Flash. Leere oder unplausible Listen verwirft er, während
 eines offenen Alarms synchronisiert er nicht, und eine Übernahme meldet er dem
 Owner per Statusmeldung, sobald sich die Empfänger selbst geändert haben
 (reine Stumm-Wechsel laufen still). `poll.php` beendet vor jeder Antwort auch
-überfällige Stummschaltungen – so erreicht das 12-h-Sicherheitsnetz den
-Relaisweg auch ohne Cron-Wächter.
+überfällige Stummschaltungen – so erreicht das Sicherheitsnetz (Standard
+12 h, im Dashboard unter Einstellungen → „Automatisch wieder laut nach“
+einstellbar) den Relaisweg auch ohne Cron-Wächter.
 
-Der **Demo-Modus** (im Panel „Auslösen & Testen“ aufklappbar, nur Admin) leitet ALLE Alarme –
+Der **Demo-Modus** (Einstellungen → Demo-Modus, nur Admin) leitet ALLE Alarme –
 Relaisalarm über den ESP32 und REAL ALARM vom NAS – auf genau einen
 Test-Empfänger aus der Liste um. Er nutzt denselben Mechanismus: `demo_mode.json.php`
 im `data_dir` merkt sich den Zustand, `api/keys.php` liefert im Demo-Modus nur
 den Demo-Key, und jeder Moduswechsel erhöht die `keys_version`, sodass der ESP32
 die passende Liste beim nächsten Poll übernimmt (Firmware unverändert). Das
-Dashboard zeigt ein Warn-Banner, solange Demo aktiv ist, inklusive der Info, ob
+Dashboard zeigt auf jeder Seite ein oranges Band, solange Demo aktiv ist, inklusive der Info, ob
 der ESP32 die Demo-Liste schon übernommen hat – **vorher nicht testen**, sonst
 alarmiert ein Relaistest noch alle. Der aktive Demo-Empfänger ist nicht löschbar,
 und der Demo-Empfänger muss aus der gepflegten Liste stammen (dadurch gibt es
 beim Zurückschalten garantiert wieder eine nicht-leere Liste). Nach dem Testen
-zurück auf LIVE schalten – das Banner erinnert daran.
+zurück auf LIVE schalten – das Band erinnert daran.
 
 TLS läuft über HTTPS mit Let's Encrypt auf der Synology. Auf dem ESP32 wird wie
 beim bestehenden Bark-Pfad `setInsecure()` verwendet: Das ist auf Mikrocontrollern

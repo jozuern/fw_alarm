@@ -1,4 +1,4 @@
-// App-Gerüst der neuen Oberfläche (next.php): Tab-Leiste am iPhone,
+// App-Gerüst der neuen Oberfläche (index.php): Tab-Leiste am iPhone,
 // Seitenleiste am PC, Hash-Router, Tab-Titel und Badge nach dem Urteil,
 // Design-Umschaltung, Bestätigungs-Sheets mit Halten-zum-Senden - und das
 // alles ohne Konsolenfehler (CSP-Verstöße landen dort ebenfalls).
@@ -92,9 +92,11 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
   await pushBox(base, admin);
   runWatchdog(sandbox);
 
-  // Ohne Anmeldung leitet next.php zur Anmeldung um.
-  const anon = await fetch(`${base}/next.php`, { redirect: 'manual' });
-  assert(anon.status === 302 && /index\.php$/.test(anon.headers.get('location') || ''), 'anonym -> index.php, war ' + anon.status);
+  // Ohne Anmeldung zeigt index.php die Anmeldeseite statt der App-Hülle.
+  const anon = await fetch(`${base}/index.php`, { redirect: 'manual' });
+  const anonHtml = await anon.text();
+  assert(anon.status === 200 && anonHtml.includes('login-card') && !anonHtml.includes('<div id="app">'),
+    'anonym: Anmeldeseite, war ' + anon.status);
 
   const page = await browser.newPage();
   await page.send('Log.enable');
@@ -109,15 +111,24 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
   await page.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
   await page.login(base, 'admin', 'test');
   problems.length = 0;   // nur die neue Oberfläche zählt
-  await page.goto(`${base}/next.php`);
+  await page.goto('about:blank');
+  await page.goto(`${base}/index.php`);
   await page.waitFor(`!!document.querySelector('.tabbar')`);
-  // Skripte: feste Reihenfolge, alle defer, alle mit ?v=<Dateizeit>.
-  const scripts = await page.eval(`JSON.stringify(Array.from(document.scripts).map((s) => [s.getAttribute('src'), s.defer]))`);
+  // Skripte: zuerst theme-boot.js synchron im <head> (Design vor dem ersten
+  // Zeichnen), dann die App in fester Reihenfolge, alle defer; alle mit
+  // ?v=<Dateizeit>.
+  const scripts = await page.eval(`JSON.stringify(Array.from(document.scripts).map((s) => [s.getAttribute('src'), s.defer, s.parentNode === document.head]))`);
   const order = ['vendor/htm-preact-3.1.1.umd.js', 'app/logic.js', 'app/api.js', 'app/store.js', 'app/ui.js',
     'app/view-overview.js', 'app/view-recipients.js', 'app/view-log.js', 'app/view-settings.js', 'app/main.js'];
   const got = JSON.parse(scripts);
-  assert(got.length === order.length && got.every(([src, d], i) => d && src.startsWith('assets/' + order[i] + '?v=') && /\?v=\d{6,}$/.test(src)),
+  const [boot, ...app] = got;
+  assert(boot && boot[0].startsWith('assets/app/theme-boot.js?v=') && !boot[1] && boot[2] && /\?v=\d{6,}$/.test(boot[0]),
+    'theme-boot.js synchron im Kopf: ' + scripts);
+  assert(app.length === order.length && app.every(([src, d], i) => d && src.startsWith('assets/' + order[i] + '?v=') && /\?v=\d{6,}$/.test(src)),
     'Skript-Tags: ' + scripts);
+  assert(await page.eval(`(() => { const css = document.querySelector('link[rel="stylesheet"]');
+    const boot = document.scripts[0];
+    return !!css && !!(boot.compareDocumentPosition(css) & Node.DOCUMENT_POSITION_FOLLOWING); })()`), 'theme-boot.js steht vor dem Stylesheet');
   assert(await page.eval(`document.querySelectorAll('.tabbar a').length`) === 4, 'Tab-Leiste hat 4 Einträge');
   assert(await page.eval(`!document.querySelector('.sidebar')`), 'schmal: keine Seitenleiste');
   assert(await page.eval(`(() => { const r = document.querySelector('.tabbar').getBoundingClientRect();
@@ -258,14 +269,14 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
 
   // ---- Design pro Gerät -----------------------------------------------------
   await page.eval(`localStorage.setItem('fwAlarm.theme', 'light')`);
-  await page.goto(`${base}/next.php`);
+  await page.goto(`${base}/index.php`);
   await page.waitFor(`!!document.querySelector('.sidebar')`);
   assert(await page.eval(`document.documentElement.dataset.theme`) === 'light', 'Design Hell übersteht das Neuladen');
   await page.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
   await page.waitFor(`!!document.querySelector('.tabbar')`);
   await shot(page, 'mobile-light');
   await page.eval(`localStorage.removeItem('fwAlarm.theme')`);
-  await page.goto(`${base}/next.php`);
+  await page.goto(`${base}/index.php`);
   await page.waitFor(`!!document.querySelector('.tabbar')`);
   assert(await page.eval(`document.documentElement.dataset.theme`) === 'dark', 'Standard ist Dunkel');
 

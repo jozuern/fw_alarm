@@ -1,4 +1,4 @@
-// Empfänger der neuen Oberfläche (next.php#/empfaenger): Liste mit
+// Empfänger der neuen Oberfläche (index.php#/empfaenger): Liste mit
 // Status-Pillen und Abgleich-Zeile, Hinzufügen (mit Test-Push), Person als
 // Sheet (iPhone) bzw. Panel rechts (PC) mit Laut/Stumm/Dauerhaft stumm,
 // Stumm-Lautstärke, Telefon, Kurzbefehl-Links, Umbenennen, Key ersetzen und
@@ -162,7 +162,8 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
     await page.login(base, 'admin', 'test');
     problems.length = 0;   // nur die neue Oberfläche zählt
-    await page.goto(`${base}/next.php#/empfaenger`);
+    await page.goto('about:blank');   // ein reiner #-Wechsel feuert kein load
+    await page.goto(`${base}/index.php#/empfaenger`);
     await page.waitFor(`!!document.querySelector('#rcp-${ids.anna}')`, 10000);
     assert(await page.eval(`document.querySelector('main h1')?.textContent.trim() === 'Empfänger'`), 'Titel Empfänger');
     await page.waitFor(`!!document.querySelector('.rcp-sync.is-ok')`, 10000);
@@ -507,7 +508,8 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.send('Network.clearBrowserCookies');
     await page.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
     await page.login(base, 'leser', 'test');
-    await page.goto(`${base}/next.php#/empfaenger`);
+    await page.goto('about:blank');   // ein reiner #-Wechsel feuert kein load
+    await page.goto(`${base}/index.php#/empfaenger`);
     await page.waitFor(`document.querySelectorAll('.rcp-list .rcp-row').length === 10`, 10000);
     const noControls = `!document.querySelector('.rcp-add') && !document.querySelector('.segmented') && !document.querySelector('.slider-input')
       && !document.querySelector('.rcp-phone-input') && !document.querySelector('.rcp-link-on') && !document.querySelector('.rcp-test')

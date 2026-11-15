@@ -1,4 +1,4 @@
-// Verlauf der neuen Oberfläche (next.php#/verlauf): Filter Alle/Alarme/
+// Verlauf der neuen Oberfläche (index.php#/verlauf): Filter Alle/Alarme/
 // Empfänger/System, Suche über die geladenen Einträge, Tages-Abschnitte,
 // Zeilen mit Symbol-Kachel, „Ältere laden“, Vorwahl per #/verlauf?filter=alarm,
 // Lese-Rolle. Die Sandbox behält ihren Verlauf zwischen den Läufen: Das
@@ -28,7 +28,7 @@ const hitHeight = (page, sel) => page.eval(`(() => {
 // Seite neu laden: Ein reiner Wechsel des #-Teils löst kein load-Ereignis aus.
 async function open(page, base, hash) {
   await page.goto('about:blank');
-  await page.goto(`${base}/next.php${hash}`);
+  await page.goto(`${base}/index.php${hash}`);
 }
 
 const rows = (page) => page.eval(`Array.from(document.querySelectorAll('.log-row')).map((r) => ({

@@ -408,8 +408,9 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
     // ==== 5) Auffälligkeiten an der Box (nur wenn eingeschaltet) ============
     // Schwaches WLAN, knapper Speicher oder ein gescheiterter Heartbeat-Versand
     // sind Vorboten eines Ausfalls. Gleiche Schwellen wie die Warnfarben im
-    // Dashboard (app.js: weakWifi, HEAP_WARN, MAX_ALLOC_WARN, heartbeatFailed) -
-    // bei Änderungen BEIDE Stellen anpassen. Gemeldet wird erst, wenn die
+    // Dashboard (assets/app/logic.js: weakWifi, HEAP_WARN, MAX_ALLOC_WARN,
+    // heartbeatFailed; solange es sie gibt, auch die eingefrorene
+    // assets/classic/app.js) - bei Änderungen ALLE Stellen anpassen. Gemeldet wird erst, wenn die
     // Auffälligkeit in ZWEI Läufen in
     // Folge besteht (ein einzelner schwacher Messwert ist normal), und
     // höchstens im eingestellten Abstand. Nur bei frischem Status - die Werte

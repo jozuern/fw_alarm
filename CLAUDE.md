@@ -51,7 +51,9 @@ Zusätzlich gibt es `nas_dashboard/`: PHP-Dateien für Synology Web Station
 (Nginx + PHP 8.3, kein Docker, keine DB). Das Dashboard ist ein optionales
 Rendezvous-System für Monitoring und manuelle Befehle. Der ESP32 bleibt
 outbound-only: Status-Push nach oben, Command-Polling nach oben. Bark muss auch
-bei NAS-Ausfall unverändert unabhängig funktionieren.
+bei NAS-Ausfall unverändert unabhängig funktionieren. Die Oberfläche ist
+Preact/htm ohne Build-Schritt und ohne npm (siehe „Frontend des Dashboards“
+unter „Bewusste Entscheidungen“).
 
 Und `cloud_watcher/`: der **Außen-Wächter** – Bash-Skript plus systemd-Timer
 für eine kostenlose Cloud-VM (Oracle Always Free, Frankfurt, Ubuntu 24.04 ARM).
@@ -221,8 +223,8 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   jüngster `*_started` ohne `resend` im Verlauf, aber nur bis 6 h alt,
   sonst jetzt) plus „(verspaetet zugestellt)“
   (`resend_stamped_body()`); das Dashboard behält die Liste der nicht
-  Erreichten (`lastUnreached`) sichtbar, bis ein neueres Ergebnis sie
-  ersetzt oder der Admin „Ausblenden“ klickt. Der `ALARM`-Zweig in der Firmware
+  Erreichten (`unreached` im Store, gemerkt in `localStorage`) sichtbar, bis
+  ein neueres Ergebnis sie ersetzt oder der Admin „Ausblenden“ klickt. Der `ALARM`-Zweig in der Firmware
   läuft durch dieselbe Zustellung wie ein Relaisalarm
   (`startAlarm(true, …)`/`processPendingAlarm()`, Merker `pendingIsRemote`),
   setzt aber KEINEN Cooldown und keine Wiederbewaffnung (sonst würde ein echter
@@ -294,7 +296,7 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   `keys_list` liefert `muted` effektiv (überfällig = laut) plus
   `mute_overdue`: Die Rückschaltung ist fällig, aber nicht gespeichert – die
   BOX alarmiert dann weiter stumm, denn sie holt die Liste nur bei neuer
-  Version (das Dashboard warnt an der Zeile). Ist die Liste samt `.bak`
+  Version (das Dashboard zeigt die Zeile orange als „Evtl. stumm“). Ist die Liste samt `.bak`
   unlesbar, antwortet `keys_list` mit `code=keys_corrupt`.
   Weitere Empfänger-Aktionen (alle Admin+CSRF, über `mutate_alarm_keys()`,
   Verlauf per `log_key_event()` nach dem Lock): `keys_rename` (Name wie bei
@@ -329,8 +331,8 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   den VORIGEN Modus. Schutzregeln: Demo-Empfänger muss aus der Liste stammen (beim
   Zurückschalten existiert so garantiert eine nicht-leere Liste, die der ESP32
   akzeptiert), der aktive Demo-Empfänger ist nicht löschbar, das Dashboard zeigt
-  ein Warn-Banner mit Sync-Status (Vergleich ESP32-`keys_version` vs.
-  NAS-Version). Der Alarm selbst ist im Demo-Modus bewusst zeichengenau
+  auf jeder Seite ein oranges Demo-Band mit Sync-Status (`demo_sync_ok` bzw.
+  Vergleich ESP32-`keys_version` vs. NAS-Version). Der Alarm selbst ist im Demo-Modus bewusst zeichengenau
   identisch mit einem echten (gleicher Text/Ton/Level, kein Demo-Zusatz) —
   nur die Empfängerliste ist kürzer.
 - **Arbeitsmodus (Stummschaltung pro Empfänger)**: `muted`/`muted_at`/
@@ -394,15 +396,15 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Kurzbefehl-Link, automatische Rückschaltung); sie meldet zurück, ob eine
   Dauer-Stummschaltung endete (→ zusätzlicher `key_mute_permanent`-Eintrag). Der öffentliche Kurzbefehl-Link kann es bewusst **nur
   beenden, nie setzen**. `keys_list` liefert `mute_permanent` mit und lässt
-  `mute_until` dann weg (es gibt keine Endzeit); das Dashboard zeigt einen
-  eigenen roten Badge. Der Cron-Wächter zählt dauerhaft Stumme getrennt und
+  `mute_until` dann weg (es gibt keine Endzeit); das Dashboard zeigt eine
+  eigene rote Pille „Dauerhaft“. Der Cron-Wächter zählt dauerhaft Stumme getrennt und
   erinnert für sie nur 1×/Woche (`permanent_mute_reminded_at`) statt 1×/Tag —
   eine bewusste Dauereinstellung darf nicht täglich pingen. (Beides sind
   Standardwerte — die Abstände stellt der Admin im Dashboard ein, siehe
   nächster Punkt.)
 - **Meldungen an den Admin (einstellbar)**: Was das NAS an `bark_key_status`
-  schickt und wie, stellt der Admin im Dashboard ein (Panel „Meldungen an den
-  Admin“; `notify_list`/`notify_set`/`notify_test` in `dashboard_api.php`, alle
+  schickt und wie, stellt der Admin im Dashboard ein (Einstellungen →
+  „Meldungen an mich“; `notify_list`/`notify_set`/`notify_test` in `dashboard_api.php`, alle
   nur Admin; gespeichert in `notify_settings.json` unter dem `notify`-Lock).
   EINE Quelle für Arten und Möglichkeiten: `admin_notify_types()` und
   `admin_notify_global_specs()` in `common.php`. Jeder Wert ist eine Auswahl
@@ -457,7 +459,9 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   `important_notify_flags()` nur diese Schalter, nicht die ganze Tabelle).
   (7) `heartbeat_ok=0` zählt
   nur als Fehler, wenn `last_heartbeat` nicht `nie` ist — Schwellen für
-  `box_health` stehen doppelt (Cron und `app.js`), beide Stellen anpassen.
+  `box_health` stehen doppelt (`cron/check_offline.php` und
+  `assets/app/logic.js`; solange es sie gibt, auch die eingefrorene
+  `assets/classic/app.js`), alle Stellen anpassen.
   Der Kurzbefehl-Link leitet Browser nach dem Umschalten per 303 auf
   `mute.php?done=…` um (ohne Token, schaltet nichts), damit Neu-Laden nicht
   erneut schaltet. NICHT einstellbar ist, was die Firmware selbst sendet
@@ -555,7 +559,7 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   optional `filter=alarm|keys|system` über `log_event_category()`/
   `read_command_log_filtered()` — sonst verdrängen die täglichen Stumm-Wechsel
   der Kurzbefehle die Alarme aus dem Fenster; `filter=alarm_core` = nur die
-  Versand-Ereignisse für „Letzter Alarm“ im Held-Bereich, ohne die
+  Versand-Ereignisse für „Letzter Alarm“ auf der Übersicht, ohne die
   Befehls-Ereignisse der Demo-Alarme; was die Lese-Rolle nicht sehen darf
   (`notify_changed`) wird VOR dem Abzählen aussortiert; gefilterte Ergebnisse
   liegen in `log_cache.json`, solange sich `commands.log`/`.1` nicht ändern
@@ -567,7 +571,7 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Admin, freigegebene Felder mit Typ/Pfad/Standard); daraus folgen
   `log_event_category()`, die Vorprüfung `log_line_may_match()`,
   `log_events_hidden()` und die Ausgabe `log_event_view()`. Ein neues Ereignis
-  braucht dort einen Eintrag und in `app.js` einen Text (`describeLogEntry`)
+  braucht dort einen Eintrag und in `assets/app/logic.js` einen Text (`describeLogEntry`)
   – sonst taucht es nicht auf. Einträge zu einem Empfänger schreibt
   `log_key_event()` (Key immer maskiert). Dauerhaft im Verlauf landen auch: Relaisalarme (`relay_alarm` —
   `api/status.php` loggt, wenn sich `last_alarm` (oder der Zähler
@@ -603,30 +607,10 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Watchdog/Panic/Brownout gelb markiert), `free_heap` (Warnfarbe < 50 kB),
   `keys_muted`, `core` (Core-Version), `alarm_seq`, `alarm_source`,
   `max_alloc_heap` und `alarm_gaveup`; `fw_build` = `FW_BUILD_MARKER` plus
-  Kompilier-Zeitpunkt. Das Frontend pollt nur bei sichtbarem Tab (Page Visibility API),
-  behandelt HTTP 401 als „Sitzung abgelaufen" (Reload zur Login-Seite) und
-  unterscheidet „NAS nicht erreichbar" (gelber Badge) von „ESP32 offline"
-  (roter Badge; zeigt dann „Offline seit" statt der stalen Laufzeit); kritische
-  Statusfelder werden gelb/rot eingefärbt, `innerHTML` wird nur bei echter
-  Änderung ersetzt (Tooltip-/Fokus-Erhalt), pro Poll-Funktion gibt es einen
-  In-Flight-Guard. Aufbau der Seite (bewusst so, nicht „aufräumen“):
-  „Auslösen & Testen“ steht DIREKT unter dem Held-Bereich — die manuelle
-  Alarmierung braucht man bei „Box offline“ und darf nicht wieder unter die
-  Empfängerliste rutschen. Der Held-Bereich zeigt neben der Lampe einen Satz
-  zum Zustand, zwei Fakten (Empfänger samt Stumm-Zahl; letzter Alarm aus
-  `log_view&filter=alarm_core`) und Hinweise (ROWS mit `hint()`, Wächter, „alle
-  stumm“). Lampen-Rangfolge: offline > Alarm aktiv > Kontakt klemmt > „Alarm
-  ausgelöst“ (Zustellung durch, Kontakt noch geschlossen — rot, ruhig; KEIN
-  grünes „Einsatzbereit“, solange darunter „GESCHLOSSEN (Alarm!)“ steht) >
-  Demo-Modus (gelb, plus Chip in der Kopfzeile) > Einsatzbereit.
-  Rückmeldungen stehen bei der auslösenden Aktion (`showMsg()`/`makeRowMsg()`:
-  Farbe UND Zeichen, Erfolg verschwindet von selbst, Fehler bleiben). Empfänger:
-  eine Zeile mit dreiteiligem Schalter Laut/Stumm/Dauerhaft stumm, Seltenes
-  hinter „Mehr“. Das Ergebnis von REAL ALARM/ENTWARNUNG nennt die nicht
-  Erreichten zuerst und bietet die Nachsendung nur an sie an. Sichtbare Texte
-  sagen durchgehend „die Box“ statt „ESP32“. Die Frist der Inline-Bestätigung
-  wächst mit der Länge der Frage (10–25 s). Die CSP kommt ohne `unsafe-inline` aus (keine
-  `style=`-Attribute in `index.php` einführen!). Empfängerliste/Demo-Zustand
+  Kompilier-Zeitpunkt. Wie das Frontend diese Werte zeigt, steht unten im
+  Punkt „Frontend des Dashboards“. Die CSP kommt ohne `unsafe-inline` aus
+  (keine `style=`-Attribute in PHP-Seiten und keine Inline-Skripte einführen –
+  Startwerte gehen als meta-Tags an das Frontend). Empfängerliste/Demo-Zustand
   werden vor jedem Schreiben als `*.bak`-Guard-Datei gesichert
   (`backup_then_write()`). Optionaler Offline-Wächter: `cron/check_offline.php`
   (DSM-Aufgabenplaner alle 15 min, CLI oder POST mit Maschinen-Token) meldet
@@ -678,6 +662,111 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   mit Guard-Zeile (`DATA_FILE_GUARD`), damit Nginx sie nie als statische Datei
   ausliefert — Web Station ignoriert `.htaccess`. Diese Namens-/Guard-Logik
   steckt zentral in `data_path()`/`write_json_file()`/`read_json_file()`.
+- **Frontend des Dashboards** (neu seit 11/2026, Spec
+  `docs/superpowers/specs/2026-11-15-dashboard-redesign-design.md`). Dateien:
+  `index.php` (Login/Logout-Logik, dann Anmeldeseite bzw. App-Hülle – beides
+  aus `lib/shell.php`: `render_login_page()`/`render_app_page()`, gemeinsamer
+  Kopf `render_head_tags()`); `assets/vendor/htm-preact-3.1.1.umd.js`
+  (Preact + Hooks + htm, feste Version, LICENSE-Dateien daneben, in
+  `.gitattributes` `-text`, läuft nie außerhalb des Browsers);
+  `assets/app/{logic,api,store,ui,view-overview,view-recipients,view-log,view-settings,main}.js`
+  als klassische Skripte mit gemeinsamem Namensraum `window.FW` – bewusst
+  KEINE ES-Module (Importe trügen kein `?v=`, Import-Maps wären
+  Inline-Skripte); feste Reihenfolge in `app_script_paths()`, alle `defer`,
+  jedes Tag mit `?v=filemtime`. `assets/app/theme-boot.js` setzt synchron im
+  `<head>` VOR dem Stylesheet das Design aus `localStorage` (`fwAlarm.theme`),
+  sonst blitzt bei „Hell“ Schwarz auf. `assets/app.css` ist das einzige
+  Stylesheet (Tokens oben; Hell-Block und „System“-Block identisch halten).
+  `logic.js` = reine Logik ohne DOM/Preact (Urteil, Hinweise, Prüfzeilen,
+  Verlaufs-Texte `describeLogEntry`, Bestätigungsfragen, nicht Erreichte),
+  `store.js` = zentraler Zustand, Poller und Aktionen – die Ansichten lesen nur
+  daraus. Startwerte kommen als meta-Tags (`csrf`, `role`, `user`,
+  `public-base`, `mute-max`). Home-Bildschirm-App: `manifest.json` +
+  `assets/icons/` (+ `apple-touch-icon.png`) + Apple-meta-Tags
+  (`black-translucent`), bewusst KEIN Service Worker (das Notfall-Werkzeug
+  lädt immer frisch). `classic.php` + `assets/classic/` = die eingefrorene
+  alte Oberfläche als VORÜBERGEHENDER Rückfall (Link in Einstellungen →
+  Konto; ohne Anmeldung → `index.php`, Abmelden postet an `index.php`) –
+  nicht weiterentwickeln, wird nach einigen Wochen in einer eigenen Aufgabe
+  entfernt. Die Kurzbefehl-Seite (`mute_page()` in `api/mute.php`) nutzt
+  `app.css` mit dem Rahmen der Anmeldeseite.
+  Aufbau (bewusst so, nicht „aufräumen“): vier Bereiche Übersicht/Empfänger/
+  Verlauf/Einstellungen – unter 900 px Tab-Leiste unten, ab 900 px
+  Seitenleiste; Adressen per Hash (`#/uebersicht`, `#/empfaenger/3`,
+  `#/verlauf?filter=alarm`, `#/einstellungen/meldungen/box_offline` …), damit
+  Zurück und Neuladen gehen. Die Status-Karte der Übersicht zeigt das Urteil
+  (`verdict()`), Rangfolge: `auth` (abgemeldet) > `nas` (NAS nicht
+  erreichbar/Störung/Status veraltet/beschäftigt – orange, ROT, wenn der
+  letzte bekannte Stand „Box offline“ war) > `loading` (noch kein Status) >
+  `offline` > `alarm` (läuft, rot pulsierend) > `stuck` (Kontakt klemmt) >
+  `standing` („Alarm ausgelöst“: Zustellung durch, Kontakt noch geschlossen –
+  rot, ruhig, nie grün) > `demo` > `hints` („Bereit – N Hinweise“, Farbe =
+  schlimmster Hinweis) > `ok`. Hinweise (`collectHints()`, abschließend): rot
+  = letzte Zustellung der Box unvollständig, Empfängerliste beschädigt;
+  orange = Offline- bzw. Außen-Wächter mit Problem, WLAN getrennt oder
+  ≤ −80 dBm, Heartbeat gescheitert, Neustart durch Watchdog/Absturz/Brownout
+  (nur am ersten Tag), wenig Speicher, Box hat die Liste seit > 60 s nicht
+  übernommen, ALLE stumm, `device_hint`, Rückschaltung überfällig. KEIN
+  Hinweis: einzelne (auch dauerhaft) Stumme und ein Alarm der letzten Stunde –
+  beides steht in der Prüfliste. Bei NAS-Störung keine Hinweise aus alten
+  Daten. Farb-Regel überall: rot = offline/kaputt/nicht zugestellt, orange =
+  unregelmäßig, grau = gerade unbekannt (veraltete Werte sehen nie normal
+  aus); Farbe nie allein (Symbol ✓/!/✕ und Text). Die Gruppe „Auslösen“
+  (Alarm an alle, Entwarnung, Test, im Demo-Modus Demo-Alarm über die Box)
+  steht normal unter der Prüfliste und rückt bei ROTEM Urteil direkt unter die
+  Status-Karte – der Alarm-Knopf muss bei „Box offline“ auch auf kleinen
+  iPhones ohne Scrollen sichtbar sein. Die Lese-Rolle hat keine Gruppe
+  „Auslösen“ (nur den Satz, einen Admin zu verständigen). Badge am Eintrag
+  Übersicht und Status-Symbol im Seitentitel, solange das Urteil nicht grün
+  ist; im Demo-Modus ein oranges Band auf jeder Seite. Das Ergebnis von Alarm/
+  Entwarnung steht direkt unter „Auslösen“, nennt die nicht Erreichten zuerst
+  (mit „Anrufen“, wenn eine Telefonnummer hinterlegt ist) und bietet die
+  Nachsendung nur an sie an. Rückmeldungen stehen bei der auslösenden Aktion
+  (`ui.Msg`: Farbe UND Zeichen ✓/✕/!, Erfolg verschwindet von selbst, Fehler
+  bleiben). Sichtbare Texte sagen „die Box“ statt „ESP32“.
+  Sicherheitsregeln im Frontend (nicht abschwächen): Bestätigungen nur über
+  `store.openConfirm()`/`confirmAlarm()`/`confirmResend()` – Frage und
+  `expect_demo` aus EINER Momentaufnahme, Frist 10–25 s je nach Länge der
+  Frage (gegen die Uhrzeit gerechnet; nach Ablauf löst Bestätigen nichts
+  aus), geschlossen bei verstecktem Tab und bei Moduswechsel, Schließen und
+  Auslösen nur für genau ihre id. Alles, was einen Alarm sendet (Alarm an
+  alle, Entwarnung, Demo-Alarm über die Box, Nachsendung), braucht „Gedrückt
+  halten zum Senden“ (1,5 s, `ui.HoldButton`); andere Aktionen mit Folgen ein
+  Sheet mit rotem Bestätigen-Knopf, Fokus startet auf „Abbrechen“. Nach einer
+  unklaren Antwort gibt es KEINE Nachsendung (auch nicht über den Hinweis
+  nach einem Moduswechsel). Die nicht Erreichten merkt sich der Store in
+  `localStorage` (`fwAlarm.lastUnreached`, max. 12 h – iOS verwirft
+  `sessionStorage` mit der Home-Bildschirm-App); angezeigt wird
+  `unreached.entries` (zusammengeführt), nie nur das frische `failed`.
+  Scheitert ein Speichern, erhöht der Store `state.rev[slice]` – Bedienelemente
+  mit eigenem Zustand sind darauf geschlüsselt und springen zurück.
+  `alarmInFlight` ist die EINZIGE Sperre der Alarm-Knöpfe (andere laufende
+  Aktionen sperren sie nicht). Eine überfällige, nicht gespeicherte
+  Rückschaltung (`mute_overdue`) erscheint orange als „Evtl. stumm“, nie als
+  grünes „Laut“. Live-Aktualisierungen ändern keine offene Bestätigung, kein
+  offenes Sheet, keinen gezogenen Regler und keine Eingabe.
+  Abfragen (`store.js`): Status 5 s, Empfänger 30 s, Verlauf 30 s, Alarm-Info
+  60 s, Meldungen/Einstellungen 60 s (Verlauf nur auf seiner Seite und der
+  PC-Übersicht mit „Letzte Ereignisse“, Meldungen/Einstellungen nur auf ihrer
+  Seite); Poller mit „läuft noch“-Schutz; ohne erfolgreiche
+  Antwort seit 15 s gilt der Stand als veraltet (Urteil `nas`). Tab versteckt:
+  alle Abfragen aus, jede offene Bestätigung zu; bei Rückkehr sofort
+  aktualisieren. Ausnahme „Hinweis im Browser bei Störung“ (pro Gerät, nur wo
+  der Browser Benachrichtigungen kann): Dann läuft bei verstecktem Tab nur die
+  Status-Abfrage alle 60 s weiter und meldet Übergänge (Box offline, Alarm
+  läuft/ausgelöst, NAS nicht erreichbar ab dem 3. Fehlschlag in Folge,
+  Zustellung unvollständig, einmal „wieder in Ordnung“). HTTP 401 →
+  „Abgemeldet“ und Neuladen zur Anmeldung – außer während ein Alarm-Versand
+  läuft (dann bleibt das Ergebnis lesbar). CSRF-Token aus jeder
+  Status-Antwort (auch ins Abmelde-Formular); nach einem CSRF-Fehler kein
+  automatischer Neuversuch. Design (Dunkel/Hell/System) und Browser-Hinweis
+  pro Gerät in `localStorage`, jeder Zugriff in try/catch.
+  Tests: `node --test "tests/dashboard/*.test.mjs"` (Logik, Anfragen, Store,
+  Kontrast – die Ordner-Form `node --test tests/dashboard/` scheitert unter
+  Node 24); Ende-zu-Ende in der lokalen Sandbox (`tests/dashboard/sandbox/`,
+  README dort; Szenarien in `tests/dashboard/e2e/scenarios/`, Headless Chrome
+  über CDP). Neue Farbklassen gehören in `pairs()` von
+  `tests/dashboard/contrast.test.mjs` (WCAG AA in beiden Designs).
 - `REMOTE_HTTP_TIMEOUT_MS` nicht wieder unter ~4 s drücken: Der TLS-Handshake
   ESP32↔Synology braucht typischerweise 1–3 s; zu knappe Timeouts führen zu
   Dauer-Backoff und einem flappenden ONLINE/OFFLINE-Status.

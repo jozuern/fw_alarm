@@ -18,6 +18,20 @@ Zugänge: Admin `admin` / `test`, Lese-Benutzer `leser` / `test`, Maschinen-Toke
 Die Bark-Attrappe schreibt jede Anfrage als JSON-Zeile nach `$S/bark.log`;
 Key-Präfix `fail` = HTTP 500, `bad` = 400, `slow` = 4 s Verzögerung.
 
+Szenarien (`tests/dashboard/e2e/scenarios/`, je `run.mjs <name>`; vor jedem
+Lauf nach Code-Änderungen `setup.sh` erneut, die Sandbox nutzt eine Kopie):
+`smoke api-settings api-keys api-session shell overview recipients log settings switch`.
+`index.php` ist die neue Oberfläche (Anmeldeseite bzw. App), `classic.php` die
+eingefrorene alte (`switch` prüft beide). Die Unit-Tests laufen ohne Sandbox:
+`node --test "tests/dashboard/*.test.mjs"` (die Ordner-Form scheitert unter Node 24).
+
+Stolpersteine in den Szenarien: Ein `page.goto()`, das nur den `#`-Teil der
+aktuellen Adresse ändert (z.B. nach dem Login von `index.php` auf
+`index.php#/empfaenger`), löst kein `load` aus und hängt – vorher
+`about:blank` laden. Daten der Sandbox bleiben zwischen den Läufen erhalten;
+jedes Szenario legt eigene Empfänger mit eindeutigen Keys an und räumt sie
+wieder ab.
+
 Stolpersteine unter Git Bash: Argumente, die mit `/` beginnen, schreibt Git Bash
 für native Programme um (dann `MSYS_NO_PATHCONV=1` voranstellen); PHP und Chrome
 bekommen Pfade als `C:/...`. `data_dir` steht in der Sandbox-`config.php` in der
