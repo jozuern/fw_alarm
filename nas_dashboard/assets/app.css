@@ -1712,6 +1712,35 @@ a.band-inner:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* Sehr schmal (iPhone SE, 320 px): Die Texte bekommen die volle Breite -
+   das Symbol steht kleiner in der Titelzeile statt in einer eigenen Spalte.
+   So bleibt der Alarm-Knopf auch mit Demo-Band und dem längsten roten
+   Urteil über der Tab-Leiste (geprüft in overview.mjs). */
+@media (max-width: 359px) {
+  .status-card {
+    display: block;
+    padding: 12px;
+  }
+
+  .status-icon {
+    float: left;
+    width: 28px;
+    height: 28px;
+    margin-right: 10px;
+  }
+
+  .status-icon .icon {
+    width: 17px;
+    height: 17px;
+  }
+
+  /* Zeilenhöhe = Symbolhöhe: Der Satz darunter beginnt unter dem Symbol. */
+  .status-title {
+    font-size: 19px;
+    line-height: 28px;
+  }
+}
+
 /* Hinweise: lange Sätze, die Kachel bleibt oben stehen. */
 .ov-hints .row-main {
   align-items: flex-start;

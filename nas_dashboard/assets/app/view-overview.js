@@ -34,8 +34,6 @@
     return ref;
   }
 
-  const keyListOf = (s) => (s.keys && Array.isArray(s.keys.keys) ? s.keys.keys : null);
-
   // ---- Status-Karte ----------------------------------------------------------
   // Kreis mit Symbol (Farbe nie allein): ✓ in Ordnung, ! Aufmerksamkeit,
   // ✕ offline/kaputt. „Alarm läuft“ pulsiert ruhig.
@@ -164,16 +162,18 @@
     const titleId = ui.useId('result-title');
     const look = resultLook(r);
     const ref = useRef(null);
-    const prevPhase = useRef(null);
+    const prevPhase = useRef(undefined);
 
     // Ein neues Ergebnis (nicht jede Sekunde) einmal ansagen. Beim Versand
     // (Beginn und Ende) die Karte ins Bild holen: Am iPhone stünde sie sonst
     // unter dem Knopf außer Sicht. Hinweise aus Abfragen oder nach dem
-    // Neuladen verschieben die Seite nicht.
+    // Neuladen verschieben die Seite nicht. Beim Aufbau der Karte (Rückkehr
+    // auf die Übersicht, Neuladen) weder ansagen noch scrollen - das Ergebnis
+    // ist dann nicht neu.
     useEffect(() => {
       const before = prevPhase.current;
       prevPhase.current = r ? r.phase : null;
-      if (!r) return;
+      if (before === undefined || !r) return;
       if (r.head) ui.announce(look.title ? `${look.title}. ${r.head}` : r.head);
       const node = ref.current;
       if ((r.phase === 'sending' || before === 'sending') && node && typeof node.scrollIntoView === 'function') {
@@ -238,20 +238,9 @@
     const alarm = () => { setMsg(null); store.confirmAlarm('alarm'); };
     const falseAlarm = () => { setMsg(null); store.confirmAlarm('false_alarm'); };
     const test = () => { setMsg(null); store.enqueueTest().then(show); };
-    // Wie store.confirmAlarm('box_alarm') - aber mit Rückmeldung an dieser
-    // Stelle: Lehnt das NAS den Befehl ab (z.B. Box hat die Demo-Liste noch
-    // nicht übernommen), soll das hier stehen und nicht verloren gehen.
-    const boxAlarm = () => {
-      const s = store.getState();
-      if (s.alarmInFlight || !(s.demo && s.demo.enabled)) return;
-      const expect = L.expectDemoOf(s.demo);
-      const q = L.alarmQuestion('box_alarm', s.demo, keyListOf(s));
-      setMsg(null);
-      store.openConfirm({
-        title: q.title, text: q.text, confirmLabel: 'Ja, Demo-Alarm auslösen', hold: true, expectDemo: expect,
-        onConfirm: () => store.enqueueBoxAlarm(expect).then(show)
-      });
-    };
+    // Rückmeldung an dieser Stelle: Lehnt das NAS den Befehl ab (z.B. Box hat
+    // die Demo-Liste noch nicht übernommen), soll das hier stehen.
+    const boxAlarm = () => { setMsg(null); store.confirmAlarm('box_alarm', show); };
 
     return html`<section class="group ov-actions" aria-labelledby=${headId}>
       <h2 class="group-head" id=${headId}><span>Auslösen</span></h2>
@@ -270,15 +259,14 @@
     </section>`;
   }
 
-  // Lese-Rolle: keine Knöpfe, stattdessen wen man verständigt.
+  // Lese-Rolle: keine Gruppe „Auslösen“ (Spec §6.2) - nur der Satz, wen man
+  // verständigt, darunter Befehlszeile und gemerktes Ergebnis zum Lesen.
   function ReadonlyActions() {
-    const headId = ui.useId('actions-head');
-    return html`<section class="group ov-actions" aria-labelledby=${headId}>
-      <h2 class="group-head" id=${headId}><span>Auslösen</span></h2>
+    return html`<div class="group ov-actions">
       <p class="ov-readonly">Mit diesem Zugang lässt sich nichts auslösen. Muss manuell alarmiert werden, bitte einen Admin verständigen – er kann direkt über das NAS alarmieren.</p>
       <${CommandLine} canCancel=${false}/>
       <${ResultCard}/>
-    </section>`;
+    </div>`;
   }
 
   function Actions() {

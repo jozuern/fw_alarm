@@ -657,12 +657,15 @@
   // Alarm-Bestätigungen (Halten zum Senden): Frage UND expect_demo aus
   // DERSELBEN Momentaufnahme. Der Server sendet nur, wenn der Modus beim
   // Senden noch stimmt (sonst 409). kind: 'alarm' | 'false_alarm' | 'box_alarm'.
+  // onResult (optional): bekommt das Ergebnis {ok, text, kind} der
+  // bestätigten Aktion - z.B. für die Rückmeldung am Knopf, wenn das NAS den
+  // Demo-Alarm über die Box ablehnt (die Bestätigung selbst verwirft es).
   const CONFIRM_LABELS = {
     alarm: 'Ja, Alarm auslösen',
     false_alarm: 'Ja, Entwarnung senden',
     box_alarm: 'Ja, Demo-Alarm auslösen'
   };
-  function confirmAlarm(kind) {
+  function confirmAlarm(kind, onResult) {
     if (state.alarmInFlight || !CONFIRM_LABELS[kind]) return null;
     const demo = state.demo;
     // Der Alarm über die Box ist ein reines Demo-Werkzeug - im LIVE-Modus
@@ -670,7 +673,13 @@
     if (kind === 'box_alarm' && !(demo && demo.enabled)) return null;
     const expect = L.expectDemoOf(demo);
     const q = L.alarmQuestion(kind, demo, keyList());
-    const send = kind === 'box_alarm' ? () => enqueueBoxAlarm(expect) : () => sendNasAlarm(kind, expect);
+    const run = kind === 'box_alarm' ? () => enqueueBoxAlarm(expect) : () => sendNasAlarm(kind, expect);
+    const send = () => run().then((res) => {
+      if (typeof onResult === 'function') {
+        try { onResult(res); } catch (err) { report(err); }
+      }
+      return res;
+    });
     return openConfirm({ title: q.title, text: q.text, confirmLabel: CONFIRM_LABELS[kind], hold: true, expectDemo: expect, onConfirm: send });
   }
 

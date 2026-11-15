@@ -207,6 +207,19 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await cardInView(page);
     await shot(page, 'resend');
 
+    // Zurück auf die Übersicht: Das Ergebnis steht noch da, wird aber NICHT
+    // erneut angesagt (nur echte Wechsel).
+    await page.eval(`(() => { window.__said = []; window.__announce = FW.ui.announce;
+      FW.ui.announce = (t) => { window.__said.push(String(t)); return window.__announce(t); }; })()`);
+    await page.eval(`location.hash = '#/verlauf'`);
+    await page.waitFor(`document.querySelector('main h1')?.textContent.trim() === 'Verlauf'`);
+    await page.eval(`location.hash = '#/uebersicht'`);
+    await page.waitFor(`!!document.querySelector('.result-card') && ${cardHas('Weiterhin NICHT erreicht')}`);
+    await sleep(400);
+    const said = JSON.parse(await page.eval('JSON.stringify(window.__said)'));
+    assert(!said.some((t) => t.includes('erreicht')), 'Ergebnis beim Zurückkehren nicht erneut angesagt: ' + JSON.stringify(said));
+    await page.eval('FW.ui.announce = window.__announce');
+
     // ---- Neuladen: die nicht Erreichten bleiben (localStorage) ---------------
     await page.goto(`${base}/next.php`);
     await page.waitFor(cardHas('Auf diesem Gerät gemerkt'), 10000);
@@ -291,14 +304,32 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await shot(page, 'offline');
 
     // ---- NAS nicht erreichbar: rot nach „offline“, sonst orange --------------
+    // Ungünstigster Fall fürs kleine iPhone: Demo-Band oben UND das längste
+    // rote Urteil („NAS nicht erreichbar“, letzter Stand offline: Satz plus
+    // Problemzeile) - der Alarm-Knopf muss trotzdem über der Tab-Leiste stehen.
+    assert((await admin.post({ action: 'demo_set', enabled: '1', id: String(ids.josh) })).ok, 'Demo ein');
+    await pushBox(base, admin);
+    setStatusAge(sandbox, 600);
+    await page.waitFor(`${titleIs('Box offline')} && !!document.querySelector('.demo-band')`, 10000);
+    await page.viewport({ width: 320, height: 568, mobile: true, scale: 2 });
     await sandboxServer(sandbox, 'stop', 'site');
     serverDown = true;
-    await page.waitFor(`${titleIs('NAS nicht erreichbar')} && !!document.querySelector('.status-card.is-crit')`, 16000);
+    await page.waitFor(`${titleIs('NAS nicht erreichbar')} && !!document.querySelector('.status-card.is-crit') && !!document.querySelector('.demo-band')`, 16000);
+    await page.eval('scrollTo(0, 0)');
     assert((await text(page, '.status-card')).includes('Box OFFLINE'), 'nennt den letzten Stand „Box OFFLINE“');
     assert((await text(page, '.status-age')).includes('Keine Verbindung zum NAS'), 'Problemzeile statt „Status vor“');
+    const fit = await page.eval(`(() => { const b = document.querySelector('.ov-alarm').getBoundingClientRect();
+      const bar = document.querySelector('.tabbar').getBoundingClientRect();
+      return { bottom: Math.round(b.bottom), bar: Math.round(bar.top), width: document.documentElement.scrollWidth }; })()`);
+    assert(fit.bottom <= fit.bar, `320×568 mit Demo-Band und NAS-Störung: Alarm-Knopf endet bei ${fit.bottom} px, Tab-Leiste beginnt bei ${fit.bar} px`);
+    assert(fit.width <= 320, '320 px: kein waagrechtes Scrollen (' + fit.width + ')');
+    await shot(page, 'nas-red-small-demo');
+    await page.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
+    await page.eval('scrollTo(0, 0)');
     await shot(page, 'nas-red');
     await sandboxServer(sandbox, 'start', 'site');
     serverDown = false;
+    assert((await admin.post({ action: 'demo_set', enabled: '0' })).ok, 'Demo aus');
     await pushBox(base, admin);
     await page.waitFor(titleIs('Alles bereit'), 15000);
     await sandboxServer(sandbox, 'stop', 'site');
@@ -335,20 +366,33 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.click('.cmd-cancel');
     await page.waitFor(`(document.querySelector('.cmd-line')?.textContent || '').includes('abgebrochen') && !document.querySelector('.cmd-cancel')`, 10000);
 
+    // ---- Lese-Rolle ------------------------------------------------------------
+    // Mit allem, was dem Admin Knöpfe zeigen würde: Demo-Modus, wartender
+    // TEST-Befehl, gemerkte nicht Erreichte (localStorage dieses Geräts).
+    const headed = `Array.from(document.querySelectorAll('h1, h2, h3, h4, .group-head')).some((h) => h.textContent.trim() === 'Auslösen')`;
+    assert(await page.eval(headed), 'Admin: Gruppe „Auslösen“ vorhanden');
+    assert((await admin.post({ action: 'demo_set', enabled: '1', id: String(ids.josh) })).ok, 'Demo ein');
+    await pushBox(base, admin);
+    assert((await admin.post({ action: 'enqueue', type: 'TEST' })).ok, 'TEST angelegt (Admin)');
+    await page.send('Network.clearBrowserCookies');
+    await page.login(base, 'leser', 'test');
+    await page.goto(`${base}/next.php`);
+    await page.waitFor(`!!document.querySelector('.status-card') && !!document.querySelector('.ov-readonly')
+      && (document.querySelector('.cmd-line')?.textContent || '').includes('wartet auf die Box')
+      && !!document.querySelector('.demo-band') && ${cardHas('Tom')}`, 10000);
+    assert(!(await page.eval(headed)), 'Lese-Rolle: keine Gruppe „Auslösen“');
+    for (const sel of ['.ov-alarm', '.ov-test', '.ov-false-alarm', '.ov-box-alarm', '.cmd-cancel', '.result-retry', 'a[href^="tel:"]']) {
+      assert(await page.eval(`!document.querySelector(${q(sel)})`), `Lese-Rolle: kein ${sel}`);
+    }
+    assert((await text(page, '.ov-readonly')).includes('Admin'), 'Satz: einen Admin verständigen');
+    await shot(page, 'readonly');
+
     // ---- Ausblenden: Ergebnis-Karte und gemerkte Liste weg -------------------
     await page.click('.result-dismiss');
     await page.waitFor(`!document.querySelector('.result-card')`, 3000);
     assert(await page.eval(`localStorage.getItem('fwAlarm.lastUnreached') === null`), 'gemerkte Liste gelöscht');
-
-    // ---- Lese-Rolle -----------------------------------------------------------
-    await page.send('Network.clearBrowserCookies');
-    await page.login(base, 'leser', 'test');
-    await page.goto(`${base}/next.php`);
-    await page.waitFor(`!!document.querySelector('.status-card') && !!document.querySelector('.ov-readonly')`, 10000);
-    assert(await page.eval(`!document.querySelector('.ov-alarm') && !document.querySelector('.ov-test') && !document.querySelector('.ov-false-alarm')`), 'Lese-Rolle: keine Auslösen-Knöpfe');
-    assert((await text(page, '.ov-readonly')).includes('Admin'), 'Satz: einen Admin verständigen');
-    assert(await page.eval(`!document.querySelector('a[href^="tel:"]')`), 'Lese-Rolle: keine Telefonnummern');
-    await shot(page, 'readonly');
+    assert((await admin.post({ action: 'cancel' })).ok, 'TEST abgebrochen (Admin)');
+    assert((await admin.post({ action: 'demo_set', enabled: '0' })).ok, 'Demo aus');
 
     assert(problems.length === 0, 'keine Konsolenfehler:\n' + problems.join('\n'));
   } finally {
@@ -359,6 +403,9 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     try {
       if (serverDown) await sandboxServer(sandbox, 'start', 'site');
       note('Demo aus', await admin.post({ action: 'demo_set', enabled: '0' }));
+      // Ein noch wartender TEST-Befehl (Lauf mittendrin abgebrochen) würde
+      // den nächsten Lauf blockieren; ohne wartenden Befehl ist das ein No-op.
+      await admin.post({ action: 'cancel' });
       const now = readData(sandbox, 'alarm_keys');
       const present = new Set((now && Array.isArray(now.keys) ? now.keys : []).map((k) => k.key));
       for (const k of before) {

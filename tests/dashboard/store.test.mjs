@@ -716,6 +716,35 @@ test('confirmAlarm: Frage und expect_demo aus einer Momentaufnahme', async () =>
   assert.equal(h.s().confirm.title, 'Entwarnung an alle senden?');
 });
 
+test('confirmAlarm(kind, onResult): Ergebnis der bestätigten Aktion geht an den Aufrufer', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  const tom = { enabled: true, key_id: 2, label: 'Tom' };
+  h.routes.status = () => reply(200, statusBody({ demo: tom }));
+  h.routes.keys_list = () => reply(200, keysBody({ demo: tom }));
+  await h.store.refreshStatus();
+  await h.store.refreshKeys();
+  const seen = [];
+  // Ablehnung des NAS (z.B. Box hat die Demo-Liste noch nicht): kommt beim Knopf an.
+  h.routes.enqueue = () => reply(200, { ok: false, message: 'Demo-Alarm gesperrt: Box hat die Liste noch nicht übernommen.' });
+  assert.ok(h.store.confirmAlarm('box_alarm', (res) => seen.push(plain(res))));
+  const res = await h.store.confirmNow();
+  assert.deepEqual(seen, [{ ok: false, text: 'Demo-Alarm gesperrt: Box hat die Liste noch nicht übernommen.', kind: 'error' }]);
+  assert.deepEqual(plain(res), seen[0]);
+  // Ohne Bestätigung (Abbrechen, Frist) wird der Rückruf nie aufgerufen.
+  assert.ok(h.store.confirmAlarm('box_alarm', (r) => seen.push(plain(r))));
+  h.store.closeConfirm();
+  await settle();
+  assert.equal(seen.length, 1);
+  // Auch für den Alarm vom NAS (Ergebnis zusätzlich in state.result).
+  h.routes.alarm = () => reply(200, { ok: true, message: 'Gesendet.', results: [{ id: 2, label: 'Tom', ok: true, http: 200 }] });
+  assert.ok(h.store.confirmAlarm('alarm', (r) => seen.push(plain(r))));
+  await h.store.confirmNow();
+  assert.equal(seen.length, 2);
+  assert.equal(seen[1].ok, true);
+  assert.equal(h.s().result.phase, 'done');
+});
+
 test('Sichtbarkeit: versteckt → Bestätigung zu, Abfragen aus; sichtbar → sofort wieder', async () => {
   const h = harness();
   h.store.init(ADMIN);
