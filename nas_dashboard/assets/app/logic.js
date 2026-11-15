@@ -664,6 +664,490 @@
     return rows;
   }
 
+  // ==== Teil 2: Alarm-Info, Befehlszeile, Verlauf, Nicht-Erreichte, Empfänger,
+  // Bestätigungsfragen ========================================================
+
+  // ---- Letzter Alarm -------------------------------------------------------
+  const ALARM_KINDS = {
+    relay: 'Relaisalarm (Melder)',
+    demo_box: 'Demo-Alarm über die Box',
+    manual: 'manueller Alarm (Dashboard)',
+    manual_demo: 'Demo-Alarm (Dashboard)',
+    manual_open: 'manueller Alarm – Ergebnis offen',
+    manual_demo_open: 'Demo-Alarm (Dashboard) – Ergebnis offen'
+  };
+
+  // Jüngsten Alarm aus den Verlaufs-Einträgen (neueste zuerst) ableiten.
+  // Nachsendungen zählen nicht als eigener Alarm. Eine Entwarnung, die NACH
+  // dem Alarm kam (steht also weiter oben), wird mit angezeigt - aber ehrlich:
+  // - Eine Entwarnung, die nur an den Demo-Empfänger ging, entwarnt keinen
+  //   echten Alarm (sie wird dann nicht angerechnet).
+  // - clearedOk sagt, ob die Entwarnung ALLE erreicht hat (ggf. erst mit der
+  //   Nachsendung). Sonst bleibt der Alarm rot und die Zeile sagt es dazu.
+  function deriveAlarmInfo(entries) {
+    // Demo-Versand: Neuere Server markieren ihn im Verlauf (demo); bei
+    // Alt-Einträgen ohne das Feld bleibt nur der Anzeigetext als Erkennung.
+    const isDemo = (e) => (typeof e.demo === 'boolean' ? e.demo : /^DEMO-MODUS/.test(e.message || ''));
+    let cleared = null;        // jüngste Entwarnung nach dem Alarm: { at, ok, demo }
+    let clearResent = null;    // Ergebnis der jüngsten Entwarnungs-Nachsendung
+    let resent = null;         // Ergebnis der jüngsten Alarm-Nachsendung
+    const finish = (info, alarmIsDemo) => {
+      if (cleared && (alarmIsDemo || !cleared.demo)) {
+        info.clearedAt = cleared.at;
+        info.clearedOk = cleared.ok || clearResent === true;
+      }
+      return info;
+    };
+    for (const e of entries || []) {
+      if (e.resend) {
+        if (e.event === 'nas_alarm' && resent === null) resent = !!e.ok;
+        if (e.event === 'false_alarm' && clearResent === null && !cleared) clearResent = !!e.ok;
+        continue;
+      }
+      if (e.event === 'false_alarm') {
+        if (!cleared) cleared = { at: e.at, ok: !!e.ok, demo: isDemo(e) };
+      } else if (e.event === 'relay_alarm') {
+        const demo = e.source === 'remote';
+        return finish({ kind: demo ? 'demo_box' : 'relay', at: e.at }, demo);
+      } else if (e.event === 'nas_alarm') {
+        const demo = isDemo(e);
+        return finish({ kind: demo ? 'manual_demo' : 'manual', at: e.at, ok: e.ok, resent }, demo);
+      } else if (e.event === 'nas_alarm_started') {
+        // Ohne demo-Feld (Alt-Eintrag) unbekannt - wie bisher als echter Alarm.
+        const demo = e.demo === true;
+        return finish({ kind: demo ? 'manual_demo_open' : 'manual_open', at: e.at }, demo);
+      }
+    }
+    return null;
+  }
+
+  // alarmInfo: undefined = noch nicht geladen, null = nichts im Verlauf.
+  function alarmFact(alarmInfo, status, now) {
+    if (alarmInfo === undefined) return { text: '…', tone: '' };
+    if (!alarmInfo) {
+      // Nichts im NAS-Verlauf: ersatzweise die Sicht der Box seit ihrem
+      // letzten Neustart.
+      const raw = status && !na(status.last_alarm) && status.last_alarm !== 'nie'
+        ? String(status.last_alarm) : '';
+      return { text: raw || 'keiner aufgezeichnet', tone: '' };
+    }
+    const age = now - alarmInfo.at;
+    const recent = age >= 0 && age < ALARM_RECENT_S;
+    let text = recent
+      ? `${fmtRelTime(alarmInfo.at, now)} (${fmtClock(alarmInfo.at)} Uhr)`
+      : fmtDayTime(alarmInfo.at, now);
+    text += `, ${ALARM_KINDS[alarmInfo.kind] || 'Alarm'}`;
+    if (alarmInfo.kind === 'manual' && alarmInfo.ok === false) {
+      text += alarmInfo.resent ? ' – nicht alle erreicht, Nachsendung zugestellt' : ' – nicht alle erreicht';
+    }
+    if (alarmInfo.clearedAt) {
+      text += alarmInfo.clearedOk
+        ? `. Entwarnung um ${fmtClock(alarmInfo.clearedAt)} Uhr gesendet`
+        : `. Entwarnung um ${fmtClock(alarmInfo.clearedAt)} Uhr – NICHT alle erreicht`;
+    }
+    // Gelb erst, wenn die Entwarnung wirklich alle erreicht hat.
+    return { text, tone: recent ? (alarmInfo.clearedAt && alarmInfo.clearedOk ? 'warn' : 'crit') : '' };
+  }
+
+  // ---- Befehlszeile (TEST, DEMO-ALARM über die Box) -------------------------
+  // Bewusst "die Box" statt "ESP32" in allen sichtbaren Texten.
+  const STATE_LABELS = {
+    pending: 'wartet auf die Box',
+    delivered: 'an die Box ausgeliefert, Bestätigung offen',
+    acked: 'bestätigt',
+    expired: 'abgelaufen (die Box hat ihn nicht abgeholt)',
+    cancelled: 'abgebrochen'
+  };
+  // Befehls-Quittungen der Firmware sind feste englische Tokens/Sätze - hier
+  // übersetzt. Unbekannte Werte (künftige Firmware) erscheinen unverändert.
+  const ACK_RESULTS = {
+    executed: 'ausgeführt',
+    skipped_busy: 'übersprungen – Box nicht auslösebereit',
+    duplicate_ignored: 'Duplikat ignoriert',
+    status_failed: 'Bark-Versand fehlgeschlagen',
+    unknown_command: 'unbekannter Befehlstyp'
+  };
+  const ACK_MESSAGES = {
+    'real alarm started': 'Alarm gestartet',
+    'test status sent via Bark': 'Test-Meldung über Bark gesendet',
+    'bark status send FAILED - check BARK_KEY_STATUS/WLAN': 'Bark-Versand fehlgeschlagen – Status-Key/WLAN prüfen',
+    'alarm state machine blocked by cooldown or rearm': 'Cooldown/Wiederbewaffnung aktiv',
+    'command id already handled in this boot': 'Befehls-ID wurde bereits verarbeitet',
+    'unsupported command type': 'Befehlstyp unbekannt'
+  };
+  const fmtAckResult = (v) => ACK_RESULTS[v] || v;
+  const fmtAckMessage = (v) => ACK_MESSAGES[v] || v;
+
+  // Abgeschlossene Befehle nur so lange anzeigen, danach ausblenden.
+  const COMMAND_LINGER_S = 600;
+  // Ausgeliefert, aber nach so langer Zeit noch keine Quittung.
+  const COMMAND_ACK_GIVEUP_S = 600;
+
+  // null = nichts anzeigen. tone: '' (läuft) / 'warn' (nicht wie gewünscht
+  // ausgeführt) / 'done' (erledigt, grau).
+  function commandLine(command, serverTime) {
+    if (command && serverTime) {
+      const finishedAt = {
+        acked: command.acked_at,
+        expired: command.expired_at,
+        cancelled: command.cancelled_at
+      }[command.state];
+      if (finishedAt && serverTime - finishedAt > COMMAND_LINGER_S) command = null;
+    }
+    if (!command) return null;
+    // Ausgeliefert, aber seit COMMAND_ACK_GIVEUP_S keine Quittung: nicht mehr
+    // als "läuft" zeigen - das Ergebnis ist dann schlicht unbekannt.
+    const deliveredAt = Number(command.delivered_at) || 0;
+    const ackLost = command.state === 'delivered' && !!serverTime && deliveredAt > 0
+      && serverTime - deliveredAt > COMMAND_ACK_GIVEUP_S;
+    const label = ackLost
+      ? 'an die Box ausgeliefert – Bestätigung nicht angekommen'
+      : (STATE_LABELS[command.state] || command.state);
+    let text = `Befehl #${command.id} ${command.type}: ${label}`;
+    if (command.state === 'acked' && command.ack_result) {
+      text += ` – ${fmtAckResult(command.ack_result)}`;
+      if (command.ack_message) text += ` (${fmtAckMessage(command.ack_message)})`;
+    }
+    // Vom NAS selbst verworfen (Sicherung beim Ausliefern): den Grund zeigen.
+    if (command.state === 'cancelled' && command.cancel_reason) {
+      text += ` – ${command.cancel_reason}`;
+    }
+    // Alles, was NICHT wie gewünscht ausgeführt wurde, ist gelb.
+    const warn = (command.state === 'acked' && !!command.ack_result && command.ack_result !== 'executed')
+      || command.state === 'expired'
+      || (command.state === 'cancelled' && !!command.cancel_reason);
+    const done = ackLost || !['pending', 'delivered'].includes(command.state);
+    return { text, tone: warn ? 'warn' : (done ? 'done' : ''), canCancel: command.state === 'pending' };
+  }
+
+  // ---- Verlauf -------------------------------------------------------------
+  // Die Box schickt als Alarm-Info "[13.11. 21:42] <Bark-Text>" (ASCII). Für
+  // den Verlauf zählt daraus nur die Zeit, zu der die BOX den Alarm erkannt hat.
+  function boxAlarmTime(info) {
+    const match = /^\[([^\]]+)\]/.exec(String(info || ''));
+    if (match) return ` (von der Box erkannt: ${match[1]})`;
+    return info ? `: ${info}` : '';
+  }
+
+  // tone: 'alarm' | 'warn' | 'ok' | ''; icon: siehe Spec 6.4.
+  function describeLogEntry(entry) {
+    const who = entry.by ? ` – von ${entry.by}` : '';
+    const cmd = `Befehl #${entry.id} ${entry.type || ''}`.trim();
+    const mk = (text, tone, icon) => ({ text, tone, icon });
+    switch (entry.event) {
+      case 'created':
+        return mk(`${cmd} angelegt${who}`, '', 'command');
+      case 'delivered':
+        return mk(`${cmd} an die Box ausgeliefert`, '', 'command');
+      case 'acked':
+        return mk(`${cmd} bestätigt${entry.result ? `: ${fmtAckResult(entry.result)}` : ''}${entry.message ? ` (${fmtAckMessage(entry.message)})` : ''}`, '', 'command');
+      case 'expired':
+        return mk(`${cmd} abgelaufen (die Box hat ihn nicht abgeholt)`, 'warn', 'command');
+      case 'cancelled':
+        // Mit Grund (entry.message) hat die Sicherung im NAS den Befehl
+        // verworfen, z.B. weil der Demo-Modus inzwischen gewechselt hat.
+        return mk(`${cmd} abgebrochen${who}${entry.message ? ` – ${entry.message}` : ''}`, entry.message ? 'warn' : '', 'command');
+      case 'late_ack':
+        return mk(`Verspätete Bestätigung zu Befehl #${entry.id}${entry.type ? ` ${entry.type}` : ''}${entry.result ? `: ${fmtAckResult(entry.result)}` : ''}`, 'warn', 'command');
+      case 'demo_enabled':
+        return mk(`Demo-Modus EIN – Alarme nur an "${entry.label}"${who}`, 'warn', 'demo');
+      case 'demo_disabled':
+        return mk(`Demo-Modus AUS – wieder LIVE${who}`, '', 'demo');
+      case 'demo_repaired':
+        // Vom NAS selbst erkannt und behoben (keine weiteren Felder).
+        return mk('Demo-Zustand war beschädigt – automatisch auf LIVE zurückgesetzt, die Box holt die volle Empfängerliste', 'warn', 'demo');
+      case 'key_added':
+        return mk(`Empfänger "${entry.label}" (${entry.key}) hinzugefügt${who}`, 'ok', 'add');
+      case 'key_removed':
+        return mk(`Empfänger "${entry.label}" (${entry.key}) gelöscht${who}`, '', 'remove');
+      case 'key_renamed':
+        return mk(`Empfänger "${entry.old_label}" umbenannt in "${entry.label}"${who}`, '', 'edit');
+      case 'key_replaced':
+        return mk(`Bark-Key von "${entry.label}" ersetzt (${entry.old_key} → ${entry.key})${who}`, '', 'edit');
+      case 'key_phone_changed':
+        return mk(`Telefonnummer von "${entry.label}" geändert${who}`, '', 'edit');
+      case 'key_muted': {
+        const src = entry.source === 'shortcut' ? ' – per Kurzbefehl-Link' : who;
+        return mk(`Empfänger "${entry.label}" stummgeschaltet (Arbeitsmodus, Alarme mit Stumm-Lautstärke)${src}`, 'warn', 'mute');
+      }
+      case 'key_unmuted': {
+        const src = entry.source === 'shortcut' ? ' – per Kurzbefehl-Link'
+          : (entry.source === 'auto' ? ' – automatisch (Zeitlimit erreicht)' : who);
+        return mk(`Empfänger "${entry.label}" wieder laut geschaltet${src}`, '', 'unmute');
+      }
+      case 'key_mute_volume':
+        return mk(`Stumm-Lautstärke für "${entry.label}" auf ${entry.volume === 0 ? '0 (lautlos)' : entry.volume} gestellt${who}`, '', 'mute');
+      case 'key_mute_permanent': {
+        const src = entry.source === 'shortcut' ? ' – per Kurzbefehl-Link' : who;
+        return entry.permanent
+          ? mk(`Empfänger "${entry.label}" DAUERHAFT stumm geschaltet (keine automatische Rückschaltung mehr)${src}`, 'warn', 'mute')
+          : mk(`Dauerhafte Stummschaltung für "${entry.label}" beendet (läuft wieder automatisch aus)${src}`, '', 'unmute');
+      }
+      case 'key_test':
+        return entry.ok
+          ? mk(`Test-Push an "${entry.label}" gesendet${who}`, '', 'test')
+          : mk(`Test-Push an "${entry.label}" FEHLGESCHLAGEN${who}`, 'warn', 'test');
+      case 'notify_changed':
+        // key 'enabled' = eine Art von Meldung wurde ein- bzw. abgeschaltet;
+        // sonst wurde eine einzelne Einstellung geändert.
+        return entry.key === 'enabled'
+          ? mk(`Meldung an den Admin "${entry.label}" ${entry.value}${who}`, entry.value === 'abgeschaltet' ? 'warn' : '', 'settings')
+          : mk(`Meldungen an den Admin, ${entry.label} – ${entry.option}: ${entry.value}${who}`, '', 'settings');
+      case 'setting_changed':
+        return mk(`Einstellung „${entry.label}“: ${entry.value}${who}`, '', 'settings');
+      // *_started wird VOR dem Versand geschrieben: Steht danach kein
+      // Abschluss-Eintrag (nas_alarm/false_alarm) im Verlauf, ist der Versand
+      // abgebrochen - wichtig nach einer "Antwort unklar"-Meldung.
+      case 'nas_alarm_started':
+        return mk((entry.resend
+          ? `REAL ALARM: Nachsendung an ${entry.resend} Empfänger gestartet`
+          : 'REAL ALARM gestartet') + (entry.demo === true ? ' (DEMO-MODUS)' : '') + who, 'alarm', 'alarm');
+      case 'false_alarm_started':
+        return mk((entry.resend
+          ? `ENTWARNUNG: Nachsendung an ${entry.resend} Empfänger gestartet`
+          : 'ENTWARNUNG gestartet') + (entry.demo === true ? ' (DEMO-MODUS)' : '') + who, 'warn', 'clear');
+      case 'nas_alarm':
+        return mk(`REAL ALARM direkt vom NAS: ${entry.message || ''}${who}`, 'alarm', 'alarm');
+      case 'false_alarm':
+        return mk(`ENTWARNUNG (Fehlalarm) gesendet: ${entry.message || ''}${who}`, 'warn', 'clear');
+      case 'relay_alarm':
+        // source 'remote' = per Dashboard-Befehl ausgelöster DEMO-Alarm (kein Melder).
+        return entry.source === 'remote'
+          ? mk(`DEMO-Alarm über die Box ausgelöst (Dashboard-Befehl)${boxAlarmTime(entry.info)}`, 'warn', 'alarm')
+          : mk(`RELAISALARM – der Melder hat ausgelöst${boxAlarmTime(entry.info)}`, 'alarm', 'alarm');
+      case 'box_offline':
+        return mk(`Box OFFLINE gemeldet (kein Status seit ${entry.minutes} min)`, 'warn', 'box');
+      case 'box_recovered':
+        return mk(`Box wieder online (Ausfall ca. ${entry.minutes} min)`, 'ok', 'box');
+      case 'box_restart':
+        return mk(`Box neu gestartet – Grund: ${RESET_REASONS[entry.reason] || entry.reason || 'unbekannt'}`, 'warn', 'box');
+      case 'nas_web_failed':
+        return mk(`NAS-Dashboard gestört: ${entry.detail || 'Selbsttest fehlgeschlagen'}`, 'alarm', 'box');
+      case 'nas_web_recovered':
+        return mk(`NAS-Dashboard wieder in Ordnung (Störung ca. ${entry.minutes} min)`, 'ok', 'box');
+      case 'watcher_silent':
+        return mk(`Außen-Wächter (Cloud) meldet sich nicht (seit ${entry.minutes} min)`, 'warn', 'watch');
+      case 'watcher_recovered':
+        return mk(`Außen-Wächter (Cloud) wieder da (Pause ca. ${entry.minutes} min)`, 'ok', 'watch');
+      default:
+        return mk(String(entry.event || '?'), '', 'settings');
+    }
+  }
+
+  // Standardmäßig die letzten 25 Ereignisse, in 25er-Schritten bis zum
+  // Server-Deckel von 100.
+  const LOG_FILTERS = ['all', 'alarm', 'keys', 'system'];
+  const LOG_STEP = 25;
+  const LOG_MAX = 100;
+  const LOG_EMPTY = {
+    all: 'Noch keine Ereignisse aufgezeichnet.',
+    alarm: 'Keine Alarme im Verlauf.',
+    keys: 'Keine Änderungen an den Empfängern im Verlauf.',
+    system: 'Keine System-Ereignisse im Verlauf.'
+  };
+
+  function logMatches(entry, query) {
+    const q = String(query || '').trim().toLowerCase();
+    if (!q) return true;
+    return describeLogEntry(entry).text.toLowerCase().includes(q);
+  }
+
+  // ---- Nicht Erreichte -----------------------------------------------------
+  // Grund eines fehlgeschlagenen Empfängers: http 0 heißt beim NAS-Versand
+  // "keine Verbindung zu Bark bzw. Zeitüberschreitung" - nicht "HTTP 0".
+  const failReason = (r) => (Number(r.http) === 0 ? 'keine Verbindung/Timeout' : `HTTP ${r.http}`);
+
+  const whatOf = (action) => (action === 'alarm' ? 'REAL ALARM' : 'ENTWARNUNG');
+
+  // Gemerkte nicht Erreichte (aus localStorage o.ä.) streng prüfen: Was nicht
+  // genau so aussieht wie von buildUnreached() geliefert, wird verworfen -
+  // ebenso ein Stand, der älter als ein halber Tag ist.
+  const UNREACHED_MAX_AGE_MS = 12 * 3600 * 1000;
+  function validateUnreached(raw, nowMs) {
+    if (!raw) return null;
+    try {
+      const v = JSON.parse(raw);
+      const okEntry = (e) => !!e && Number.isInteger(e.id) && e.id >= 0
+        && typeof e.name === 'string' && typeof e.reason === 'string';
+      if (v && (v.action === 'alarm' || v.action === 'false_alarm') && Number.isFinite(v.at)
+          && nowMs - v.at < UNREACHED_MAX_AGE_MS
+          && Array.isArray(v.entries) && v.entries.length > 0 && v.entries.every(okEntry)) {
+        return {
+          action: v.action,
+          what: whatOf(v.action),
+          at: v.at,
+          startedAt: Number(v.startedAt) > 0 ? Number(v.startedAt) : 0,
+          entries: v.entries.map((e) => ({ id: e.id, name: e.name, reason: e.reason }))
+        };
+      }
+    } catch (err) {
+      // kaputter Eintrag -> verwerfen
+    }
+    return null;
+  }
+
+  // Rein: liefert die neue Liste der nicht Erreichten (das Speichern macht der
+  // Store). prev = bisheriger Stand, resend = { ids, origAt } bei einer
+  // Nachsendung, sonst null. Nur ein Ergebnis MIT Versand (results) ändert die
+  // Liste - "nichts gesendet" lässt sie (dasselbe Objekt) stehen.
+  function buildUnreached(prev, action, data, resend, nowMs) {
+    const results = Array.isArray(data && data.results) ? data.results : [];
+    const failedRaw = results.filter((r) => !r.ok);
+    const reachedRaw = results.filter((r) => r.ok);
+    const name = (r) => r.label || r.key || '?';
+    const entryOf = (r) => ({ id: Number(r.id) > 0 ? Number(r.id) : 0, name: name(r), reason: failReason(r) });
+    const failed = failedRaw.map(entryOf);
+    const reached = reachedRaw.map(name);
+    if (!results.length) return { unreached: prev || null, reached, failed };
+
+    let entries = failed.slice();
+    // Server-Zeit des URSPRÜNGLICHEN Versands - für weitere Nachsendungen.
+    let startedAt = Number(data.started_at) > 0 ? Number(data.started_at) : 0;
+    if (resend) {
+      // Nachsendung: Die alte Liste bleibt die Grundlage - gestrichen wird
+      // nur, wer JETZT erreicht wurde; wer erneut scheitert, bekommt den
+      // neuen Grund. Wer nicht mitgesendet wurde (ohne id, oder inzwischen
+      // aus der Liste gelöscht), bleibt offen.
+      startedAt = resend.origAt > 0 ? resend.origAt : (prev && prev.startedAt) || 0;
+      if (prev && prev.action === action) {
+        const fresh = new Map(entries.filter((e) => e.id > 0).map((e) => [e.id, e]));
+        const reachedIds = new Set(reachedRaw.map((r) => Number(r.id)).filter((id) => id > 0));
+        const merged = [];
+        prev.entries.forEach((e) => {
+          if (e.id > 0 && reachedIds.has(e.id)) return;
+          if (e.id > 0 && fresh.has(e.id)) {
+            merged.push(fresh.get(e.id));
+            fresh.delete(e.id);
+            return;
+          }
+          merged.push(e);
+        });
+        entries.forEach((e) => { if (!(e.id > 0) || fresh.has(e.id)) merged.push(e); });
+        entries = merged;
+      }
+    }
+    return {
+      unreached: entries.length ? { action, what: whatOf(action), at: nowMs, startedAt, entries } : null,
+      reached,
+      failed
+    };
+  }
+
+  // ---- Empfänger -----------------------------------------------------------
+  const volWords = (vol) => (vol === 0 ? 'lautlos' : `leise (Lautstärke ${vol} von 10)`);
+
+  // now bleibt im Aufruf, damit die Zeilenlogik später Zeitabhängiges
+  // (z.B. "gleich wieder laut") ergänzen kann, ohne die Aufrufer zu ändern.
+  function recipientView(entry, demo, now) {
+    const demoOn = !!(demo && demo.enabled);
+    const vol = Number(entry.mute_volume) || 0;
+    const until = Number(entry.mute_until) || 0;
+    const permanent = !!entry.mute_permanent;
+    const state = !entry.muted ? 'loud' : (permanent ? 'permanent' : 'muted');
+    const isDemoTarget = demoOn && Number(entry.id) === Number(demo.key_id);
+    const pill = state === 'loud' ? { text: 'Laut', tone: 'ok' }
+      : (state === 'permanent' ? { text: 'Dauerhaft', tone: 'crit' } : { text: 'Stumm', tone: 'warn' });
+    // mute_overdue: Die Rückschaltung ist fällig, konnte aber nicht gespeichert
+    // werden - die Box kennt noch "stumm" und alarmiert diesen Empfänger dann
+    // evtl. noch mit der Stumm-Lautstärke.
+    const overdue = !!entry.mute_overdue;
+    let sub = '';
+    let subTone = '';
+    if (overdue) {
+      sub = `Die automatische Laut-Rückschaltung ist fällig, konnte auf dem NAS aber nicht gespeichert werden (Datenordner nicht beschreibbar?). „Alarm an alle senden“ vom NAS kommt laut an – die Box alarmiert evtl. noch ${volWords(vol)}.`;
+      subTone = 'warn';
+    } else if (state !== 'loud') {
+      const since = entry.muted_at ? ` Stumm seit ${fmtDayClock(entry.muted_at)} Uhr` : '';
+      let tail = '';
+      if (state === 'permanent') tail = `${since ? ',' : ''} keine automatische Rückschaltung`;
+      else if (until) tail = `${since ? ',' : ''} automatisch wieder laut um ~${fmtClock(until)} Uhr`;
+      sub = `Alarme kommen ${volWords(vol)} an.${since}${tail}${since || tail ? '.' : ''}`;
+    }
+    return { state, pill, sub, subTone, isDemoTarget, paused: demoOn && !isDemoTarget };
+  }
+
+  // ---- Bestätigungsfragen --------------------------------------------------
+  // Die Frage nennt die TATSÄCHLICHE Stumm-Lautstärke dieses Eintrags:
+  // "OHNE Ton" stimmt nur bei 0 - sonst kommt der Alarm leise an.
+  function muteQuestion(name, want, vol) {
+    const how = !vol ? 'OHNE Ton' : `nur noch leise (Stumm-Lautstärke ${vol} von 10)`;
+    if (want === 'permanent') {
+      return `"${name}" DAUERHAFT stumm schalten? Alarme kommen dort weiterhin sichtbar an, aber ${how} – und die automatische Rückschaltung greift nicht mehr, bis das hier wieder beendet wird.`;
+    }
+    return `"${name}" stumm schalten (Arbeitsmodus)? Alarme kommen dort dann ${how} an (aber weiterhin sichtbar).`;
+  }
+
+  // Fester Modus-Wortlaut: LIVE bzw. DEMO-MODUS mit dem einen Empfänger.
+  const demoName = (demo) => (demo && demo.label) || 'Test-Empfänger';
+
+  // Empfänger, an die der Versand JETZT geht: im Demo-Modus nur der Demo-Key.
+  function targetKeys(demo, keys) {
+    const list = Array.isArray(keys) ? keys : [];
+    if (demo && demo.enabled) return list.filter((k) => Number(k.id) === Number(demo.key_id));
+    return list;
+  }
+
+  function mutedPhrase(k) {
+    const vol = Number(k.mute_volume) || 0;
+    const kind = k.mute_permanent ? 'dauerhaft stumm' : 'stumm';
+    return vol === 0 ? `${k.label} (${kind}) lautlos` : `${k.label} (${kind}) mit Lautstärke ${vol}`;
+  }
+
+  // keys = keys_list.keys. extra = { names, what } für 'resend'.
+  function alarmQuestion(action, demo, keys, extra) {
+    extra = extra || {};
+    const demoOn = !!(demo && demo.enabled);
+    const targets = targetKeys(demo, keys);
+    const n = targets.length;
+    const muted = targets.filter((k) => k.muted);
+    const mode = demoOn ? `DEMO-MODUS: nur „${demoName(demo)}“` : 'LIVE';
+    const count = n === 0
+      ? 'Die Liste ist leer – es geht an die Not-Liste der NAS-Konfiguration.'
+      : `${n} Empfänger.`;
+    const mutedText = muted.length
+      ? ` Stumm geschaltet (Alarm kommt mit Stumm-Lautstärke): ${muted.map(mutedPhrase).join('; ')}.`
+      : '';
+
+    if (action === 'box_alarm') {
+      return {
+        title: 'Demo-Alarm über die Box auslösen?',
+        text: `DEMO-MODUS: Der Alarm durchläuft die komplette Alarm-Kette der Box und geht an „${demoName(demo)}“. Danach greift der normale 5-Minuten-Cooldown der Box.`
+      };
+    }
+    if (action === 'resend') {
+      const names = (extra.names || []).join(', ');
+      return {
+        title: 'Erneut senden?',
+        text: `Aktuell ${mode}: ${extra.what || 'Alarm'} erneut senden – NUR an: ${names}?${mutedText}`
+      };
+    }
+    if (action === 'false_alarm') {
+      return {
+        title: demoOn ? `Demo-Entwarnung an ${demoName(demo)} senden?` : 'Entwarnung an alle senden?',
+        text: demoOn
+          ? `${mode}. Die Entwarnung geht nur an diesen Empfänger.`
+          : `${mode}. ENTWARNUNG an ${count} („Der letzte Alarm war ein FEHLALARM“ – Critical Alert mit kurzem Ton, kommt auch durch Stummschalter durch.)${mutedText}`
+      };
+    }
+    return {
+      title: demoOn ? `Demo-Alarm an ${demoName(demo)} senden?` : 'Alarm an alle senden?',
+      text: demoOn
+        ? `${mode}. Der Alarm geht nur an diesen Empfänger (1 Empfänger), alle anderen pausieren.${mutedText}`
+        : `${mode}. ECHTEN FEUERWEHR-ALARM direkt vom NAS senden an ${count}${mutedText}`
+    };
+  }
+
+  // Frist: mindestens 10 s, bei langen Fragen mehr (bis 25 s) - sonst lief die
+  // Zeit ab, bevor man eine der längeren Fragen zu Ende gelesen hatte.
+  const ARM_TIMEOUT_MIN_S = 10;
+  const ARM_TIMEOUT_MAX_S = 25;
+  const armTimeoutFor = (text) => Math.min(ARM_TIMEOUT_MAX_S, Math.max(ARM_TIMEOUT_MIN_S,
+    Math.round(4 + String(text).trim().split(/\s+/).length * 0.4)));
+
+  // Der Modus, den eine Alarm-Bestätigung beschreibt (expect_demo): '0' = LIVE,
+  // sonst die key_id des Demo-Empfängers.
+  const expectDemoOf = (info) => (info && info.enabled ? String(info.key_id) : '0');
+
   FW.logic = {
     setTimezone, tz,
     na, show, flagged,
@@ -673,6 +1157,11 @@
     keyProgressParts, deliveryIncomplete, heartbeatFailed, weakWifi, lowMemory, resetWarnFresh,
     isStuck, alarmStanding,
     watchdogState, outsideState,
-    boxRows, collectHints, verdict, overviewRows, keysSummary, recipientsFact
+    boxRows, collectHints, verdict, overviewRows, keysSummary, recipientsFact,
+    ALARM_KINDS, deriveAlarmInfo, alarmFact,
+    STATE_LABELS, ACK_RESULTS, ACK_MESSAGES, fmtAckResult, fmtAckMessage, COMMAND_LINGER_S, COMMAND_ACK_GIVEUP_S, commandLine,
+    describeLogEntry, LOG_FILTERS, LOG_STEP, LOG_MAX, LOG_EMPTY, logMatches,
+    failReason, whatOf, UNREACHED_MAX_AGE_MS, validateUnreached, buildUnreached,
+    volWords, recipientView, muteQuestion, alarmQuestion, armTimeoutFor, expectDemoOf
   };
 })(typeof window !== 'undefined' ? window : globalThis);

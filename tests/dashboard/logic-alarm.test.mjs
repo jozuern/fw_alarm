@@ -1,0 +1,122 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { loadScripts, plain } from './helpers.mjs';
+
+const L = loadScripts(['nas_dashboard/assets/app/logic.js']).FW.logic;
+
+test('alarm info with clearing', () => {
+  const e = [{ event: 'false_alarm', at: 200, ok: true, demo: false }, { event: 'nas_alarm', at: 100, ok: false, demo: false }];
+  assert.deepEqual(plain(L.deriveAlarmInfo(e)), { kind: 'manual', at: 100, ok: false, resent: null, clearedAt: 200, clearedOk: true });
+  assert.equal(L.deriveAlarmInfo([{ event: 'false_alarm', at: 200, ok: true, demo: true }, { event: 'relay_alarm', at: 100 }]).clearedAt, undefined);
+  assert.equal(L.deriveAlarmInfo([{ event: 'nas_alarm', at: 1, message: 'DEMO-MODUS: …' }]).kind, 'manual_demo');
+});
+
+test('alarm info: resend, started, empty', () => {
+  const r = L.deriveAlarmInfo([{ event: 'nas_alarm', at: 300, resend: 2, ok: true }, { event: 'nas_alarm', at: 100, ok: false }]);
+  assert.equal(r.at, 100); assert.equal(r.resent, true);
+  assert.equal(L.deriveAlarmInfo([{ event: 'nas_alarm_started', at: 5, demo: true }]).kind, 'manual_demo_open');
+  assert.equal(L.deriveAlarmInfo([{ event: 'nas_alarm_started', at: 5 }]).kind, 'manual_open');
+  assert.equal(L.deriveAlarmInfo([{ event: 'relay_alarm', at: 5, source: 'remote' }]).kind, 'demo_box');
+  assert.equal(L.deriveAlarmInfo([{ event: 'box_offline', at: 5 }]), null);
+  const c = L.deriveAlarmInfo([{ event: 'false_alarm', at: 9, ok: true, resend: 1 }, { event: 'false_alarm', at: 8, ok: false, demo: false }, { event: 'relay_alarm', at: 1 }]);
+  assert.equal(c.clearedAt, 8); assert.equal(c.clearedOk, true);
+});
+
+test('alarm fact', () => {
+  assert.deepEqual(plain(L.alarmFact(undefined, null, 0)), { text: '…', tone: '' });
+  assert.equal(L.alarmFact(null, { last_alarm: 'nie' }, 0).text, 'keiner aufgezeichnet');
+  assert.equal(L.alarmFact(null, { last_alarm: '[13.11. 21:42] x' }, 0).text, '[13.11. 21:42] x');
+  const now = 1800000000;
+  const f = L.alarmFact({ kind: 'relay', at: now - 600 }, null, now);
+  assert.equal(f.tone, 'crit'); assert.match(f.text, /^vor 10 min \(.*Uhr\), Relaisalarm \(Melder\)$/);
+  const g = L.alarmFact({ kind: 'manual', at: now - 600, ok: false, resent: true, clearedAt: now - 300, clearedOk: true }, null, now);
+  assert.equal(g.tone, 'warn'); assert.match(g.text, /nicht alle erreicht, Nachsendung zugestellt\. Entwarnung um .* Uhr gesendet/);
+  const h = L.alarmFact({ kind: 'relay', at: now - 600, clearedAt: now - 300, clearedOk: false }, null, now);
+  assert.equal(h.tone, 'crit'); assert.match(h.text, /NICHT alle erreicht$/);
+  assert.equal(L.alarmFact({ kind: 'relay', at: now - 90000 }, null, now).tone, '');
+});
+
+test('unreached merge on resend', () => {
+  const prev = { action: 'alarm', what: 'REAL ALARM', at: 1, startedAt: 50, entries: [{ id: 3, name: 'Tom', reason: 'HTTP 500' }, { id: 0, name: 'Notliste', reason: 'HTTP 0' }] };
+  const r = L.buildUnreached(prev, 'alarm', { ok: true, results: [{ id: 3, label: 'Tom', ok: true }] }, { ids: [3], origAt: 50 }, 1000);
+  assert.deepEqual(plain(r.unreached.entries), [{ id: 0, name: 'Notliste', reason: 'HTTP 0' }]);
+  assert.equal(r.unreached.startedAt, 50);
+  assert.deepEqual(plain(r.reached), ['Tom']);
+  const none = L.buildUnreached(prev, 'alarm', { ok: false, results: [] }, { ids: [9], origAt: 0 }, 1000);
+  assert.equal(none.unreached, prev);
+});
+
+test('unreached: first send, renewed failure, all reached', () => {
+  const first = L.buildUnreached(null, 'false_alarm', { started_at: 77, results: [{ id: 2, label: 'A', ok: false, http: 0 }, { id: 4, key: 'k', ok: true }] }, null, 5);
+  assert.equal(first.unreached.what, 'ENTWARNUNG'); assert.equal(first.unreached.startedAt, 77);
+  assert.deepEqual(plain(first.unreached.entries), [{ id: 2, name: 'A', reason: 'keine Verbindung/Timeout' }]);
+  assert.deepEqual(plain(first.failed), [{ id: 2, name: 'A', reason: 'keine Verbindung/Timeout' }]);
+  const again = L.buildUnreached(first.unreached, 'false_alarm', { results: [{ id: 2, label: 'A', ok: false, http: 500 }] }, { ids: [2], origAt: 0 }, 9);
+  assert.equal(again.unreached.startedAt, 77);
+  assert.equal(again.unreached.entries[0].reason, 'HTTP 500');
+  const done = L.buildUnreached(first.unreached, 'false_alarm', { results: [{ id: 2, label: 'A', ok: true }] }, { ids: [2], origAt: 77 }, 9);
+  assert.equal(done.unreached, null);
+  const other = L.buildUnreached(first.unreached, 'alarm', { results: [{ id: 5, label: 'B', ok: false, http: 400 }] }, { ids: [5], origAt: 0 }, 9);
+  assert.deepEqual(plain(other.unreached.entries.map((e) => e.id)), [5]);
+});
+
+test('validateUnreached', () => {
+  const ok = JSON.stringify({ action: 'alarm', at: 1000, startedAt: 0, entries: [{ id: 1, name: 'A', reason: 'x' }] });
+  assert.ok(L.validateUnreached(ok, 2000));
+  assert.equal(L.validateUnreached(ok, 1000 + 43200001), null);
+  assert.equal(L.validateUnreached('{"action":"x"}', 2000), null);
+  assert.equal(L.validateUnreached('nonsense', 2000), null);
+  assert.equal(L.validateUnreached(null, 2000), null);
+  assert.equal(L.validateUnreached(JSON.stringify({ action: 'alarm', at: 1000, entries: [{ id: -1, name: 'A', reason: 'x' }] }), 2000), null);
+  assert.equal(L.validateUnreached(ok, 2000).what, 'REAL ALARM');
+});
+
+test('command line', () => {
+  assert.equal(L.commandLine({ id: 4, type: 'TEST', state: 'pending' }, 100).canCancel, true);
+  assert.equal(L.commandLine({ id: 4, type: 'TEST', state: 'acked', acked_at: 100, ack_result: 'executed' }, 801), null);
+  assert.equal(L.commandLine({ id: 4, type: 'ALARM', state: 'acked', acked_at: 100, ack_result: 'skipped_busy' }, 200).tone, 'warn');
+  assert.match(L.commandLine({ id: 4, type: 'TEST', state: 'delivered', delivered_at: 100 }, 701).text, /Bestätigung nicht angekommen/);
+  assert.equal(L.commandLine(null, 1), null);
+  const a = L.commandLine({ id: 4, type: 'TEST', state: 'acked', acked_at: 100, ack_result: 'executed', ack_message: 'test status sent via Bark' }, 200);
+  assert.equal(a.tone, 'done'); assert.equal(a.canCancel, false); assert.match(a.text, /ausgeführt/);
+  assert.equal(L.commandLine({ id: 4, type: 'TEST', state: 'delivered', delivered_at: 100 }, 200).tone, '');
+  assert.equal(L.commandLine({ id: 5, type: 'ALARM', state: 'cancelled', cancelled_at: 10, cancel_reason: 'Demo-Modus geändert' }, 20).tone, 'warn');
+  assert.equal(L.commandLine({ id: 5, type: 'ALARM', state: 'expired', expired_at: 10 }, 20).tone, 'warn');
+});
+
+test('confirmation texts name mode and muted volumes', () => {
+  const keys = [{ id: 1, label: 'Josh', muted: false }, { id: 2, label: 'Anna', muted: true, mute_volume: 3 }];
+  const q = L.alarmQuestion('alarm', { enabled: false }, keys);
+  assert.match(q.text, /2 Empfänger/); assert.match(q.text, /Anna \(stumm\) mit Lautstärke 3/);
+  assert.match(L.alarmQuestion('alarm', { enabled: true, label: 'Anna', key_id: 2 }, keys).title, /Demo/);
+  assert.equal(L.armTimeoutFor('kurz'), 10); assert.equal(L.armTimeoutFor('w '.repeat(80)), 25);
+});
+
+test('confirmation variants', () => {
+  const keys = [{ id: 1, label: 'Josh', muted: false }, { id: 2, label: 'Anna', muted: true, mute_volume: 0 }];
+  assert.match(L.alarmQuestion('alarm', { enabled: false }, keys).text, /LIVE/);
+  assert.match(L.alarmQuestion('alarm', { enabled: false }, keys).text, /Anna \(stumm\) lautlos/);
+  const d = L.alarmQuestion('alarm', { enabled: true, label: 'Josh', key_id: 1 }, keys);
+  assert.match(d.text, /DEMO-MODUS: nur/); assert.match(d.text, /1 Empfänger/); assert.doesNotMatch(d.text, /Anna/);
+  assert.match(L.alarmQuestion('false_alarm', { enabled: false }, keys).title, /Entwarnung/);
+  assert.match(L.alarmQuestion('box_alarm', { enabled: true, label: 'Josh', key_id: 1 }, keys).text, /5-Minuten-Cooldown/);
+  const r = L.alarmQuestion('resend', { enabled: false }, keys, { names: ['Tom', 'Eva'], what: 'REAL ALARM' });
+  assert.match(r.text, /LIVE/); assert.match(r.text, /NUR an: Tom, Eva/);
+  assert.equal(L.expectDemoOf({ enabled: true, key_id: 7 }), '7'); assert.equal(L.expectDemoOf({ enabled: false }), '0'); assert.equal(L.expectDemoOf(null), '0');
+  assert.equal(L.volWords(0), 'lautlos'); assert.equal(L.volWords(4), 'leise (Lautstärke 4 von 10)');
+  assert.match(L.muteQuestion('Anna', 'muted', 0), /OHNE Ton/);
+  assert.match(L.muteQuestion('Anna', 'permanent', 3), /DAUERHAFT.*Stumm-Lautstärke 3 von 10/);
+});
+
+test('recipient view', () => {
+  const r = L.recipientView({ id: 2, label: 'Anna', muted: true, mute_volume: 3, muted_at: 1000, mute_until: 44200 }, { enabled: false }, 2000);
+  assert.equal(r.state, 'muted'); assert.equal(r.pill.text, 'Stumm'); assert.match(r.sub, /Lautstärke 3/);
+  assert.equal(L.recipientView({ id: 2, label: 'A', muted: true, mute_permanent: true }, { enabled: false }, 0).pill.tone, 'crit');
+  assert.equal(L.recipientView({ id: 1, label: 'J', muted: false }, { enabled: true, key_id: 2 }, 0).paused, true);
+  const p = L.recipientView({ id: 2, label: 'A', muted: true, mute_permanent: true }, { enabled: false }, 0);
+  assert.equal(p.pill.text, 'Dauerhaft'); assert.match(p.sub, /keine automatische Rückschaltung/);
+  const o = L.recipientView({ id: 2, label: 'A', muted: false, mute_overdue: true, mute_volume: 0 }, { enabled: false }, 0);
+  assert.equal(o.subTone, 'warn'); assert.match(o.sub, /nicht gespeichert/);
+  assert.equal(L.recipientView({ id: 2, label: 'A', muted: false }, { enabled: true, key_id: 2 }, 0).isDemoTarget, true);
+  assert.equal(L.recipientView({ id: 2, label: 'A', muted: false }, { enabled: false }, 0).pill.text, 'Laut');
+});
