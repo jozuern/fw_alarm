@@ -24,6 +24,9 @@ pio device monitor      # serielle Ausgabe, 115200 Baud
 `platformio.ini` setzt `src_dir = boss925_alarm_bark`, damit der Ordnername exakt
 zur `.ino` passt – dadurch lässt sich dasselbe Projekt **ohne Änderung auch in der
 Arduino IDE** öffnen (Board: „ESP32 Dev Module"). Es gibt keine Tests und kein Lint.
+Die Plattform ist gepinnt (`espressif32@7.0.1` = Arduino-ESP32-Core 2.0.17,
+damit getestet); Änderungen trotzdem so schreiben, dass sie auch mit Core 3.x
+bauen (Versions-Weichen über `ESP_ARDUINO_VERSION_MAJOR`).
 
 ## Architektur
 
@@ -36,6 +39,10 @@ Alles liegt in `boss925_alarm_bark/`:
 Der `.ino`-Code liest **nichts** fest verdrahtet; jeder konfigurierbare Wert kommt
 als `#define` (bzw. das Array `BARK_KEYS_ALARM[]`) aus `config.h`. Beim Ändern von
 Verhalten/Defaults daher **immer beide** Config-Dateien synchron halten.
+`config.h` gehört dem Nutzer (gitignored): Jeder NEUE Wert bekommt im `.ino`
+einen `#ifndef`-Fallback (Block „FALLBACKS FÜR NEUERE WERTE“), damit eine
+ältere `config.h` weiter kompiliert; geänderte Mindestwerte greifen im `.ino`
+(z.B. `WDT_EFFECTIVE_TIMEOUT_S` = max(`WDT_TIMEOUT_S`, Minimum)).
 Einzige Laufzeit-Ausnahme: Die aktiven Alarm-Empfänger (`alarmKeys[]`) kommen
 nach dem ersten Dashboard-Sync aus dem NVS, nicht mehr aus `config.h`
 (siehe Empfängerlisten-Bullet unten).
@@ -84,32 +91,77 @@ bleibt bewusst im Always-Free-Kontingent (kein Pay-as-you-go) – das Risiko
 „Oracle stoppt idle VMs“ deckt die gegenseitige Überwachung ab. Dateien unter
 `cloud_watcher/` sind LF (`.gitattributes`).
 
-Ablauf in `loop()`: `feedWatchdog()` → `maintainWiFi()` (nicht-blockierender
-Reconnect) → `processPendingAlarm()` (Nachsende-Runden) → `handleHeartbeat()` →
-`handleRemoteMonitor()` (NAS ACK/Poll/Status, kurze Timeouts + Backoff) →
-Wiederbewaffnungs-/Cooldown-Gate → Erkennung (Pegel-Abfrage im loop **plus**
-Interrupt-Latch) → `startAlarm()`. Alarm geht als `level=critical` an alle Keys,
+Ablauf in `loop()`: `feedWatchdog()` → `maintainWiFi()` (nicht-blockierend; erst
+der AutoReconnect des Cores, harter Neuaufbau frühestens nach
+`WIFI_RECONNECT_MS`) → `handleRelayInput()` (Cooldown-Ende,
+Wiederbewaffnungs-/Klemm-Logik, Gate, Erkennung per Pegel-Abfrage **plus**
+Interrupt-Latch → `startAlarm()`) → `processPendingAlarm()` (Nachsende-Runden)
+→ periodische RTC-Sicherung → [Startphase `STARTUP_DETECT_MS` nach `setup()`:
+bis hierher, sonst nichts] → Start-Meldung (einmalig, nicht während
+`alarmPending`) → `handleHeartbeat()` → `handleRemoteMonitor()` (NAS
+ACK/Poll/Status, kurze Timeouts + Backoff) → `processOwnerNotices()`. Die
+Erkennung läuft so immer VOR Nebenlogik, auch im ersten Durchlauf nach einem
+Neustart. Alarm geht als `level=critical` an alle Keys,
 Status/Heartbeat/Test als `level=passive` nur an `BARK_KEY_STATUS`.
 
 Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
 - **Pro Key isoliert senden** mit Retry (`BARK_MAX_TRIES`); ein toter Key darf die
-  anderen nicht blockieren. `sendBark()` gibt `bool` zurück; bei HTTP 4xx wird
+  anderen nicht blockieren. `sendBark()` gibt `bool` zurück (Code des letzten
+  Versuchs über `int* httpCode`, < 0 = Transportfehler); bei HTTP 4xx wird
   **nicht** wiederholt (Client-Fehler). `sendStatus()` gibt ebenfalls `bool` zurück.
+  400/401/403/404 = dauerhaft abgelehnt: Key ist für diesen Alarm endgültig
+  gescheitert (`keyFailed[]`, keine Nachsende-Runden mehr), Owner wird sofort
+  gewarnt (Key nur maskiert, `maskKey()` – auch im seriellen Log), die übrigen
+  Keys laufen weiter. Zwei Transportfehler in Folge brechen eine Runde ab (die
+  nächste beginnt beim nächsten Key); 5xx/andere 4xx bleiben pro Key isoliert.
+  Jede HTTPS-Anfrage hat ein Handshake-Limit (`setHandshakeTimeout()`, Bark 8 s,
+  NAS = `REMOTE_HTTP_TIMEOUT_MS`, mind. 4 s) – der Core-Standard (120 s) läge
+  über dem Watchdog.
 - **Nachsende-Puffer**: `startAlarm()` merkt den Alarm (`alarmPending`, `keyDone[]`,
   Zeitstempel der Erkennung im Text); `processPendingAlarm()` versucht alle
   `ALARM_RETRY_MS` erneut die noch offenen Keys, bis alle versorgt sind oder
-  `ALARM_RETRY_GIVEUP_MS` erreicht ist (dann Status-Warnung an den Owner).
-  Nachgesendete Alarme bekommen den Zusatz „(verspaetet zugestellt)".
+  `ALARM_RETRY_GIVEUP_MS` erreicht ist (auch mitten in einer Runde geprüft;
+  dann Status-Warnung an den Owner und Status-Feld `alarm_gaveup=1` bis zum
+  nächsten Alarm). Nachgesendete Alarme bekommen den Zusatz „(verspaetet
+  zugestellt)". Ein eingerasteter Impuls trägt den Zeitpunkt seines Beginns
+  (`isrLatchedAt`), nicht den der späteren Verarbeitung. „erreicht/gesamt“
+  (`key_progress`) kommt aus beim Alarm festgehaltenen Zahlen
+  (`deliveryDone`/`deliveryTotal`); ein Alarm ohne Empfänger gilt NICHT als
+  zugestellt (Owner-Warnung, auch schon beim Boot).
+- **Alarmzustand übersteht Neustarts**: `RtcAlarmState` (`RTC_NOINIT_ATTR`,
+  Magic + Größe + FNV-Prüfsumme) hält Wiederbewaffnung, Cooldown, offene
+  Zustellung (Masken, Lautstärke, Zeitstempel, vergangene Zeiten), Klemm-Status,
+  `alarm_seq` und Quelle; `saveRtcState()` bei jeder Änderung und periodisch.
+  `restoreRtcState()` übernimmt ihn nur nach einem NICHT-Power-on-Reset mit
+  gültiger Prüfsumme (sonst verwerfen) und setzt die Zustellung als Nachsendung
+  fort; passt die Empfängerliste nicht mehr (Listen-Prüfsumme), geht ein
+  Relaisalarm an alle erneut, ein Demo-Alarm wird verworfen.
 - **Echte Flankenerkennung**: Nach einem Alarm erst wieder scharf, wenn der Kontakt
   `REARM_OPEN_MS` stabil offen war (`waitingForRelease`) — ein dauerhaft
-  geschlossener Kontakt darf NICHT periodisch neu alarmieren. Zusätzlich
-  **Cooldown** `COOLDOWN_MS` als Mindestabstand. Bleibt der Kontakt
-  `STUCK_CONTACT_WARN_MS` geschlossen → einmalige „Kontakt klemmt?"-Statuswarnung.
+  geschlossener Kontakt darf NICHT periodisch neu alarmieren (auch nicht nach
+  einem Watchdog-/Absturz-Neustart, siehe RTC). Zusätzlich
+  **Cooldown** `COOLDOWN_MS` als Mindestabstand (Merker `cooldownActive`, kein
+  millis-Vergleich mit `lastAlarm != 0` – der kippte nach 49,7 Tagen). Bleibt der Kontakt
+  `STUCK_CONTACT_WARN_MS` geschlossen → „Kontakt klemmt?"-Statuswarnung (mit
+  Wiederholung); beim Wiederbewaffnen wird `stuckWarned` zurückgesetzt und –
+  nur wenn die Warnung zugestellt war – leise „Kontakt wieder offen“ gemeldet.
 - **Interrupt-Latch** (`relayEdge`, `IRAM_ATTR`): misst die Impulsdauer per
   Pin-Interrupt und rastet Impulse ≥ `DEBOUNCE_MS` ein (`isrLatched`), damit kein
   Alarm verloren geht, während `loop()` in einer blockierenden HTTPS-Sendung steckt.
-- **Entprellung** `DEBOUNCE_MS` gilt in beiden Pfaden (Pegel-Abfrage und ISR).
+- **Entprellung** `DEBOUNCE_MS` gilt in beiden Pfaden (Pegel-Abfrage und ISR),
+  auch über blockierende Aufrufe hinweg: Die Pegel-Abfrage verwirft
+  `activeSince` nach einer Probenlücke > `LEVEL_SAMPLE_GAP_MS`; über eine
+  Lücke hinweg zählt nur, was der Interrupt sieht (`isrClosedLongEnough()`:
+  Kontakt seit ≥ `DEBOUNCE_MS` ununterbrochen geschlossen und jetzt noch aktiv).
+  `ACTIVE_LOW false` schaltet `INPUT_PULLDOWN` statt `INPUT_PULLUP`.
   Heartbeat/WLAN laufen auch während Cooldown/Wiederbewaffnung weiter.
+- **Warnungen an den Owner** (`queueNotice()`/`processOwnerNotices()`): gelten
+  erst bei angenommener Zustellung als erledigt, Wiederholung nach
+  `STATUS_RETRY_MS`, nie während `alarmPending` (Ausnahme: abgelehnter Key –
+  ein Versuch direkt nach der Runde), höchstens eine pro `loop()`, nach einem
+  Fehlschlag Pause für alle. Zeitstempel = Ereignis. Bark lehnt den Status-Key
+  dauerhaft ab (4xx) → Warnung verworfen. Die Start-Meldung kommt erst nach der
+  Startphase und nie vor einer offenen Zustellung.
 - **Heartbeat** mit NTP = 1×/Kalendertag ab `HEARTBEAT_HOUR`; ohne NTP Fallback auf
   millis-Abstand (`HEARTBEAT_MS`). Als erledigt markiert wird **nur bei Erfolg**;
   nach Fehlversuch neuer Versuch nach `HEARTBEAT_RETRY_MS`. Solange ein Alarm
@@ -118,7 +170,10 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   `application/x-www-form-urlencoded` an `api/status.php`, pollt `api/poll.php`
   und quittiert `api/ack.php`. Keine JSON-/HTTP-Zusatzbibliothek in der Firmware.
   NAS-Fehler/TLS/Timeouts sind nicht fatal, nutzen kurze Timeouts und Backoff und
-  dürfen die Bark-Alarmierung nicht verhindern.
+  dürfen die Bark-Alarmierung nicht verhindern. Der Status-Push hat einen
+  eigenen Backoff (`lastStatusError`), Poll/ACK/Key-Sync teilen sich
+  `lastRemoteError`; eine ACK wird nach `REMOTE_ACK_MAX_TRIES` Fehlversuchen
+  verworfen (`lastRemoteCommandId` bleibt – kein Replay).
 - **Manueller REAL ALARM läuft DIREKT vom NAS zu Bark** (`bark_send_alarm_all()`
   in `nas_dashboard/lib/common.php`, PHP-cURL, `level=critical`, an alle Keys
   PARALLEL über `bark_post_many()` (curl_multi), pro Key isoliert mit Retry,
@@ -163,8 +218,13 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   (`resend_stamped_body()`); das Dashboard behält die Liste der nicht
   Erreichten (`lastUnreached`) sichtbar, bis ein neueres Ergebnis sie
   ersetzt oder der Admin „Ausblenden“ klickt. Der `ALARM`-Zweig in der Firmware
-  läuft durch dieselbe `startAlarm()`/`processPendingAlarm()`-Logik wie ein
-  Relaisalarm.
+  läuft durch dieselbe Zustellung wie ein Relaisalarm
+  (`startAlarm(true, …)`/`processPendingAlarm()`, Merker `pendingIsRemote`),
+  setzt aber KEINEN Cooldown und keine Wiederbewaffnung (sonst würde ein echter
+  Relaisalarm danach `COOLDOWN_MS` lang verworfen); ein Relaisalarm während der
+  Demo-Zustellung hat Vorrang und ersetzt sie. Läuft schon eine Zustellung,
+  antwortet die Box `skipped_busy`. Der Status-Push meldet `alarm_source`
+  (`relay`|`remote`) und den Zähler `alarm_seq`.
   **TEST** läuft dagegen absichtlich über den ESP32 (Poll → `sendStatus()` an
   `BARK_KEY_STATUS`) — er testet die halbe Kette mit — und darf die
   Alarm-Zustandsmaschine nicht verändern. **ENTWARNUNG** (`false_alarm` /
@@ -197,9 +257,18 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   `keys_version=N` mit; weicht sie ab, holt der ESP32 die Liste über
   `api/keys.php` (Plain Text: `version=`, `count=`, `key0=`…, Nonce gespiegelt)
   und persistiert sie per `Preferences` im NVS (`syncAlarmKeys()`), damit sie
-  Reboot/NAS-Ausfall übersteht. Sync **nie** während `alarmPending`; leere oder
-  unplausible Listen werden verworfen; eine Übernahme wird nur dann per
-  `sendStatus()` an den Owner gemeldet, wenn sich das **Key-Set** geändert hat
+  Reboot/NAS-Ausfall übersteht. Sync **nie** während eines offenen
+  RELAIS-Alarms; ein offener Demo-Alarm hält ihn nicht auf, wird aber
+  verworfen, wenn sich das Key-Set ändert (seine `keyDone[]` gehören zur alten
+  Liste – sonst ginge sein Rest z.B. an die volle LIVE-Liste). Leere oder
+  unplausible Listen (`ok`≠1, falsche Nonce, `version` < 1, `count`, ungültiger
+  Key) werden verworfen – mit eigenem Backoff (`KEY_SYNC_REJECT_BACKOFF_MS`)
+  und EINER Owner-Warnung bis zur nächsten angenommenen Liste. NVS-Schreib-
+  reihenfolge in `saveAlarmKeys()`: `v=0` → Einträge → `n` → echte Version
+  (Rückgaben geprüft); `loadAlarmKeys()` prüft `n`, `v` ≥ 1 und jeden Key per
+  `validAlarmKey()` – sonst config.h-Liste mit Version 0 (erzwingt Sync). Eine
+  Übernahme wird nur dann (als Owner-Warnung mit Wiederholung) an den Owner
+  gemeldet, wenn sich das **Key-Set** geändert hat
   (Anzahl oder Keys, inkl. Demo-Wechsel) — reine Stumm-Wechsel (Arbeitsmodus)
   laufen bewusst still, sonst käme bei jedem Kurzbefehl-Aufruf der Kollegen
   ein Push. `BARK_KEYS_ALARM` (config.h) und `bark_keys_alarm`
@@ -396,20 +465,26 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   darf **niemals** dazu führen, dass ein Alarm ausbleibt. Sicherungen, die bleiben
   müssen: ohne NTP-Zeit (`getLocalTime()` schlägt fehl) gilt die volle Lautstärke;
   außerhalb von `PROBE_WEEKDAY` ebenso; die Lautstärke wird **einmal bei der
-  Erkennung** in `pendingVolume` festgehalten (wie `pendingBody`), damit
-  Nachsende-Runden nach Fensterende nicht plötzlich laut werden. Stumme Empfänger
+  Erkennung** in `pendingVolume` festgehalten (wie `pendingBody`; beides in
+  `alarmTimingFor()` – bei einem eingerasteten Impuls für den Zeitpunkt seines
+  Beginns), damit Nachsende-Runden nach Fensterende nicht plötzlich laut
+  werden (auch nicht nach einem Neustart: `pendingVolume` liegt im RTC). Stumme Empfänger
   (Arbeitsmodus) bleiben unabhängig davon bei ihrer Stumm-Lautstärke. Der manuelle
   Dashboard-Alarm (`bark_send_alarm_all()`) kennt das Fenster bewusst **nicht** —
   ein Mensch löst nie den Probealarm aus.
 - Bark-Versand: simple `application/x-www-form-urlencoded`-POST mit manuellem
   `urlEncode()` — **keine JSON-/HTTP-Bibliothek** hinzufügen. Nur ESP32-Core-Libs
   (`WiFi`, `HTTPClient`, `WiFiClientSecure`, `time.h`, `esp_task_wdt`,
-  `esp_timer`, `esp_system`, `Preferences`).
+  `esp_timer`, `esp_system`, `esp_attr`, `Preferences`).
 - Watchdog-Init ist core-versionsabhängig (`ESP_ARDUINO_VERSION_MAJOR >= 3` vs. 2.x)
   — beide Zweige beibehalten. Im 3.x-Zweig ist der Task-Watchdog ab Werk schon
   initialisiert: liefert `esp_task_wdt_init()` `ESP_ERR_INVALID_STATE`, muss
   `esp_task_wdt_reconfigure()` folgen, sonst bleiben die Default-Werte (5 s, kein
-  Reset) aktiv.
+  Reset) aktiv. Scheitert die Einrichtung, warnt die Box den Owner. Wirksam ist
+  `WDT_EFFECTIVE_TIMEOUT_S` = max(`WDT_TIMEOUT_S`, 60 s bzw. ungünstigster
+  HTTPS-Versuch + 10 s) – ein Versuch (DNS ~15 s + Verbindung + Handshake +
+  Senden + Antwort) muss sicher darunter bleiben; gefüttert wird vor/nach jedem
+  Versuch und zwischen den Keys.
 
 ## Bewusste Entscheidungen (nicht „wegoptimieren")
 
@@ -470,9 +545,10 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   – sonst taucht es nicht auf. Einträge zu einem Empfänger schreibt
   `log_key_event()` (Key immer maskiert). Dauerhaft im Verlauf landen auch: Relaisalarme (`relay_alarm` —
   `api/status.php` loggt, wenn sich `last_alarm` (oder der Zähler
-  `alarm_seq` – die aktuelle Firmware sendet ihn NOCH NICHT, ebenso wenig
-  `alarm_source`/`core`/`max_alloc_heap`; der NAS-Code dafür ist
-  Vorwärtskompatibilität) gegenüber dem zuletzt gemerkten Stand DIESER Box
+  `alarm_seq` – sendet erst die Firmware ab Stand 11/2026 (main), ebenso
+  `alarm_source`/`core`/`max_alloc_heap`/`alarm_gaveup`; die Box im Betrieb
+  kann noch einen älteren Stand ohne diese Felder haben, das NAS muss mit
+  beiden auskommen) gegenüber dem zuletzt gemerkten Stand DIESER Box
   ändert — gemerkt pro `device_id` in `alarm_seen.json`, damit ein zweites
   Board mit demselben Token nichts unterdrückt; Wechsel zu „nie" =
   ESP32-Reboot, kein Alarm; `source=remote` = Demo-Alarm, wenn die Box den
@@ -488,14 +564,20 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   zählen nur deren Pushs für Status/Wächter/Demo-Sicherung, nur sie bekommt
   Befehle; andere Boards mit dem Token werden angenommen, aber nur in
   `devices_seen.json` geführt (`device_hint()` im Status: fremdes Board bzw.
-  ohne die Einstellung „mehrere Boards melden sich“)) und
+  ohne die Einstellung „mehrere Boards melden sich“, sobald sich in den
+  letzten 7 Tagen mehr als eins gemeldet hat – mit ausdrücklichem „ACHTUNG …
+  ist sie AUSGEFALLEN“, wenn eins davon schweigt, während ein anderes
+  weiterpusht; ein Hinweis nur über gerade aktive Boards verschwände genau
+  dann, wenn die echte Box tot ist)) und
   Wächter-Ereignisse (`box_offline`/`box_recovered`, gleiche Einmal-Semantik
   wie die Bark-Meldung), außerdem `box_restart` (nur nach
   Absturz/Watchdog/Brownout), `key_test`, `notify_changed` und
   `watcher_silent`/`watcher_recovered` (Außen-Wächter verstummt/wieder da). Der ESP32-Status-Push enthält als Diagnose-Felder
   zusätzlich `reset_reason` (Token, im Frontend übersetzt und bei
-  Watchdog/Panic/Brownout gelb markiert), `free_heap` (Warnfarbe < 50 kB) und
-  `keys_muted`. Das Frontend pollt nur bei sichtbarem Tab (Page Visibility API),
+  Watchdog/Panic/Brownout gelb markiert), `free_heap` (Warnfarbe < 50 kB),
+  `keys_muted`, `core` (Core-Version), `alarm_seq`, `alarm_source`,
+  `max_alloc_heap` und `alarm_gaveup`; `fw_build` = `FW_BUILD_MARKER` plus
+  Kompilier-Zeitpunkt. Das Frontend pollt nur bei sichtbarem Tab (Page Visibility API),
   behandelt HTTP 401 als „Sitzung abgelaufen" (Reload zur Login-Seite) und
   unterscheidet „NAS nicht erreichbar" (gelber Badge) von „ESP32 offline"
   (roter Badge; zeigt dann „Offline seit" statt der stalen Laufzeit); kritische

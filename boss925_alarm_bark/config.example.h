@@ -18,6 +18,12 @@
 #define WIFI_SSID       "DEIN_WLAN_NAME"
 #define WIFI_PASSWORD   "DEIN_WLAN_PASSWORT"
 
+// Bricht das WLAN ab, verbindet der ESP32-Core zuerst selbst neu
+// (AutoReconnect). Erst wenn so lange keine Verbindung zustande kam, baut die
+// Firmware sie hart neu auf (nicht blockierend, danach höchstens in diesem
+// Abstand). Fehlt der Wert in einer älteren config.h, gilt 60 s.
+#define WIFI_RECONNECT_MS   (60UL*1000UL)
+
 // ===========================================================================
 //  2) BARK  (PFLICHT)
 // ===========================================================================
@@ -80,7 +86,9 @@ static const char* BARK_KEYS_ALARM[] = {
 #define REMOTE_BASE_URL              "https://dein-name.synology.me/fw_alarm/api"
 #define REMOTE_MACHINE_TOKEN         "LANGER_ZUFAELLIGER_TOKEN_AUS_CONFIG_PHP"
 #define REMOTE_DEVICE_ID             "boss925-01"
-#define FW_BUILD_MARKER              "boss925-monitor-2026-07-10"
+// Frei wählbare Kennung fürs Dashboard; die Firmware hängt automatisch Datum
+// und Uhrzeit des Kompilierens an.
+#define FW_BUILD_MARKER              "boss925-monitor-2026-11-15"
 
 // Status alle 60 s: schnell genug für "lebt noch", aber sparsam für NAS/ESP32.
 // Ereignisse (Alarm, WLAN-Reconnect, Heartbeat-Ergebnis) werden zusätzlich
@@ -89,22 +97,38 @@ static const char* BARK_KEYS_ALARM[] = {
 #define REMOTE_STATUS_MIN_EVENT_GAP_MS 5000UL
 
 // Poll alle 10 s: Jeder Poll ist ein voller TLS-Handshake, der loop() 1-2 s
-// blockiert (Relais-Impulse fängt derweil das ISR-Latch). Über den Poll läuft
-// nur noch der TEST-Befehl - der manuelle REAL ALARM geht direkt vom NAS an
-// Bark. Fehler bekommen Backoff, damit ein unerreichbares NAS nicht bremst.
+// blockiert (Relais-Impulse fängt derweil das ISR-Latch). Über den Poll laufen
+// nur der TEST-Befehl und im Demo-Modus der DEMO-ALARM - der manuelle REAL
+// ALARM geht direkt vom NAS an Bark. Fehler bekommen Backoff (Status-Push
+// getrennt von Poll/ACK), damit ein unerreichbares NAS nicht bremst.
 #define REMOTE_POLL_INTERVAL_MS       (10UL*1000UL)
 #define REMOTE_ERROR_BACKOFF_MS       (30UL*1000UL)
 // Nicht zu knapp: TLS-Handshake ESP32<->Synology dauert typischerweise 1-3 s.
 // Bei 1,5 s würde fast jeder Request abbrechen und im Backoff landen.
+// Gilt auch als Limit für den TLS-Handshake (aufgerundet, mindestens 4 s).
 #define REMOTE_HTTP_TIMEOUT_MS        4000UL
+// Kommt die Quittung (ACK) eines Dashboard-Befehls so oft hintereinander nicht
+// beim NAS an, wird sie verworfen - sonst bliebe das Polling (und damit der
+// Abgleich der Empfängerliste) dauerhaft stehen. Das Dashboard zeigt den
+// Befehl dann als "ausgeliefert, Bestätigung fehlt"; er wird NICHT erneut
+// ausgeführt. Fehlt der Wert in einer älteren config.h, gilt 10.
+#define REMOTE_ACK_MAX_TRIES          10
+// Verwirft die Box eine Empfängerliste vom NAS (unplausible Antwort), fragt
+// sie frühestens nach dieser Pause erneut nach (und meldet das EINMAL an
+// BARK_KEY_STATUS). Fehlt der Wert in einer älteren config.h, gilt 60 s.
+#define KEY_SYNC_REJECT_BACKOFF_MS    (60UL*1000UL)
 
 // ===========================================================================
 //  5) RELAIS-EINGANG  (Pin & Polarität)
 // ===========================================================================
-// Pin MUSS einen internen Pull-up können: NICHT GPIO34-39 verwenden!
+// Pin MUSS einen internen Pull-up (bei ACTIVE_LOW false: Pull-down) können:
+// NICHT GPIO34-39 verwenden (die haben keins von beiden)!
 // Gut: GPIO27, 25, 26, 32, 33. (GPIO27 ist kein Strapping-Pin -> ideal.)
 #define RELAY_PIN       27
-#define ACTIVE_LOW      true        // Kontakt gegen GND -> LOW = Alarm
+// true  = Kontakt gegen GND -> LOW = Alarm (interner Pull-up, Standard).
+// false = Kontakt gegen 3,3 V -> HIGH = Alarm; die Firmware schaltet dann den
+//         internen Pull-down ein (die Pins oben können beides).
+#define ACTIVE_LOW      true
 
 // Optionaler 2. Eingang als Fallback/Parallel-Kontakt (z.B. zweite Lötbrücke
 // oder Reserve-Verdrahtung). Löst aus, sobald EINER der beiden Pins aktiv ist.
@@ -124,13 +148,23 @@ static const char* BARK_KEYS_ALARM[] = {
 #define REARM_OPEN_MS   2000UL                  // 2 s stabil offen = wieder scharf
 
 // Bleibt der Kontakt nach einem Alarm SO lange dauerhaft geschlossen, geht
-// einmalig eine leise Warnung an BARK_KEY_STATUS ("Kontakt klemmt?").
+// einmalig eine leise Warnung an BARK_KEY_STATUS ("Kontakt klemmt?"). Öffnet
+// er danach wieder, folgt eine leise Entwarnung ("Kontakt wieder offen").
 #define STUCK_CONTACT_WARN_MS  (30UL*60UL*1000UL)   // 30 min
 
 // Nachsenden: War WLAN/Internet im Alarm-Moment weg, wird der Alarm gemerkt
 // und regelmäßig erneut versucht (pro Empfänger, bis alle versorgt sind).
+// Lehnt Bark einen Key dauerhaft ab (HTTP 400/401/403/404), wird er sofort
+// aufgegeben und BARK_KEY_STATUS gewarnt (Key nur maskiert).
 #define ALARM_RETRY_MS         (60UL*1000UL)        // Abstand zwischen Nachsende-Runden
 #define ALARM_RETRY_GIVEUP_MS  (15UL*60UL*1000UL)   // danach aufgeben (Meldung zu alt)
+
+// Warnungen an dich (Zustellung unvollständig, Kontakt klemmt, Liste
+// übernommen ...) gelten erst als erledigt, wenn Bark sie angenommen hat.
+// Schlägt der Versand fehl, neuer Versuch nach dieser Wartezeit (nie während
+// einer laufenden Alarm-Zustellung). Fehlt der Wert in einer älteren
+// config.h, gilt 5 min.
+#define STATUS_RETRY_MS        (5UL*60UL*1000UL)
 
 // ===========================================================================
 //  7) HEARTBEAT  ("ich lebe noch"-Ping nur an dich)
@@ -160,5 +194,10 @@ static const char* BARK_KEYS_ALARM[] = {
 // ===========================================================================
 //  9) HARDWARE-WATCHDOG  (Reset, falls die Firmware hängt)
 // ===========================================================================
+// Mindestens 60 s: Ein einzelner HTTPS-Versuch (DNS + Verbindung + TLS-
+// Handshake + Antwort) kann im ungünstigsten Fall knapp 50 s dauern. Kleinere
+// Werte (früher 30) hebt die Firmware automatisch auf dieses Minimum an.
+// Nach einem Watchdog-Neustart setzt die Box eine offene Alarm-Zustellung
+// fort (Zustand im RTC-Speicher).
 #define WDT_ENABLED     true
-#define WDT_TIMEOUT_S   30          // Sekunden ohne "Futter" -> Reboot
+#define WDT_TIMEOUT_S   60          // Sekunden ohne "Futter" -> Reboot

@@ -294,7 +294,9 @@ Dashboard.
    - **Datei → Einstellungen** → Feld „Zusätzliche Boardverwalter-URLs":
      `https://espressif.github.io/arduino-esp32/package_esp32_index.json`
    - **Werkzeuge → Board → Boardverwalter…** → nach „**esp32**" suchen → von
-     Espressif **installieren**.
+     Espressif **installieren**. Getestet ist die Firmware mit Version
+     **2.0.17** (dieselbe, die PlatformIO verwendet, siehe Abschnitt 7); 3.x
+     sollte ebenfalls bauen, ist aber nicht getestet.
 3. **Projekt öffnen:** Doppelklick auf
    `boss925_alarm_bark/boss925_alarm_bark.ino`. Die IDE öffnet automatisch auch
    die `config.h` als Tab.
@@ -327,7 +329,10 @@ pio device monitor      # serielle Ausgabe ansehen (115200 Baud)
 ```
 
 PlatformIO lädt die ESP32-Toolchain beim ersten `pio run` automatisch herunter.
-Externe Libraries sind **keine** nötig.
+Externe Libraries sind **keine** nötig. Die Plattform-Version ist in
+`platformio.ini` fest eingetragen (`espressif32@7.0.1` = Arduino-ESP32-Core
+**2.0.17**, damit getestet) – ein späteres Plattform-Update zieht so nicht
+unbemerkt einen anderen Core.
 
 ---
 
@@ -347,7 +352,9 @@ alarmiert.
 **Was du beim Start sehen solltest (serieller Monitor):**
 ```
 BOSS-925 Alarm-Wächter startet...
-Watchdog aktiv (30 s).
+Firmware boss925-monitor-2026-11-15 Nov 15 2026 12:00:00, Arduino-ESP32-Core 2.0.17, Neustart-Grund: poweron
+Empfaengerliste aus config.h uebernommen: 2 Keys.
+Watchdog aktiv (60 s).
 Zeit synchronisiert: 14:23:05
 === SELBSTTEST ===
 Eingang Pin 27, ACTIVE_LOW=ja, aktueller Stand: offen (Ruhe)
@@ -356,7 +363,8 @@ WLAN: verbunden
 IP-Adresse: 192.168.x.x
 === SELBSTTEST ENDE ===
 ```
-Außerdem kommt auf **dein** iPhone eine leise Nachricht „Alarm-Wächter online".
+Kurz danach (die Box prüft zuerst den Relaiskontakt) kommt auf **dein** iPhone
+eine leise Nachricht „Alarm-Wächter online".
 
 ---
 
@@ -375,19 +383,21 @@ Alle in `config.h`:
 | `ALARM_VOLUME` | 0–10, nur bei kritischem Alarm wirksam. |
 | `ALARM_CALL` | `true` = Ton wiederholt sich ~30 s (`call=1`). |
 | `RELAY_PIN` | Eingangs-Pin (Standard 27). |
-| `ACTIVE_LOW` | `true` = Kontakt gegen GND, LOW = Alarm. |
+| `ACTIVE_LOW` | `true` = Kontakt gegen GND, LOW = Alarm (interner Pull-up). `false` = Kontakt gegen 3,3 V, HIGH = Alarm (die Firmware schaltet dann den internen Pull-down ein). |
 | `RELAY_PIN2_ENABLED` / `RELAY_PIN2` | Optionaler zweiter Eingang als Reserve. |
 | `DEBOUNCE_MS` | Wie lange der Kontakt mind. zu sein muss (Standard 300 ms). |
 | `COOLDOWN_MS` | Mindestabstand zwischen zwei Alarmen (Standard 5 min). |
 | `REARM_OPEN_MS` | Kontakt muss nach einem Alarm erst so lange **offen** gewesen sein, bevor ein neuer Alarm möglich ist (Standard 2 s). Verhindert Dauerfeuer bei dauerhaft geschlossenem Kontakt. |
-| `STUCK_CONTACT_WARN_MS` | Bleibt der Kontakt nach einem Alarm so lange zu (Standard 30 min), bekommst du eine leise „Kontakt klemmt?"-Warnung. |
+| `STUCK_CONTACT_WARN_MS` | Bleibt der Kontakt nach einem Alarm so lange zu (Standard 30 min), bekommst du eine leise „Kontakt klemmt?"-Warnung – und sobald er wieder offen ist, eine leise Entwarnung. |
 | `BARK_MAX_TRIES` | Sende-Versuche pro Key bei Netzfehler (Standard 3). |
-| `ALARM_RETRY_MS` / `ALARM_RETRY_GIVEUP_MS` | Nachsenden: War WLAN/Internet beim Alarm weg, wird jede Minute erneut versucht, bis alle Empfänger versorgt sind – nach 15 min wird aufgegeben (und du bekommst eine Warnung). |
+| `ALARM_RETRY_MS` / `ALARM_RETRY_GIVEUP_MS` | Nachsenden: War WLAN/Internet beim Alarm weg, wird jede Minute erneut versucht, bis alle Empfänger versorgt sind – nach 15 min wird aufgegeben (und du bekommst eine Warnung). Scheitern zwei Empfänger hintereinander am Netz, bricht die Runde ab und läuft in der nächsten weiter. Lehnt Bark einen Key dauerhaft ab (HTTP 400/401/403/404), gibt die Box ihn sofort auf und warnt dich (Key nur maskiert). |
+| `STATUS_RETRY_MS` | Warnungen an dich (Zustellung unvollständig, Kontakt klemmt, Liste übernommen …) gelten erst als erledigt, wenn Bark sie angenommen hat; sonst neuer Versuch nach dieser Zeit (Standard 5 min). |
+| `WIFI_RECONNECT_MS` | Bei WLAN-Abbruch verbindet der ESP32 zuerst selbst neu; erst nach dieser Zeit ohne Verbindung baut die Firmware sie hart neu auf (Standard 60 s). |
 | `HEARTBEAT_*` | Täglicher „ich lebe noch"-Ping (siehe unten), inkl. Wiederholung nach Fehlversuch (`HEARTBEAT_RETRY_MS`). |
 | `NTP_*` | Holt die Uhrzeit aus dem Internet (für Zeitstempel & Heartbeat-Uhrzeit). |
-| `REMOTE_*` | Optionales NAS-Dashboard: Status-Push, Command-Polling, kurze Timeouts und Backoff. |
-| `FW_BUILD_MARKER` | Frei wählbare Kennung, die im Dashboard angezeigt wird (z. B. Datum/Version des Flashs). |
-| `WDT_*` | Hardware-Watchdog: startet den ESP32 neu, falls er hängt. |
+| `REMOTE_*` | Optionales NAS-Dashboard: Status-Push, Command-Polling, kurze Timeouts und Backoff (Status-Push mit eigenem Backoff). `REMOTE_ACK_MAX_TRIES`: so viele Fehlversuche, dann wird eine Befehls-Quittung verworfen (Standard 10). `KEY_SYNC_REJECT_BACKOFF_MS`: Pause nach einer verworfenen Empfängerliste (Standard 60 s). |
+| `FW_BUILD_MARKER` | Frei wählbare Kennung, die im Dashboard angezeigt wird (z. B. Datum/Version des Flashs); die Firmware hängt automatisch Datum und Uhrzeit des Kompilierens an. |
+| `WDT_*` | Hardware-Watchdog: startet den ESP32 neu, falls er hängt. Mindestens 60 s (kleinere Werte hebt die Firmware an, weil ein einzelner HTTPS-Versuch im ungünstigsten Fall knapp 50 s dauern kann). Eine offene Alarm-Zustellung läuft nach dem Neustart weiter. |
 
 ---
 
@@ -470,7 +480,10 @@ Funktionen:
 
 - Status-Push vom ESP32 an `api/status.php`: WLAN, RSSI, IP, Uptime, Kontaktstand,
   ISR-Latch, offener Alarm samt Empfänger-Fortschritt, Heartbeat-Ergebnis,
-  Cooldown/Wiederbewaffnung, Klemm-Warnung und Firmware-Kennung.
+  Cooldown/Wiederbewaffnung, Klemm-Warnung, Firmware-Kennung (mit
+  Kompilier-Zeitpunkt) und Core-Version, Alarmzähler und -quelle
+  (Relais/DEMO-Alarm), „Zustellung aufgegeben“ sowie freier Speicher samt
+  größtem freien Block.
 - Command-Polling über `api/poll.php`: `TEST` läuft über den ESP32 (wartet auf
   dessen Poll) und sendet eine leise Bark-Nachricht nur an `BARK_KEY_STATUS` –
   damit wird die halbe Kette (WLAN, NAS-Anbindung, Bark-Versand vom ESP32)
@@ -490,7 +503,8 @@ Funktionen:
   die **komplette** ESP32-Kette aus (Poll → Alarm-Zustandsmaschine → Bark),
   geht dank Demo-Modus aber nur an den Test-Empfänger. Der Server erlaubt den
   Befehl nur, wenn der ESP32 die Demo-Liste nachweislich übernommen hat und
-  online ist.
+  online ist. Der Demo-Alarm setzt keinen Cooldown: Ein echter Relaisalarm
+  geht danach sofort durch und hat während der Demo-Zustellung Vorrang.
 - **Empfängerverwaltung im Dashboard**: Bark-Keys lassen sich im Panel
   „Alarm-Empfänger" hinzufügen und löschen. Die Liste ist versioniert und gilt
   für beide Alarmwege; der ESP32 sieht die Version bei jedem Poll, holt sich
@@ -677,10 +691,16 @@ separates Login mit Passwort-Hash und CSRF-Schutz.
   bevor ein neuer Alarm ausgelöst wird; klemmt er länger, kommt eine Warnung.
 - ✅ **Pin-Interrupt-Latch:** Auch kurze Alarm-Impulse, die während einer
   laufenden Sendung eintreffen, gehen nicht verloren.
+- ✅ **Neustart-fest:** Offene Zustellung, Wiederbewaffnung und Cooldown liegen
+  zusätzlich im RTC-Speicher. Nach einem Watchdog-, Absturz- oder
+  Brownout-Neustart setzt die Box die Zustellung fort, und ein noch
+  geschlossener Kontakt alarmiert nicht erneut (nur nach dem Einschalten
+  beginnt alles von vorn).
 - ✅ WLAN-Auto-Reconnect (nicht-blockierend).
 - ✅ Selbsttest beim Start.
 - ✅ Hardware-Watchdog (Auto-Reboot bei Hänger; funktioniert auch mit
-  ESP32-Core 3.x korrekt).
+  ESP32-Core 3.x korrekt); jede HTTPS-Anfrage hat ein Handshake-Limit, damit
+  sie den Watchdog nicht überholt.
 - ✅ NTP-Zeitstempel in Nachrichten + feste Heartbeat-Uhrzeit; Heartbeat wird
   bei Fehlversuch nach 5 min wiederholt statt erst am nächsten Tag.
 - ✅ Optionaler zweiter Eingangs-Pin (`RELAY_PIN2_ENABLED`).
