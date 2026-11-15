@@ -400,14 +400,18 @@ if ($action === 'log_view') {
     json_response(['ok' => true, 'entries' => $out, 'server_time' => time()]);
 }
 
-// Die Box behandelt einen DEMO-ALARM wie einen Relaisalarm - danach gilt auch
-// ihre Sperrzeit (COOLDOWN_MS in config.h, Standard 5 min): Ein ECHTER
-// Relaisalarm in dieser Zeit wird von der Box verworfen. Wer kurz nach einem
-// Demo-Alarm zurück auf LIVE schaltet, muss das wissen (die Firmware bleibt
-// davon unberührt - Hinweis statt Umbau). Die Sperrzeit kennt das NAS nicht
-// genau; angenommen werden die 300 s des Standards.
+// ÄLTERE Firmware behandelt einen DEMO-ALARM wie einen Relaisalarm - danach
+// gilt auch ihre Sperrzeit (COOLDOWN_MS in config.h, Standard 5 min): Ein
+// ECHTER Relaisalarm in dieser Zeit wird von der Box verworfen. Wer kurz nach
+// einem Demo-Alarm zurück auf LIVE schaltet, muss das wissen. Die Sperrzeit
+// kennt das NAS nicht genau; angenommen werden die 300 s des Standards.
 function demo_alarm_cooldown_warning(array $config): string
 {
+    // Firmware ab 11/2026 (erkennbar am immer gesendeten alarm_seq) setzt bei
+    // einem DEMO-ALARM keine Sperrzeit mehr - dann gibt es nichts zu warnen.
+    if (array_key_exists('alarm_seq', read_json_file(data_path($config, 'latest_status.json'), []))) {
+        return '';
+    }
     $current = read_json_file(data_path($config, 'command_state.json'), command_state_default())['current'] ?? null;
     if (!is_array($current) || (string)($current['type'] ?? '') !== 'ALARM') {
         return '';

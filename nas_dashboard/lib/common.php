@@ -758,7 +758,7 @@ function device_hint(array $config): string
     // überall (string).)
     $expectedSeen = false;
     $foreign = [];      // device_id => Alter in s (letzte 24 h, nicht die erwartete Box)
-    $active = [];       // device_id => Alter in s (letzte 15 min)
+    $recent = [];       // device_id => Alter in s (letzte 7 Tage)
     foreach ($all as $id => $info) {
         $id = (string)$id;
         $age = $now - (int)(is_array($info) ? ($info['seen_at'] ?? 0) : 0);
@@ -767,10 +767,17 @@ function device_hint(array $config): string
         } elseif ($age <= 86400) {
             $foreign[$id] = $age;
         }
-        if ($age <= 900) {
-            $active[$id] = $age;
+        if ($age <= 7 * 86400) {
+            $recent[$id] = $age;
         }
     }
+    $duration = static function (int $seconds): string {
+        $minutes = max(1, (int)round($seconds / 60));
+        if ($minutes < 120) {
+            return $minutes . ' Min';
+        }
+        return $minutes < 2880 ? (int)round($minutes / 60) . ' Std' : (int)round($minutes / 1440) . ' Tagen';
+    };
     $names = static fn(array $list): string => '„' . implode('“, „', array_map('strval', array_keys($list))) . '“';
     if ($expected !== '') {
         if (!$expectedSeen && count($foreign) > 0) {
@@ -780,12 +787,28 @@ function device_hint(array $config): string
         }
         if (count($foreign) > 0) {
             return 'Ein fremdes Board meldet sich mit dem Maschinen-Token der Box (' . $names($foreign)
-                . ', zuletzt vor ' . max(1, (int)round(min($foreign) / 60)) . ' min) – seine Pushs werden ignoriert.';
+                . ', zuletzt vor ' . $duration(min($foreign)) . ') – seine Pushs werden ignoriert.';
         }
         return '';
     }
-    if (count($active) >= 2) {
-        return 'Mehrere Boards melden sich mit demselben Maschinen-Token (' . $names($active)
+    // Ohne box_device_id: Haben sich in den letzten 7 Tagen mehrere Boards
+    // gemeldet, bleibt der Hinweis stehen - auch wenn eins davon inzwischen
+    // SCHWEIGT. Genau das ist der gefährliche Fall (die echte Box ist
+    // ausgefallen, nur das Bastel-Board pusht weiter, Anzeige und Wächter
+    // sehen "online"); ein Hinweis nur über die gerade aktiven Boards
+    // verschwände dann nach Minuten. Ein abgeschaltetes Bastel-Board hält den
+    // Hinweis entsprechend lange am Leben - Abhilfe ist box_device_id.
+    if (count($recent) >= 2) {
+        $silentAfter = max(180, (int)($config['offline_after_seconds'] ?? 180));
+        $silent = array_filter($recent, static fn(int $age): bool => $age > $silentAfter);
+        $pushing = array_diff_key($recent, $silent);
+        if (count($silent) > 0 && count($pushing) > 0) {
+            return 'ACHTUNG: ' . $names($silent) . ' meldet sich seit ' . $duration(min($silent))
+                . ' nicht mehr, nur noch ' . $names($pushing) . ' (gleiches Maschinen-Token). '
+                . 'Ist das die echte Box, ist sie AUSGEFALLEN – Anzeige und Offline-Wächter sehen nur das '
+                . 'andere Board und melden nichts. In config.php box_device_id auf die echte Box setzen.';
+        }
+        return 'Mehrere Boards melden sich mit demselben Maschinen-Token (' . $names($recent)
             . '). Anzeige und Offline-Wächter sehen nur den jeweils letzten Push – fällt eins aus, merkt das '
             . 'niemand. In config.php box_device_id auf die echte Box setzen.';
     }

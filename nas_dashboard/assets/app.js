@@ -476,20 +476,24 @@
   // Zustellung des letzten Alarms der Box unvollständig? key_progress ist
   // "erreicht/gesamt". Gilt nur, wenn seit dem Neustart ein Alarm war und die
   // Box nicht mehr nachsendet (alarm_pending=0) - dann bleibt der Rest ohne
-  // Alarm. Vorsicht: Die Box zählt gegen ihre AKTUELLE Liste; wurde die Liste
-  // nach dem Alarm geändert, kann sich die Gesamtzahl verschoben haben.
+  // Alarm. Neuere Firmware meldet das zusätzlich ausdrücklich (alarm_gaveup=1:
+  // Nachsende-Frist abgelaufen, Keys dauerhaft abgelehnt oder gar keine
+  // Empfänger) und zählt gegen die Liste zum Zeitpunkt des Alarms. Ältere
+  // Firmware zählt gegen ihre AKTUELLE Liste; wurde die Liste nach dem Alarm
+  // geändert, kann sich die Gesamtzahl dort verschoben haben.
   function keyProgressParts(s) {
     const match = /^(\d+)\s*\/\s*(\d+)$/.exec(String(s.key_progress ?? '').trim());
     return match ? [Number(match[1]), Number(match[2])] : null;
   }
   const deliveryIncomplete = (s) => {
     if (flagged(s.alarm_pending) || na(s.last_alarm) || s.last_alarm === 'nie') return false;
+    if (flagged(s.alarm_gaveup)) return true;
     const parts = keyProgressParts(s);
     return !!parts && parts[0] < parts[1];
   };
 
-  // Woher kam der letzte Alarm? (Feld alarm_source - sendet die aktuelle
-  // Firmware noch nicht; die Auswertung bleibt für künftige Stände.)
+  // Woher kam der letzte Alarm? (Feld alarm_source - meldet erst neuere
+  // Firmware; bei älterer bleibt es leer.)
   const ALARM_SOURCES = {
     relay: 'Melder-Relais',
     remote: 'DEMO-Alarm über die Box (Dashboard-Befehl)'
@@ -594,7 +598,7 @@
         : (flagged(s.ack_pending) ? 'offen – wird nachgereicht' : 'keine offen'),
       cls: (s) => flagged(s.ack_pending) ? 'warn' : '' },
     { group: 'Box & Wartung', label: 'Box / Firmware',
-      tip: 'Name der Box (device_id aus config.h) und die Firmware-Kennung FW_BUILD_MARKER aus config.h – ein frei gewählter Text, kein automatischer Kompilier-Zeitpunkt; nur aussagekräftig, wenn er bei jeder neuen Firmware angepasst wird. Falls die Firmware es meldet, zusätzlich die Version des Arduino-ESP32-Cores.',
+      tip: 'Name der Box (device_id aus config.h) und die Firmware-Kennung FW_BUILD_MARKER aus config.h. Neuere Firmware hängt automatisch den Kompilier-Zeitpunkt an und meldet die Version des Arduino-ESP32-Cores – daran sieht man, ob wirklich der neueste Stand läuft. Bei älterer Firmware ist die Kennung ein frei gewählter Text, der nur etwas aussagt, wenn er bei jeder neuen Firmware angepasst wurde.',
       value: (s) => (na(s.device_id) && na(s.fw_build)) ? 'n/a'
         : `${show(s.device_id)} · ${show(s.fw_build)}${na(s.core) ? '' : ` · Core ${s.core}`}` },
     { group: 'Box & Wartung', liveWhenOffline: true,
@@ -1346,11 +1350,11 @@
       const alarmActive = !offline && flagged(status.alarm_pending);
       // Klemmender Kontakt: Die Box ist zwar online, kann aber keinen NEUEN
       // Alarm erkennen. stuck_warned setzt die Box erst, wenn der Kontakt
-      // UNGEWÖHNLICH lange zu bleibt (30 min) - sie setzt es aber beim
-      // Öffnen/Wiederbewaffnen NICHT zurück (erst beim nächsten Alarm). Deshalb
-      // zählt es nur, solange der Kontakt laut Box auch wirklich noch
-      // geschlossen ist (relay=closed); sonst bliebe die Lampe nach dem Öffnen
-      // auf "Kontakt klemmt" stehen.
+      // UNGEWÖHNLICH lange zu bleibt (30 min). Ältere Firmware setzt es beim
+      // Öffnen/Wiederbewaffnen NICHT zurück (erst beim nächsten Alarm) - neuere
+      // schon. Deshalb zählt es nur, solange der Kontakt laut Box auch wirklich
+      // noch geschlossen ist (relay=closed); sonst bliebe die Lampe bei alter
+      // Firmware nach dem Öffnen auf "Kontakt klemmt" stehen.
       const stuck = !offline && flagged(status.stuck_warned) && status.relay === 'closed';
       // Zustellung durch, Kontakt noch geschlossen: Der Melder steht weiter
       // auf Alarm. Das ist nach jedem Alarm normal (bis der Melder quittiert
