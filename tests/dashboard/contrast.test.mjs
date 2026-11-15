@@ -106,11 +106,15 @@ const PILLS = [['ok', '--ok-text', '--tint-ok'], ['warn', '--warn-text', '--tint
 const AA = 4.5;
 const LARGE = 3;   // große Schrift bzw. Symbole/Fokusring (WCAG 1.4.3 / 1.4.11)
 
+// Gewählte Zeile der Empfängerliste (PC): eigene Fläche, hellere Schriftfarben.
+const SELECTED = props('.rcp-list .row-main[aria-current="page"]');
+
 function pairs() {
   const list = [];
   // Paare auf einer Gruppe/einem Knopf (CARD) gelten mit den Werten der helleren Fläche.
-  const add = (theme, layer, name, fg, bg, min = AA) => list.push({
-    theme, layer, name, fg, bg, min, raised: bg.includes('var(--group-bg, var(--surface))')
+  // extra: Variablen, die eine Regel an dieser Stelle zusätzlich setzt.
+  const add = (theme, layer, name, fg, bg, min = AA, extra = null) => list.push({
+    theme, layer, name, fg, bg, min, extra, raised: bg.includes('var(--group-bg, var(--surface))')
   });
   for (const theme of ['dark', 'light']) {
     for (const layer of ['page', 'sheet', 'panel']) {
@@ -172,13 +176,25 @@ function pairs() {
     add(theme, 'page', 'Ereignis-Punkt orange', '--warn-text', ['--bg', '--surface'], LARGE);
     add(theme, 'page', 'Ereignis-Punkt grün', '--ok-text', ['--bg', '--surface'], LARGE);
     add(theme, 'page', 'Ereignis-Punkt grau', '--text-2', ['--bg', '--surface'], LARGE);
+    // Empfänger: gewählte Zeile am PC (Name, Unterzeile, Warnung, Pillen,
+    // Akzent-Strich), Knöpfe/Felder IN einer Gruppe (Fläche --inset-field).
+    const sel = [...CARD('page'), '--row-selected'];
+    add(theme, 'page', 'Empfänger gewählt: Name', '--text', sel, AA, SELECTED);
+    add(theme, 'page', 'Empfänger gewählt: Unterzeile', '--text-2', sel, AA, SELECTED);
+    add(theme, 'page', 'Empfänger gewählt: Warnung', '--warn-text', sel, AA, SELECTED);
+    for (const [name, fg, tint] of PILLS) add(theme, 'page', `Empfänger gewählt: Pille ${name}`, fg, [...sel, tint], AA, SELECTED);
+    add(theme, 'page', 'Empfänger gewählt: Strich (Grafik)', '--accent', sel, LARGE, SELECTED);
+    add(theme, 'sheet', 'Empfänger: Knopf/Feld in Gruppe', '--accent-text', ['--sheet-bg'], AA, RAISED.sheet);
+    add(theme, 'sheet', 'Empfänger: Feld-Text in Gruppe', '--text', ['--sheet-bg']);
+    add(theme, 'panel', 'Empfänger: Knopf/Feld in Gruppe', '--accent-text', ['--bg', '--surface'], AA, RAISED.panel);
+    add(theme, 'panel', 'Empfänger: Feld-Text in Gruppe', '--text', ['--bg', '--surface']);
   }
   return list;
 }
 
 function evaluate() {
   return pairs().map((p) => {
-    const vars = scope(p.theme, p.layer, p.raised);
+    const vars = Object.assign(scope(p.theme, p.layer, p.raised), p.extra || {});
     const fg = flatten([...[p.bg].flat(), p.fg], vars);
     const bg = flatten([p.bg].flat(), vars);
     const r = ratio(fg, bg);
@@ -205,6 +221,8 @@ test('Kontrast: die helleren Schriftfarben gelten für Gruppen UND Knöpfe in Sh
   }
   assert.deepEqual(RAISED.panel, RAISED.sheet);
   assert.ok(Object.keys(RAISED.sheet).length >= 4, 'hellere Werte gesetzt');
+  // Die gewählte Empfänger-Zeile setzt dieselben helleren Werte.
+  for (const [k, v] of Object.entries(RAISED.sheet)) assert.equal(SELECTED[k], v, `gewählte Zeile: ${k}`);
 });
 
 test('Kontrast: „System“ bei hellem Gerät hat genau die Hell-Werte', () => {

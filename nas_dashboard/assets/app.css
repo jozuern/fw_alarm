@@ -50,6 +50,7 @@
   --badge-crit: #d93025;          /* weiße Ziffer bleibt lesbar */
   --row-hover: #242426;
   --row-press: var(--surface-3);
+  --row-selected: var(--surface-2);
   --switch-off: #39393d;
   --seg-track: var(--surface);
   --seg-on: var(--surface-3);
@@ -125,6 +126,7 @@
   --badge-crit: #d70015;
   --row-hover: #f5f5f7;
   --row-press: #e5e5ea;
+  --row-selected: #f2f2f7;
   --switch-off: #e3e3e6;
   --seg-track: #e3e3e8;
   --seg-on: #ffffff;
@@ -190,6 +192,7 @@
     --badge-crit: #d70015;
     --row-hover: #f5f5f7;
     --row-press: #e5e5ea;
+    --row-selected: #f2f2f7;
     --switch-off: #e3e3e6;
     --seg-track: #e3e3e8;
     --seg-on: #ffffff;
@@ -1669,7 +1672,7 @@ a.band-inner:focus-visible {
   color: #ffffff;
 }
 
-/* „Alarm läuft“ pulsiert ruhig (bei reduzierter Bewegung aus, Abschnitt 21). */
+/* „Alarm läuft“ pulsiert ruhig (bei reduzierter Bewegung aus, Abschnitt 22). */
 .is-alarm .status-icon {
   animation: pulse 1.6s ease-in-out infinite;
 }
@@ -2048,7 +2051,347 @@ a.band-inner:focus-visible {
   color: var(--text-2);
 }
 
-/* ---- 21. Bewegung ------------------------------------------------------- */
+/* ---- 21. Empfänger ------------------------------------------------------ */
+/* Abgleich mit der Box: Punkt UND Worte (Farbe nie allein). */
+.rcp-sync {
+  margin: -8px 4px 14px;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.rcp-sync-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--text-3);
+  vertical-align: 1px;
+}
+
+.rcp-sync.is-ok .rcp-sync-dot {
+  background: var(--ok);
+}
+
+.rcp-sync.is-ok .rcp-sync-text {
+  color: var(--ok-text);
+}
+
+.rcp-sync.is-warn .rcp-sync-dot {
+  background: var(--warn);
+}
+
+.rcp-sync.is-warn .rcp-sync-text {
+  color: var(--warn-text);
+}
+
+.rcp-sync.is-unknown .rcp-sync-text {
+  color: var(--unknown-text);
+}
+
+.rcp-demo-note {
+  margin: -6px 4px 14px;
+  color: var(--warn-text);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+/* PC: Liste links, Person rechts (bleibt beim Scrollen der Liste stehen). */
+@media (min-width: 900px) {
+  .rcp-split.is-wide {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 380px;
+    gap: 24px;
+    align-items: start;
+  }
+
+  .rcp-panel {
+    position: sticky;
+    top: 20px;
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
+  }
+}
+
+.rcp-list {
+  margin-bottom: 8px;
+}
+
+/* Pillen untereinander: „Dauerhaft“ + „Demo-Empfänger“ passen so auch bei
+   320 px und 40 Zeichen langen Namen in die Zeile. */
+.rcp-pills {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+/* Gewählte Person (PC): hellere Fläche plus Akzent-Strich links; die
+   Schriftfarben der helleren Fläche gelten wie in Sheets/Panels. */
+.rcp-list .row-main[aria-current="page"] {
+  background: var(--row-selected);
+  box-shadow: inset 3px 0 0 var(--accent);
+  --accent-text: var(--raised-accent-text);
+  --crit-text: var(--raised-crit-text);
+  --info-text: var(--raised-info-text);
+  --unknown-text: var(--raised-unknown-text);
+}
+
+/* Demo-Modus: alle anderen gedimmt (grau statt halbdurchsichtig - so bleibt
+   die Schrift lesbar) mit „pausiert“ in der Unterzeile. */
+.rcp-row.is-paused .row-label {
+  color: var(--text-2);
+}
+
+.rcp-sub-warn {
+  color: var(--warn-text);
+}
+
+.rcp-empty {
+  color: var(--text-2);
+}
+
+.rcp-corrupt {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border-radius: var(--radius-group);
+  background: var(--status-crit-bg);
+  box-shadow: inset 0 0 0 1px var(--status-crit-line);
+  color: var(--crit-text);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+/* Fußnote: „Mehr erfahren“ in eigener Zeile, Tippfläche 44 px. */
+.rcp-foot {
+  margin: 14px 16px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.rcp-foot .link-btn {
+  margin-top: 8px;
+  font-size: 15px;
+}
+
+/* Person: Kopf (Key, Zustand), dann die Bedien-Gruppen. */
+.rcp-detail .sheet-title,
+.rcp-panel .panel-title {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.rcp-panel .panel-head {
+  margin-bottom: 2px;
+}
+
+.rcp-key {
+  color: var(--text-2);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.rcp-state {
+  margin-top: 6px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.rcp-state-main {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.rcp-state-main.is-warn {
+  color: var(--warn-text);
+}
+
+.rcp-state-vol,
+.rcp-person-demo {
+  margin-top: 2px;
+  color: var(--text-2);
+}
+
+.rcp-person-demo {
+  margin-top: 8px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.rcp-mode {
+  margin-top: 16px;
+}
+
+.rcp-person .group {
+  margin: 16px 0 0;
+}
+
+.rcp-vol-box {
+  padding: 10px var(--row-pad-x) 8px;
+}
+
+.rcp-vol-hint {
+  margin-top: 2px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* Rückmeldung unter einer Zeile bzw. im Regler-Block. */
+.rcp-person .row > .msg,
+.rcp-vol-box .msg {
+  margin: 0 var(--row-pad-x) 10px;
+}
+
+.rcp-vol-box .msg,
+.rcp-msg-row .msg {
+  margin: 4px 0 4px;
+}
+
+/* Telefon: Feld direkt in der Zeile (16 px, sonst zoomt iOS). */
+.rcp-field {
+  cursor: text;
+}
+
+.rcp-field:focus-within {
+  box-shadow: inset 0 0 0 2px var(--info);
+}
+
+.rcp-field .row-label {
+  flex: none;
+}
+
+.rcp-inline-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 32px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 16px;
+  text-align: right;
+}
+
+.rcp-inline-input::placeholder {
+  color: var(--text-2);
+}
+
+.rcp-inline-input:focus-visible {
+  outline: none;
+}
+
+/* Umbenennen / Key ersetzen: Feld und Knöpfe in der Zeile. */
+.rcp-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rcp-field-label {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* Felder und Knöpfe IN einer Gruppe brauchen eine andere Fläche als die
+   Gruppe selbst (Sheet: Fläche des Sheets, Panel: Fläche des Panels) - im
+   Dunkeln wie im Hellen. */
+.rcp-detail .sheet {
+  --inset-field: var(--sheet-bg);
+}
+
+.rcp-panel {
+  --inset-field: var(--surface);
+}
+
+.rcp-edit .input,
+.rcp-edit-btns .btn {
+  background: var(--inset-field, var(--field-bg));
+}
+
+.rcp-edit-btns .btn {
+  min-height: 44px;
+}
+
+.rcp-key-hint,
+.rcp-field-hint {
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.rcp-key-hint.is-ok {
+  color: var(--ok-text);
+}
+
+.rcp-key-hint.is-warn {
+  color: var(--warn-text);
+}
+
+/* Hinzufügen */
+.rcp-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 4px;
+}
+
+.rcp-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rcp-add-test .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.rcp-add-done-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rcp-add-done-box .msg {
+  margin: 0 4px;
+}
+
+.rcp-add-offer,
+.rcp-add-full,
+.rcp-panel-empty {
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.rcp-add-btns {
+  margin-top: 4px;
+}
+
+.btn-small .icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2.2;
+}
+
+/* „Mehr erfahren“ */
+.rcp-explain p {
+  margin: 0 0 12px;
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.rcp-explain strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ---- 22. Bewegung ------------------------------------------------------- */
 @keyframes fade-in {
   from {
     opacity: 0;
