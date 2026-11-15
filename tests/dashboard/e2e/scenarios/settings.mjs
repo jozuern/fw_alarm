@@ -339,13 +339,25 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.waitFor(`location.hash === '#/einstellungen/demo' && !!document.querySelector('#set-demo-target option[value="${ids.anna}"]')`, 5000);
     assert((await text(page, '.set-demo-state')).includes('LIVE'), 'Zustand LIVE: ' + await text(page, '.set-demo-state'));
     await page.eval(`(() => { const s = document.querySelector('#set-demo-target'); s.value = '${ids.anna}'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    const annaMasked = (await list()).keys.find((k) => k.id === ids.anna).key_masked;
     await page.click('.set-demo-toggle');
     await waitConfirm(page);
-    assert(await text(page, '.confirm-text') === 'Demo-Modus einschalten? Alarme gehen dann NUR an "Anna". Nach dem Testen unbedingt wieder auf LIVE zurückschalten!',
-      'Demo-Frage: ' + await text(page, '.confirm-text'));
+    const demoQ = await text(page, '.confirm-text');
+    assert(demoQ === `Demo-Modus einschalten? Alarme gehen dann NUR an "Anna (${annaMasked})". Nach dem Testen unbedingt wieder auf LIVE zurückschalten!`,
+      'Demo-Frage: ' + demoQ);
+    assert(demoQ.includes(annaMasked), 'Demo-Frage nennt den maskierten Key: ' + demoQ);
+    // Box meldet sich gerade (online), hat aber noch die LIVE-Liste: Nach dem
+    // Einschalten muss erst die Warnung stehen, dass ein Relaisalarm noch an
+    // ALLE ginge - „übernommen“ erst nach ihrem nächsten Status.
+    await pushBox(base, admin);
     await page.click('.confirm .btn-danger');
     await page.waitFor(`!!document.querySelector('.demo-band') && (document.querySelector('.set-demo-state')?.textContent || '').includes('DEMO-MODUS')`, 8000);
     assert((await list()).demo.enabled === true, 'Server: Demo an');
+    await page.eval('FW.store.refreshStatus()');
+    await page.waitFor(`(document.querySelector('.set-demo-sync.is-warn')?.textContent || '').includes('NOCH NICHT')`, 8000);
+    const pendingSync = await text(page, '.set-demo-sync');
+    assert(pendingSync.includes('ein Relaisalarm würde noch an ALLE gehen!'), 'Warnung „noch an ALLE“: ' + pendingSync);
+    await shot(page, 'mobile-demo-pending');
     await pushBox(base, admin);
     await page.eval('FW.store.refreshStatus()');
     await page.waitFor(`(document.querySelector('.set-demo-sync')?.textContent || '').includes('Die Box hat die Demo-Liste übernommen – du kannst jetzt gefahrlos testen.')`, 8000);
@@ -365,6 +377,19 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.click('.confirm .btn-danger');
     await page.waitFor(`!document.querySelector('.demo-band') && (document.querySelector('.set-demo-state')?.textContent || '').includes('LIVE')`, 8000);
     assert((await list()).demo.enabled === false, 'Server: Demo aus');
+    // Empfängerliste noch nicht geladen (keys_list hängt): „wird geladen“,
+    // nicht „keine Empfänger“ - und Einschalten geht noch nicht.
+    const hangId = (await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+      const real = window.fetch;
+      window.fetch = (url, opts) => (String(url).includes('action=keys_list') ? new Promise(() => {}) : real(url, opts));
+    })()` })).identifier;
+    await open(page, base, '#/einstellungen/demo');
+    await page.waitFor(`(document.querySelector('.set-demo-state')?.textContent || '').includes('LIVE') && !!document.querySelector('.set-g-demo-target .set-empty')`, 8000);
+    assert(await text(page, '.set-g-demo-target .set-empty') === 'Empfängerliste wird geladen…', 'Liste lädt: ' + await text(page, '.set-g-demo-target .set-empty'));
+    assert(await page.eval(`document.querySelector('.set-demo-toggle').disabled === true`), 'Liste lädt: Einschalten gesperrt');
+    await page.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: hangId });
+    await open(page, base, '#/einstellungen');
+    await page.waitFor(`(document.querySelector('#set-notify .row-value')?.textContent || '').includes('von')`, 10000);
 
     // ---- Box: Details & Diagnose -----------------------------------------------
     await pushBox(base, admin);

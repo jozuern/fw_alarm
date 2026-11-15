@@ -2788,6 +2788,11 @@ a.band-inner:focus-visible {
   color: var(--text-2);
 }
 
+/* Empfängerliste auf dem NAS beschädigt: kein „keine Empfänger“, sondern rot. */
+.set-empty.is-error {
+  color: var(--crit-text);
+}
+
 /* Box: Erklärung klappt unter der Zeile auf; Pfeil zeigt dann nach unten.
    Bezeichnungen brechen nur zwischen Wörtern um („Empfängerliste (Box)“),
    lange Werte dürfen mehrzeilig werden. */

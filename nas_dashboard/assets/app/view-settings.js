@@ -530,8 +530,12 @@
     // Wechselt der Modus (auch aus einer anderen Sitzung), passt eine offene
     // Frage nicht mehr - schließen.
     const ask = useOwnConfirm(`${demoOn}|${demo ? demo.key_id : ''}`);
-    const entries = keys && Array.isArray(keys.keys) ? keys.keys : [];
-    const chosen = entries.find((k) => String(k.id) === target) || entries[0] || null;
+    const keysCorrupt = store.useStore((s) => s.keysCorrupt);
+    const keysError = store.useStore((s) => s.keysError);
+    // null = Liste noch nicht geladen (bzw. beschädigt) - dann weder „keine
+    // Empfänger“ behaupten noch einschalten lassen.
+    const entries = keys && Array.isArray(keys.keys) ? keys.keys : null;
+    const chosen = entries ? entries.find((k) => String(k.id) === target) || entries[0] || null : null;
     const now = Date.now() / 1000 + (store.getState().serverOffset || 0);
 
     const toggle = () => {
@@ -551,10 +555,12 @@
         show({ ok: false, kind: 'error', text: 'Bitte zuerst einen Empfänger in der Liste anlegen und als Test-Empfänger auswählen.' });
         return;
       }
+      // Name UND maskierter Key (wie in der Auswahl): Bei zwei gleichnamigen
+      // Empfängern sagt die Frage, welches iPhone die Alarme bekommt.
       const pick = chosen;
       ask({
         title: 'Demo-Modus einschalten?',
-        text: `Demo-Modus einschalten? Alarme gehen dann NUR an "${pick.label}". Nach dem Testen unbedingt wieder auf LIVE zurückschalten!`,
+        text: `Demo-Modus einschalten? Alarme gehen dann NUR an "${pick.label} (${pick.key_masked})". Nach dem Testen unbedingt wieder auf LIVE zurückschalten!`,
         confirmLabel: 'Ja, Demo-Modus einschalten',
         hold: false,
         onConfirm: () => store.demoSet(true, pick.id).then(show)
@@ -574,13 +580,16 @@
     return html`<${ui.Page} title="Demo-Modus" back=${BACK_MAIN} class="set set-demo-page page-narrow">
       <section class=${cx('set-demo-state', demoOn && 'is-on')} aria-label="Zustand">${state}</section>
       ${demo && !demoOn ? html`<${ui.Group} header="Test-Empfänger" class="set-g-demo-target">
-        ${entries.length
+        ${entries && entries.length
           ? html`<li class="row set-opt-select"><${Picker} selectId="set-demo-target" label="Alarme nur an" value=${chosen ? String(chosen.id) : ''}
               choices=${entries.map((k) => ({ value: String(k.id), text: `${k.label} (${k.key_masked})` }))}
               onPick=${(v) => { setMsg(null); setTarget(v); }}/></li>`
-          : html`<${ui.Item} class="set-empty">Noch keine Empfänger eingetragen – bitte zuerst unter „Empfänger“ jemanden anlegen.</${ui.Item}>`}
+          : html`<${ui.Item} class=${cx('set-empty', keysCorrupt && 'is-error')}>${entries
+            ? 'Noch keine Empfänger eingetragen – bitte zuerst unter „Empfänger“ jemanden anlegen.'
+            : (keysCorrupt || keysError || 'Empfängerliste wird geladen…')}</${ui.Item}>`}
       </${ui.Group}>` : null}
-      <button type="button" class=${cx('btn btn-block set-demo-toggle', demoOn && 'is-end')} disabled=${busy || !demo} onClick=${toggle}>${
+      <button type="button" class=${cx('btn btn-block set-demo-toggle', demoOn && 'is-end')}
+        disabled=${busy || !demo || (!demoOn && !entries)} onClick=${toggle}>${
         demoOn ? 'Demo-Modus beenden (zurück zu LIVE)' : 'Demo-Modus einschalten'}</button>
       <${ui.Msg} msg=${msg} class="set-demo-msg"/>
       <p class="set-foot">Im Demo-Modus gehen alle Alarme nur an den gewählten Test-Empfänger – vom Dashboard wie von der Box.

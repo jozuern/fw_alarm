@@ -201,6 +201,7 @@ function pairs() {
     add(theme, 'page', 'Einstellungen: Abmelden/Alte Ansicht', '--accent-text', CARD('page'));
     add(theme, 'page', 'Einstellungen: Haken (Symbol)', '--accent-text', CARD('page'), LARGE);
     add(theme, 'page', 'Einstellungen: Warnung in Zeile', '--warn-text', CARD('page'));
+    add(theme, 'page', 'Einstellungen: Liste beschädigt in Zeile', '--crit-text', CARD('page'));
     add(theme, 'page', 'Einstellungen: Warnung auf der Seite', '--warn-text', ['--bg']);
     add(theme, 'page', 'Einstellungen: Gerade ist Ruhezeit', '--info-text', ['--bg']);
     add(theme, 'page', 'Einstellungen: letzter bekannter Stand', '--unknown-text', ['--bg']);
