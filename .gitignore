@@ -28,6 +28,12 @@ nas_dashboard/data/*.lock
 nas_dashboard/data/*.log
 nas_dashboard/data/*.php
 
+# NAS-Brücke: Die echte Konfiguration liegt nur auf dem NAS; bridge_hold.php
+# ist der Wartungs-Schalter (allein sein Vorhandensein hält die Brücke an)
+# und darf deshalb nie mit ausgerollt werden.
+nas_bridge/bridge_config.php
+nas_bridge/bridge_hold.php
+
 # Außen-Wächter: die echte Konfiguration (Token + Bark-Key) lebt nur auf der VM
 # (auch Kopien wie fw-alarm-watch.conf.bak, egal in welchem Ordner)
 cloud_watcher/*.conf
