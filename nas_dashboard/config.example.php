@@ -66,11 +66,12 @@ return [
     'box_device_id' => '',
 
     // ==== Meldungen an den Admin + Offline-Wächter (optional) ===============
-    // Bark-Key des Owners für ALLE Statusmeldungen des NAS an den Admin:
-    // cron/check_offline.php (DSM-Aufgabenplaner, siehe SETUP.md) meldet,
+    // Bark-Key des Owners für ALLE Statusmeldungen des Servers an den Admin:
+    // cron/check_offline.php (Wächter-Timer auf dem Server bzw. auf einem
+    // Synology-NAS der DSM-Aufgabenplaner, siehe server/README.md / SETUP.md) meldet,
     // wenn die Box zu lange keinen Status gepusht hat (und wenn sie wieder da
     // ist), wenn das Dashboard nicht mehr in den data_dir schreiben kann
-    // ("NAS-Dashboard DEFEKT"), wenn der Außen-Wächter verstummt, und erinnert
+    // ("Dashboard DEFEKT"), wenn der Außen-Wächter verstummt, und erinnert
     // an Demo-Modus und Stummschaltungen; dazu kommen die Meldung bei einer
     // Login-IP-Sperre und die optionalen Arten (Anmeldung, Neustart der Box,
     // Wochenbericht ...). WELCHE Meldungen an diesen Key gehen und wie dringend
@@ -78,9 +79,9 @@ return [
     // Wiederholungen), stellst du im Dashboard ein: Panel "Meldungen an den
     // Admin" (Standard: leise). Die Werte hier darunter sind nur die
     // Standards, solange dort nichts anderes gewählt ist.
-    // Leer ('') = ALLE Admin-Meldungen des NAS aus (das meldet dann auch der
-    // Außen-Wächter). Sinnvoll: derselbe Key wie BARK_KEY_STATUS in config.h
-    // des ESP32 und BARK_KEY in /etc/fw-alarm-watch.conf der Cloud-VM.
+    // Leer ('') = ALLE Admin-Meldungen des Servers aus (das meldet dann auch
+    // der Außen-Wächter). Sinnvoll: derselbe Key wie BARK_KEY_STATUS in config.h
+    // des ESP32 und BARK_KEY in der Konfiguration des Außen-Wächters.
     'bark_key_status' => '',
     // Wächter-Schwelle in Sekunden (großzügiger als offline_after_seconds,
     // damit nicht jeder kurze WLAN-Schluckauf eine Meldung auslöst).
@@ -90,23 +91,27 @@ return [
     // im Demo-Modus nur den Test-Empfänger!
     'demo_reminder_after_seconds' => 14400,
     // Selbsttest des Wächters: Er ruft api/health.php über den Webserver auf
-    // (läuft dann als Web-Benutzer 'http') und meldet per Bark, wenn das
-    // Dashboard nicht mehr in den data_dir schreiben kann. Nur ändern, wenn
-    // das Dashboard NICHT unter /fw_alarm/ liegt. health.php antwortet nur
-    // auf Aufrufe vom NAS selbst (127.0.0.1).
+    // (läuft dann als Web-Benutzer) und meldet per Bark, wenn das Dashboard
+    // nicht mehr in den data_dir schreiben kann. health.php antwortet nur auf
+    // Aufrufe vom Rechner selbst (127.0.0.1) ohne Proxy-Kopfzeilen.
+    // Standard (Synology, Dashboard unter /fw_alarm/):
+    //   'https://127.0.0.1/fw_alarm/api/health.php'
+    // Linux-Server nach server/README.md (Nginx auf 127.0.0.1:8080):
+    //   'http://127.0.0.1:8080/api/health.php'
     // 'health_check_url' => 'https://127.0.0.1/fw_alarm/api/health.php',
 
-    // Außen-Wächter (optional, siehe cloud_watcher/README.md): Eine kleine
-    // Cloud-VM ruft api/alive.php alle 5 min von AUSSEN auf und meldet per
-    // Bark, wenn das NAS nicht erreichbar ist - das kann der Wächter auf dem
-    // NAS nicht, er fällt ja mit aus. Umgekehrt meldet dieser Cron-Wächter,
-    // wenn die VM verstummt. Hier steht NUR der SHA-256-Hash des Wächter-
+    // Außen-Wächter (optional, siehe cloud_watcher/README.md): Ein ANDERER
+    // Rechner (z.B. das NAS zu Hause oder eine kleine Cloud-VM) ruft
+    // api/alive.php alle 5 min von AUSSEN auf und meldet per Bark, wenn das
+    // Dashboard nicht erreichbar ist - das kann der Wächter hier nicht, er
+    // fällt ja mit aus. Umgekehrt meldet dieser Wächter, wenn der
+    // Außen-Wächter verstummt. Hier steht NUR der SHA-256-Hash des Wächter-
     // Tokens (eigenes Token, NICHT das Maschinen-Token der Box); der Klartext
-    // kommt in /etc/fw-alarm-watch.conf auf der VM. Erzeugen wie oben:
+    // kommt in die Konfiguration des Außen-Wächters. Erzeugen wie oben:
     // php -r '$t=bin2hex(random_bytes(32)); echo $t, PHP_EOL, hash("sha256", $t), PHP_EOL;'
     // Leer = aus (api/alive.php antwortet dann 404). Derselbe Hash wie
-    // machine_token_sha256 wird ebenfalls mit 404 abgelehnt - die VM darf nie
-    // das Token der Box kennen.
+    // machine_token_sha256 wird ebenfalls mit 404 abgelehnt - der
+    // Außen-Wächter darf nie das Token der Box kennen.
     'watcher_token_sha256' => '',
 
     // ==== Arbeitsmodus (Stummschaltung per Kurzbefehl-Link) =================
@@ -125,7 +130,8 @@ return [
     'mute_max_seconds' => 43200,   // 12 Stunden
 
     // Öffentliche Adresse des Dashboards (mit abschließendem /), z.B.
-    // 'https://dein-name.synology.me/fw_alarm/'. Daraus baut das Dashboard die
+    // 'https://alarm.example.org/' oder 'https://dein-name.synology.me/fw_alarm/'.
+    // Daraus baut das Dashboard die
     // kopierbaren Kurzbefehl-Links. Leer = die Adresse, unter der das
     // Dashboard gerade geöffnet ist - wer es über die LAN-IP öffnet, kopiert
     // dann aber Links, die unterwegs nicht funktionieren.
@@ -140,7 +146,7 @@ return [
     // ausgeführt und das Dashboard bliebe bis dahin blockiert.
     'pending_command_ttl_seconds' => 300,
 
-    // ==== REAL ALARM direkt vom NAS an Bark ================================
+    // ==== REAL ALARM direkt vom Server an Bark =============================
     // Der manuelle Alarm-Button sendet OHNE Umweg über den ESP32 - er muss ja
     // gerade dann funktionieren, wenn die ESP32-Kette klemmt. Alle Empfänger
     // bekommen ihn gleichzeitig (parallel), je bis zu bark_max_tries Versuche.
@@ -154,7 +160,7 @@ return [
         // 'KEY_PERSON_2',
     ],
     'bark_alarm_title' => 'FEUERWEHR-ALARM (manuell)',
-    'bark_alarm_body' => 'Manuelle Alarmierung ueber das NAS-Dashboard!',
+    'bark_alarm_body' => 'Manuelle Alarmierung ueber das Dashboard!',
     'bark_alarm_sound' => 'alarm_fw',
     'bark_alarm_volume' => 10,
     'bark_alarm_call' => true,
@@ -184,5 +190,7 @@ return [
     // - dort kann aber ein Web-Station-Update die Rechte zurücksetzen (dann
     // scheitern Login und Status-Pushs still). Die Guard-Zeile bleibt als
     // zweite Schicht erhalten.
+    // Linux-Server nach server/README.md: '/srv/fw-alarm/data' (gehört dem
+    // PHP-Benutzer fwalarm, liegt außerhalb des Webroots).
     'data_dir' => '/volume1/fw_alarm_data',
 ];

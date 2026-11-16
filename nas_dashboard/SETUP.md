@@ -1,5 +1,20 @@
 # Synology-Setup für das BOSS-925 Dashboard
 
+> **Stand 11/2026:** Das Dashboard dieses Projekts läuft inzwischen nicht mehr
+> auf dem Synology-NAS, sondern auf einem kleinen Linux-Server hinter einem
+> Cloudflare Tunnel – Einrichtung und Betrieb stehen in
+> [`server/README.md`](../server/README.md). Auf dem NAS liegen nur noch die
+> **Brücke** ([`nas_bridge/README.md`](../nas_bridge/README.md): reicht die
+> Aufrufe der Box und alte Kurzbefehl-Links weiter) und der **Außen-Wächter**
+> ([`cloud_watcher/README.md`](../cloud_watcher/README.md)).
+>
+> Diese Anleitung beschreibt weiterhin den Weg, das Dashboard **direkt auf
+> einem Synology-NAS** zu betreiben – er funktioniert unverändert und ist der
+> Rückweg. Die Meldungen des Wächters nennen den Ort des Dashboards neutral
+> („Server“, „Dashboard DEFEKT“) und geben Hinweise für den Linux-Server; auf
+> dem NAS gelten sinngemäß die Schritte aus Abschnitt 5 (Rechte der Gruppe
+> `http` auf den Datenordner, DSM-Aufgabe).
+
 ## 1. Pakete installieren
 
 Installiere im Synology Paket-Zentrum:

@@ -473,8 +473,13 @@ bei ihrer eingestellten Stumm-Lautstärke (Standard 0 = lautlos).
 
 ## 11. NAS-Dashboard: Fernüberwachung und manueller Test
 
-Im Ordner `nas_dashboard/` liegt ein kleines PHP-Dashboard für Synology Web
-Station. Es braucht keine Datenbank und kein Docker; Nginx + PHP 8.3 reichen.
+Im Ordner `nas_dashboard/` liegt ein kleines PHP-Dashboard. Es braucht keine
+Datenbank und kein Docker; Nginx + PHP 8.3 reichen. Es läuft auf Synology Web
+Station (Anleitung: `nas_dashboard/SETUP.md`) oder – so betreibt es dieses
+Projekt seit 11/2026 – auf einem kleinen Linux-Server hinter einem Cloudflare
+Tunnel (`server/README.md`). Im zweiten Fall bleibt das NAS als Brücke für die
+alte Adresse (`nas_bridge/README.md`) und als Außen-Wächter
+(`cloud_watcher/README.md`).
 
 Funktionen:
 

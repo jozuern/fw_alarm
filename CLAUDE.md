@@ -13,6 +13,35 @@ dekodiert** – einziger Eingang ist der trockene Relaiskontakt.
 
 Kernprinzip im README betont und einzuhalten: **Zusatz, kein Ersatz** für den Melder.
 
+## Wo was läuft (seit dem Umzug 11/2026)
+
+- **Dashboard** (`nas_dashboard/`, PHP, samt Daten): auf der Oracle-VM
+  (Always Free, Frankfurt, 1 OCPU / 1 GB + Auslagerungsdatei), erreichbar nur
+  über den Cloudflare Tunnel als `https://alarm.tunero.dev/`. Nginx hört nur
+  auf `127.0.0.1:8080`, PHP-FPM-Pool `fw-alarm` als Benutzer `fwalarm`,
+  Webroot `/srv/fw-alarm/app`, Daten `/srv/fw-alarm/data`, `config.php` nur
+  auf der VM. Einrichtung, Deploy, Prüfungen, Betrieb: `server/README.md`.
+- **NAS (zu Hause)**: hält keine Daten des Dashboards mehr. Es ist (a) die
+  **Brücke** (`nas_bridge/`): reicht die Aufrufe der Box (bis sie neu
+  geflasht ist) und alte Kurzbefehl-Links serverseitig an die VM weiter, und
+  (b) der **Außen-Wächter**: führt `cloud_watcher/fw-alarm-watch.sh` als
+  DSM-Aufgabe aus und prüft die VM von außen.
+- **Box**: unverändert; sie ruft bis zum Flashen weiter die alte NAS-Adresse
+  auf. Ihre Bark-Alarme hängen an nichts davon.
+- **Namen im Code** sind historisch geblieben (`nas_dashboard/`, `nas_web`,
+  `nas_alarm`, `NAS_ALIVE_URL`, Kommentare mit „NAS“): Wo unten „NAS“ den Ort
+  des Dashboards meint, ist heute der Server gemeint. **Sichtbare** Texte
+  sagen „Server“; „NAS“ steht dort nur noch für den Außen-Wächter
+  (`tests/dashboard/wording.test.mjs` prüft das).
+- **Deploy**: `git push origin main`, dann `bash server/deploy.sh HEAD`
+  (prüft jede Datei auf dem Server gegen Git) und
+  `bash server/check.sh public https://alarm.tunero.dev`. Die Brücke wird per
+  SMB auf das NAS kopiert (`nas_bridge/README.md`).
+- **Das Repo ist öffentlich**: keine echten Adressen (NAS, VM) in
+  versionierten Dateien, nur Platzhalter (`dein-name.synology.me`, `<NAS>`,
+  `<IP der VM>`); die VM-Adresse für `deploy.sh` steht in der nicht
+  versionierten `server/deploy.local`.
+
 ## Build / Flash / Monitor
 
 PlatformIO (CLI-Weg):
@@ -47,20 +76,30 @@ Einzige Laufzeit-Ausnahme: Die aktiven Alarm-Empfänger (`alarmKeys[]`) kommen
 nach dem ersten Dashboard-Sync aus dem NVS, nicht mehr aus `config.h`
 (siehe Empfängerlisten-Bullet unten).
 
-Zusätzlich gibt es `nas_dashboard/`: PHP-Dateien für Synology Web Station
-(Nginx + PHP 8.3, kein Docker, keine DB). Das Dashboard ist ein optionales
+Zusätzlich gibt es `nas_dashboard/`: die PHP-Dateien des Dashboards (Nginx +
+PHP 8.3, kein Docker, keine DB; bis 11/2026 auf Synology Web Station, seitdem
+auf der Oracle-VM – siehe „Wo was läuft“). Das Dashboard ist ein optionales
 Rendezvous-System für Monitoring und manuelle Befehle. Der ESP32 bleibt
 outbound-only: Status-Push nach oben, Command-Polling nach oben. Bark muss auch
 bei NAS-Ausfall unverändert unabhängig funktionieren. Die Oberfläche ist
 Preact/htm ohne Build-Schritt und ohne npm (siehe „Frontend des Dashboards“
 unter „Bewusste Entscheidungen“).
 
-Und `cloud_watcher/`: der **Außen-Wächter** – Bash-Skript plus systemd-Timer
-für eine kostenlose Cloud-VM (Oracle Always Free, Frankfurt, Ubuntu 24.04 ARM).
-Sie ruft alle 5 min `api/alive.php` über die ÖFFENTLICHE NAS-Adresse auf und
-meldet per Bark an den Status-Key, wenn das NAS von außen nicht erreichbar ist
-(3 Fehlschläge in Folge) oder die DSM-Aufgabe `check_offline.php` > 45 min
-nicht lief. Gegenrichtung: `alive.php` merkt sich jeden Aufruf
+Und `cloud_watcher/`: der **Außen-Wächter** – ein Bash-Skript, das ein
+ANDERER Rechner als der Server alle 5 min ausführt. Seit dem Umzug ist das
+das NAS (DSM-Aufgabe als root; bis 11/2026 war es umgekehrt: eine Cloud-VM
+mit systemd-Timer überwachte das NAS – daher Ordnername, `NAS_ALIVE_URL` und
+die Formulierungen „VM“/„NAS“ im Rest dieses Absatzes, der die Regeln
+beschreibt). Wie das überwachte Ziel in den Meldungen heißt, steht in
+`TARGET_NAME` (hier `Alarm-Server`). **Als root läuft das Skript nur, wenn
+Skript, Konfiguration, ihre Ordner und der Zustandsordner root gehören und
+für niemanden sonst schreibbar sind** (es führt seine Konfiguration aus):
+auf dem NAS deshalb in `/volume1/@fw_alarm_watch`, NIE in den Freigaben
+`web`/`web_packages` – dort darf der Web-Benutzer `http` schreiben.
+Es ruft alle 5 min `api/alive.php` über die ÖFFENTLICHE Adresse des Dashboards
+auf und meldet per Bark an den Status-Key, wenn es von außen nicht erreichbar
+ist (3 Fehlschläge in Folge) oder der Wächter `check_offline.php` dort
+> 45 min nicht lief. Gegenrichtung: `alive.php` merkt sich jeden Aufruf
 (`watcher_seen.json`), der Cron-Wächter meldet eine verstummte VM (Art
 `outside_watcher`, nur vorhanden, wenn `watcher_token_sha256` gesetzt ist –
 `outside_watcher_configured()`; schweigt, solange der Schreib-Selbsttest mit
@@ -87,11 +126,34 @@ gesetzt) und `nas_send_failed` (letzte Admin-Meldung des NAS gescheitert) –
 das Skript muss mit älteren `alive.php`-Ständen ohne diese Zeilen
 weiterlaufen. Kann die VM ihren Zustand nicht speichern, ruft sie
 `alive.php` gar nicht erst auf (dann greift die Gegenüberwachung).
-Bark-Texte der VM ASCII; Meldungen gelten nur bei angenommener Zustellung
-als erledigt. Die VM
-bleibt bewusst im Always-Free-Kontingent (kein Pay-as-you-go) – das Risiko
-„Oracle stoppt idle VMs“ deckt die gegenseitige Überwachung ab. Dateien unter
-`cloud_watcher/` sind LF (`.gitattributes`).
+Bark-Texte des Außen-Wächters ASCII; Meldungen gelten nur bei angenommener
+Zustellung als erledigt. Die Oracle-VM (heute der Server des Dashboards)
+bleibt bewusst im Always-Free-Kontingent (kein Pay-as-you-go). Oracle stoppt
+VMs, deren CPU-, Netz- UND Speicherauslastung 7 Tage unter 20 % bleibt –
+deshalb hat sie nur 1 GB Speicher (ca. 40 % belegt; mit 2 GB waren es 21 %);
+einen Ausfall meldet der Außen-Wächter. Skript, Units und Vorlage unter
+`cloud_watcher/` sowie alles unter `server/` und `nas_bridge/` sind LF
+(`.gitattributes`). Tests des Skripts:
+`node --test "tests/watcher/*.test.mjs"` (curl/flock/id/stat als Attrappen).
+
+**Die Brücke (`nas_bridge/`)** auf dem NAS reicht genau
+`api/{status,poll,ack,keys,mute}.php` per PHP-cURL an die VM weiter (festes
+Ziel in `bridge_config.php`, kein offener Proxy, keine Daten, keine
+Geheimnisse). Regeln, die bleiben müssen: nur die in `lib/bridge.php`
+aufgezählten Kopfzeilen gehen in beide Richtungen (nie Cookies; fehlende
+`Accept`/`User-Agent` werden NICHT ergänzt – `mute.php` unterscheidet Browser,
+Kurzbefehl und Link-Vorschau daran); Zeitlimits 3 s/3,5 s (unter den 4 s der
+Box); die Brücke antwortet **nie selbst mit 403** und reicht ein 403 nur
+weiter, wenn es von der App stammt (Rumpf `FORBIDDEN`) – jedes andere 403
+(Cloudflare, Nginx) wird 502, denn die Box wertet 403 als „Token abgelehnt“
+und warnt per Bark; Wartung („Halt“) allein über das Vorhandensein von
+`bridge_hold.php` (dann 503, im Halt abgewiesene Mute-Aufrufe landen ohne
+Token im `held_log` und werden nachgeholt); `index.php`/`classic.php` leiten
+mit 302 (nicht 301) um. Die Brücke setzt `X-FW-Bridge: 1`: Nginx protokolliert
+das (`bridge=1`), und `api/status.php` merkt es sich als `via_bridge` – daran
+hängt der Text von „Box OFFLINE“ (siehe „Meldungen an den Admin“). Tests:
+`node --test "tests/bridge/*.test.mjs"`. Nach dem Flashen der Box entfallen
+die vier Box-Pfade, `api/mute.php` bleibt für alte Links.
 
 Ablauf in `loop()`: `feedWatchdog()` → `maintainWiFi()` (nicht-blockierend; erst
 der AutoReconnect des Cores, harter Neuaufbau frühestens nach
@@ -459,7 +521,15 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   `web_push_pending`), wird sie nach dem Wiedereinschalten sofort nachgeholt;
   ohne zugestellte Ausfall-Meldung gibt es kein „wieder da“. (5) Die
   Erinnerung „weiterhin OFFLINE“ nutzt denselben Text wie die erste Meldung
-  (inkl. NAS-Diagnose bei `blocks_pushes`). (6) Die Lese-Rolle erfährt nichts
+  (inkl. Server-Diagnose bei `blocks_pushes`). Der Text kommt aus
+  `box_offline_notice_text()` (common.php): Solange der letzte Status der
+  Box über die Brücke kam (`via_bridge`, also bis zum Flashen), nennt er das
+  NAS zu Hause als möglichen Grund – und als wahrscheinlichen, wenn auch der
+  Außen-Wächter (er läuft auf demselben NAS) seit > 9 min schweigt; dann
+  entfällt der Satz „Relaisalarm wuerde NICHT ausgeloest“, denn die Box
+  alarmiert weiter direkt über Bark. Der Text von „Dashboard DEFEKT“ kommt
+  aus `web_fail_notice_text()`: Hinweis je nach Ursache (Datenordner →
+  `chown`, Webserver → Dienste prüfen). (6) Die Lese-Rolle erfährt nichts
   über diese Einstellungen: kein `notify_changed` in `log_view`, kein
   `offline_alert`/`web_alert`/`outside_alert` im Status (dort liest
   `important_notify_flags()` nur diese Schalter, nicht die ganze Tabelle).
@@ -523,6 +593,26 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
 - TLS via `client.setInsecure()` (keine Zertifikatsprüfung) — gewollt, einfach/robust.
   Gilt auch für das NAS; Authentifizierung läuft über ein langes Maschinen-Token.
 - OTA ist **nicht** eingebaut, nur als README-TODO dokumentiert.
+- **Cloudflare vor dem Dashboard** (Zone `tunero.dev`, Einstellungen müssen so
+  bleiben): Bot Fight Mode AUS (lässt sich im Free-Plan nicht pro Adresse
+  ausnehmen), Mindest-TLS 1.2 (die Box kann nur 1.2), „Always Use HTTPS“ an;
+  für `alarm.tunero.dev` eine Konfigurationsregel (Browser Integrity Check,
+  E-Mail-Verschleierung, Rocket Loader, Under-Attack, RUM aus) und eine
+  Cache-Regel (Cache umgehen) – sonst blockt oder verändert Cloudflare die
+  Antworten für Box, NAS-Brücke und Kurzbefehle. Bewusst KEIN Cloudflare
+  Access davor (Mail-Code wäre im Notfall Reibung). Cloudflare beendet TLS
+  und sieht Maschinen-Token, Bark-Keys und Stumm-Tokens im Klartext – in
+  Kauf genommen; das Cloudflare-Konto braucht deshalb zweistufige Anmeldung.
+  Lokal verwalteter Tunnel (`cloudflared`, Konfiguration
+  `server/cloudflared/config.yml.example`). `server/check.sh public` prüft,
+  dass ein Aufruf wie von der Box (TLS 1.2, kein `Accept`) und einer ohne
+  `Accept` die Antwort der APP bekommen.
+- **Auf der VM nichts über `/tmp`**: Was root ausführt (`server/setup.sh`,
+  `check.sh`) oder was Geheimnisse enthält, wird in einen Ordner im
+  Home-Verzeichnis kopiert (`~/fw-server`, Rechte 700 für Geheimnisse) –
+  `/tmp` ließe einen anderen lokalen Benutzer Dateien unterschieben oder
+  mitlesen. `setup.sh` verweigert den Start aus `/tmp`, `deploy.sh` nutzt
+  `mktemp -d`.
 - Alarm-Sound `alarm_fw` ist ein **eigener importierter** Bark-Ton; muss auf jedem
   Empfänger-iPhone vorhanden sein, sonst Standardton.
 - Synology-Dashboard: separate Auth für Maschine (`REMOTE_MACHINE_TOKEN`, im PHP
@@ -649,7 +739,13 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Startwerte gehen als meta-Tags an das Frontend). Empfängerliste/Demo-Zustand
   werden vor jedem Schreiben als `*.bak`-Guard-Datei gesichert
   (`backup_then_write()`). Optionaler Offline-Wächter: `cron/check_offline.php`
-  (DSM-Aufgabenplaner alle 15 min, CLI oder POST mit Maschinen-Token) meldet
+  (auf der VM: systemd-Timer `fw-alarm-cron.timer` alle 15 min als Benutzer
+  `fwalarm`; Nginx sperrt `/cron/` von außen. Auf dem NAS war es eine
+  DSM-Aufgabe als root, CLI oder POST mit Maschinen-Token. Folge auf der VM:
+  Wächter und Web-Benutzer sind derselbe – kann `fwalarm` den Datenordner
+  nicht beschreiben, scheitert auch der Wächter an seiner Sperre und meldet
+  nichts; dann greift der Außen-Wächter nach 45 min, siehe
+  `server/README.md` „Bekannte Grenzen“) meldet
   per `admin_notify_send()` (ASCII-Texte! Dringlichkeit, Abstände und
   Ein/Aus laut „Meldungen an den Admin“, Standard level=passive) einmalig
   Offline/Recovery an `bark_key_status`, erinnert an einen zu lange aktiven
@@ -666,7 +762,9 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Meldung das NAS als wahrscheinliche Ursache (Störung 10/2026: Box lief,
   `http` hatte nach einem Update nur noch Leserecht auf `web_packages`).
   `with_lock()` zeigt dann statt „Fehler.“ einen lesbaren Hinweis (ohne
-  Pfad; Pfad nur per `error_log`; JSON für `dashboard_api.php` über die
+  Pfad und ohne Benutzernamen – die Meldung erreicht auch nicht angemeldete
+  Aufrufer; Pfad nur per `error_log`, der Befehl zum Beheben nur in der
+  Bark-Meldung an den Admin; JSON für `dashboard_api.php` über die
   Konstante `FW_ALARM_JSON_API`). Was nur best effort ist (Mute-Ablauf im
   Alarmpfad, Login-Throttle, Verlauf, Poll/ACK der Box, Kurzbefehl-Link),
   nutzt `with_lock_soft()` statt des fatalen `with_lock()`. Lock-Reihenfolge
@@ -847,8 +945,8 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   automatischer Neuversuch. Design (Dunkel/Hell/System) und Browser-Hinweis
   pro Gerät in `localStorage`, jeder Zugriff in try/catch.
   Tests: `node --test "tests/dashboard/*.test.mjs"` (Logik, Anfragen, Store,
-  Kontrast – die Ordner-Form `node --test tests/dashboard/` scheitert unter
-  Node 24); Ende-zu-Ende in der lokalen Sandbox (`tests/dashboard/sandbox/`,
+  Kontrast, ortsneutrale Texte samt der Wächter-Texte aus PHP – die
+  Ordner-Form `node --test tests/dashboard/` scheitert unter Node 24); Ende-zu-Ende in der lokalen Sandbox (`tests/dashboard/sandbox/`,
   README dort; Szenarien in `tests/dashboard/e2e/scenarios/`, Headless Chrome
   über CDP). Neue Farbklassen gehören in `pairs()` von
   `tests/dashboard/contrast.test.mjs` (WCAG AA in beiden Designs).
