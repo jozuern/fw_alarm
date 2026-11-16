@@ -1,20 +1,31 @@
-# Konfiguration des Außen-Wächters - auf der VM als /etc/fw-alarm-watch.conf
-# ablegen (Besitzer root, Gruppe fwwatch, Rechte 640). Enthält Geheimnisse:
-# NIE ins Git, NIE in die Vorlage eintragen.
+# Konfiguration des Außen-Wächters. Liegt auf dem Rechner, der den Wächter
+# ausführt - NICHT auf dem überwachten Server:
+#   auf dem NAS (seit dem Umzug): neben dem Skript, z.B.
+#       /volume1/web_packages/fw_alarm_watch/fw-alarm-watch.conf
+#   auf einer Linux-VM mit systemd: /etc/fw-alarm-watch.conf
+#       (Besitzer root, Gruppe fwwatch, Rechte 640)
+# Enthält Geheimnisse: NIE ins Git, NIE in die Vorlage eintragen.
 #
-# Unter Windows bearbeitet? Auf der VM vor dem Installieren die
-# Windows-Zeilenenden entfernen:  sed -i 's/\r$//' fw-alarm-watch.conf
+# Unter Windows bearbeitet? Vor dem Benutzen die Windows-Zeilenenden
+# entfernen:  sed -i 's/\r$//' fw-alarm-watch.conf
 # Das Skript prüft alle Werte beim Start und bricht bei ungültigen mit einer
-# Meldung im Journal ab (exit 2, dann auch kein Aufruf beim NAS).
+# Meldung ab (exit 2, dann auch kein Aufruf beim überwachten Server).
 #
 # >>> HIER STEHEN ALLE WERTE, DIE DU EDITIEREN MUSST/KANNST <<<
 
-# Öffentliche Adresse von api/alive.php (dieselbe Adresse, über die man das
-# Dashboard von unterwegs erreicht - NICHT die LAN-IP). Nur https://.
-NAS_ALIVE_URL="https://dein-name.synology.me/fw_alarm/api/alive.php"
+# Wie der überwachte Server in den Bark-Meldungen heißt, z.B.
+# "Alarm-Server NICHT ERREICHBAR". Nur Buchstaben ohne Umlaute, Ziffern,
+# Leerzeichen und Bindestrich, 1-24 Zeichen. Fehlt der Wert, heißt er "NAS".
+TARGET_NAME="Alarm-Server"
 
-# Klartext des Wächter-Tokens. In config.php des NAS steht nur der SHA-256-
-# Hash davon (watcher_token_sha256). Token UND Hash in einem Schritt erzeugen:
+# Öffentliche Adresse von api/alive.php des überwachten Servers (dieselbe
+# Adresse, über die man das Dashboard von unterwegs erreicht). Nur https://.
+# (Der Name der Variable ist historisch - früher wurde das NAS überwacht.)
+NAS_ALIVE_URL="https://alarm.tunero.dev/api/alive.php"
+
+# Klartext des Wächter-Tokens. In config.php des Servers steht nur der
+# SHA-256-Hash davon (watcher_token_sha256). Token UND Hash in einem Schritt
+# erzeugen:
 # php -r '$t=bin2hex(random_bytes(32)); echo $t, PHP_EOL, hash("sha256", $t), PHP_EOL;'
 # Eigenes Token - NICHT das Maschinen-Token der Box (gleicher Hash wie
 # machine_token_sha256 lehnt alive.php mit 404 ab).
@@ -27,20 +38,21 @@ BARK_KEY=""
 
 # Dringlichkeit der Meldungen: passive (leise) | active (normal, mit Ton) |
 # timeSensitive (durchbricht Fokus) | critical (durchbricht auch Stummschalter).
-# Gilt für ALLE Meldungen der VM. Die Einstellungen im Dashboard-Panel
-# "Meldungen an den Admin" (Dringlichkeit, Ruhezeit, Ton, Stellvertreter)
-# gelten NUR für Meldungen des NAS, nicht für diese VM.
+# Gilt für ALLE Meldungen des Außen-Wächters. Die Einstellungen im Dashboard
+# unter "Meldungen an mich" (Dringlichkeit, Ruhezeit, Ton, Stellvertreter)
+# gelten NUR für Meldungen des Servers, nicht für den Außen-Wächter.
 BARK_LEVEL="active"
 
 # Nach so vielen Fehlschlägen in Folge melden (Takt 5 min; 3 = ca. 10-15 min,
-# übersteht einen normalen NAS-Neustart ohne Fehlalarm). Gilt auch für
-# "NAS kann Bark nicht erreichen" (so viele Läufe in Folge). Ganze Zahl.
+# übersteht einen normalen Neustart des Servers ohne Fehlalarm). Gilt auch
+# für "<Ziel> kann Bark nicht erreichen" (so viele Läufe in Folge). Ganze Zahl.
 FAIL_THRESHOLD=3
 
-# Erinnern, solange das NAS weg bleibt bzw. der NAS-Wächter nicht läuft
+# Erinnern, solange der Server weg bleibt bzw. sein Wächter nicht läuft
 # (Stunden, 0 = nur einmal). Ganze Zahl.
 REPEAT_HOURS=24
 
-# Ab diesem Alter (Sekunden) gilt der Cron-Wächter auf dem NAS als
-# stehengeblieben (er läuft alle 15 min; 2700 = drei ausgefallene Läufe).
+# Ab diesem Alter (Sekunden) gilt der Wächter auf dem Server
+# (check_offline.php) als stehengeblieben (er läuft alle 15 min; 2700 = drei
+# ausgefallene Läufe).
 CRON_STALE_S=2700
