@@ -38,6 +38,14 @@ config.example.php -> config.php
 `config.php` bleibt auf der Synology und enthält deine echten Geheimnisse
 (Token-Hash, Passwort-Hash und die Bark-Keys für den NAS-Direktalarm).
 
+**Aktualisieren (Reihenfolge):** Erst `lib/` und `assets/` kopieren (dazu
+`api/`, `cron/`, `dashboard_api.php`, `classic.php`, `manifest.json`), **zuletzt
+`index.php`**. `index.php` bindet `lib/shell.php` ein – käme sie zuerst, fände
+eine neue `index.php` kurz die alte bzw. fehlende Hülle, und die Seite bliebe
+leer oder zeigte einen PHP-Fehler. Bleibt nach einem Update trotzdem etwas
+hängen: Die Übersicht bietet dann selbst „Neu laden“ und die alte Ansicht an
+(siehe Abschnitt 7).
+
 ### Datenordner (`data_dir`)
 
 Der Datenordner muss für den **PHP-Prozess beschreibbar** sein. Auf DSM:
@@ -354,8 +362,8 @@ Sitzungs-Cookie hat eine Laufzeit und wird bei jeder Nutzung erneuert). Am PC
 geht dasselbe in Chrome/Edge über „App installieren“.
 
 Bewusst **ohne Offline-Modus** (kein Service Worker): Das Dashboard lädt immer
-frisch vom NAS. Ist das NAS nicht erreichbar, steht das so auf der Übersicht –
-alte Daten sehen nie wie aktuelle aus.
+frisch vom NAS. Ist das NAS nicht erreichbar, steht das oben auf jeder Seite
+(mit der Uhrzeit des letzten Stands) – alte Daten sehen nie wie aktuelle aus.
 
 Design (Dunkel/Hell/System) und „Hinweis im Browser bei Störung“ stellt jedes
 Gerät unter Einstellungen → „Dieses Gerät“ für sich ein (gespeichert im
@@ -368,6 +376,13 @@ Für eine Übergangszeit gibt es die bisherige Oberfläche noch unter
 neuen etwas klemmt. Sie ist eingefroren (`assets/classic/`), nutzt dieselbe
 Anmeldung und dieselben Daten und wird nach einigen Wochen entfernt; bis dahin
 gehören `classic.php` und `assets/classic/` beim Kopieren aufs NAS mit dazu.
+Oben rechts führt „Neue Ansicht“ zurück.
+
+**Direkte Notfall-Adresse:** `https://…/fw_alarm/classic.php` – am besten
+auch als Lesezeichen. Sie geht unabhängig davon, ob die neue Oberfläche
+startet (auch dort lässt sich manuell alarmieren). Startet die neue
+Oberfläche nicht oder stürzt ein Teil ab, zeigt sie selbst „Neu laden“ und
+„Alte Ansicht (classic.php)“ an – nie eine leere Seite.
 
 Mit der Umstellung entfallen `next.php`, `assets/app.js` und
 `assets/style.css`. Ein Kopieren aufs NAS löscht sie nicht – nach dem Update

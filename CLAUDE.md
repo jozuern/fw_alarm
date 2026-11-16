@@ -198,7 +198,7 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   (DNS/TLS/Timeout) stehen als `err` im Ergebnis und im PHP-Fehlerlog. Bewusste Entscheidung: Die manuelle
   Alarmierung braucht man gerade dann, wenn die ESP32-Kette klemmt — sie darf
   deshalb nicht am Poll des ESP32 hängen. `ALARM`-Commands legt das
-  Dashboard nur noch als **Demo-Werkzeug** an (Button „DEMO-ALARM über
+  Dashboard nur noch als **Demo-Werkzeug** an (Button „Demo-Alarm über
   die Box"): serverseitig gesichert (`demo_alarm_block_reason()`) — nur bei
   aktivem Demo-Modus UND nur, wenn der letzte Status-Push des ESP32 die
   aktuelle `keys_version` bestätigt, genau EINEN Empfänger (`keys_count=1`)
@@ -604,7 +604,7 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Absturz/Watchdog/Brownout), `key_test`, `notify_changed` und
   `watcher_silent`/`watcher_recovered` (Außen-Wächter verstummt/wieder da). Der ESP32-Status-Push enthält als Diagnose-Felder
   zusätzlich `reset_reason` (Token, im Frontend übersetzt und bei
-  Watchdog/Panic/Brownout gelb markiert), `free_heap` (Warnfarbe < 50 kB),
+  Watchdog/Panic/Brownout orange markiert), `free_heap` (Warnfarbe < 50 kB),
   `keys_muted`, `core` (Core-Version), `alarm_seq`, `alarm_source`,
   `max_alloc_heap` und `alarm_gaveup`; `fw_build` = `FW_BUILD_MARKER` plus
   Kompilier-Zeitpunkt. Wie das Frontend diese Werte zeigt, steht unten im
@@ -635,7 +635,8 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Alarmpfad, Login-Throttle, Verlauf, Poll/ACK der Box, Kurzbefehl-Link),
   nutzt `with_lock_soft()` statt des fatalen `with_lock()`. Lock-Reihenfolge
   (kein Zyklus erlaubt): `keys`→`log`, `command`→`log`, `watchdog`→`log`;
-  `log` ist immer innen, `expire_stale_mutes()`/`ensure_mute_tokens()`/
+  `settings` (`app_settings.json`, `settings_set`) wird allein genommen –
+  der Verlaufseintrag folgt erst nach seiner Freigabe; `log` ist immer innen, `expire_stale_mutes()`/`ensure_mute_tokens()`/
   `repair_broken_demo_mode()` nehmen `keys` selbst (nie aus einem gehaltenen
   `keys`-Lock), kein Bark-Versand unter einem Web-Lock. Legt der root-Cron Dateien neu an, übergibt
   `fix_owner()` sie an Besitzer/Gruppe des `data_dir` — aber NUR, wenn der
@@ -740,8 +741,52 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   `unreached.entries` (zusammengeführt), nie nur das frische `failed`.
   Scheitert ein Speichern, erhöht der Store `state.rev[slice]` – Bedienelemente
   mit eigenem Zustand sind darauf geschlüsselt und springen zurück.
-  `alarmInFlight` ist die EINZIGE Sperre der Alarm-Knöpfe (andere laufende
-  Aktionen sperren sie nicht). Eine überfällige, nicht gespeicherte
+  Alarm an alle, Entwarnung und die Nachsendung sperrt NUR `alarmInFlight`
+  (andere laufende Aktionen sperren sie nicht); „Demo-Alarm über die Box“
+  hängt zusätzlich am Zähler laufender Aktionen (`busyCount`), weil er sich
+  die Befehlsschlange der Box mit TEST teilt. Der Halten-Knopf nennt die
+  Aktion („Halten: Alarm senden“, „… Entwarnung senden“, „… Demo-Alarm
+  senden“, „… erneut senden“; 19 px fett, Beschreibung „Zum Senden gedrückt
+  halten“). Beim Öffnen einer Alarm-Frage holt der Store die Empfängerliste
+  neu (die offene Frage bleibt ihre Momentaufnahme); bei beschädigter Liste
+  nennt sie die Not-Liste aus `config.php`.
+  **Versand ohne Ergebnis**: `sendNasAlarm()` setzt beim Start den Merker
+  `fwAlarm.sendPending` (localStorage, max. 12 h), löscht ihn bei jedem
+  eindeutigen Ergebnis (Antwort mit Ergebnis, sicher NICHT gesendet) und bei
+  „Ausblenden“ – nach „Antwort unklar“ bleibt er stehen. Steht er beim
+  Laden noch da (unklar, oder iOS hat die Seite während des Versands
+  verworfen), zeigt die Übersicht „Letzter Versand ohne Ergebnis … – erst
+  Verlauf prüfen“ OHNE Nachsende-Angebot. „Im Verlauf prüfen“
+  (`store.verifyInLog()`) öffnet „Alarme“ ohne Suche und lädt IMMER frisch
+  (kein gemerkter Stand, der wie „nichts gesendet“ aussähe); eine Adresse
+  mit `?filter=` leert die Suche ebenfalls. „Ausblenden“ fragt nach,
+  solange nicht Erreichte gemerkt sind (`store.dismissResult()`).
+  **Unsicherer Stand sieht nie frisch aus**: Solange keine frische
+  NAS-Antwort da ist (Status-Fehler oder 15 s ohne Antwort) bzw. nach der
+  Abmeldung mit stehen gebliebenem Alarm-Ergebnis, steht auf JEDER Seite das
+  Band `logic.unsureBand()` („Keine Verbindung zum NAS – angezeigte Werte
+  können veraltet sein (Stand HH:MM:SS)“, rot mit „letzter bekannter Stand
+  …: Box OFFLINE“) über dem Demo-Band; auf der Übersicht ersetzt es die
+  Problemzeile der Status-Karte. Dann sind auch alle Prüfzeilen grau; ein
+  gescheiterter Abruf von „Letzter Alarm“ macht die Zeile grau mit
+  „(nicht aktualisiert)“, ein gescheiterter Verlauf-Abruf zeigt über den
+  gemerkten Einträgen „Verlauf konnte nicht aktualisiert werden – Stand von
+  HH:MM“. Der Wechsel in den Verlauf lädt sofort (auch am PC). `pageshow`/
+  `focus` bei sichtbarer Seite starten angehaltene Abfragen wieder (der
+  Sekundentakt für „veraltet“ hängt daran). Abgemeldet mit Ergebnis:
+  „Neu anmelden“ in Status- und Ergebnis-Karte (erst nach dem Versand).
+  **Nie ohne Ausweg**: `#app` enthält in `lib/shell.php` eine statische
+  Ersatzanzeige („wird geladen…“, nach 2 s „Neu laden“ und „Alte Ansicht
+  (classic.php)“), die `main.js` erst vor dem ersten Zeichnen leert; fehlt
+  ein Baustein (Preact, Store, UI, Übersicht), zeigt `main.js` statt der App
+  eine Meldung mit denselben Links (ohne Preact gebaut). Fehlergrenzen
+  (`ui.Boundary`/`ui.Fallback`, immer mit beiden Links): um die ganze App,
+  um jede Ansicht und auf der Übersicht um jeden Teil – stürzt z.B. die
+  Prüfliste ab, bleibt „Auslösen“ bedienbar. `classic.php` hat oben „Neue
+  Ansicht“ zurück zu `index.php`. „Automatisch wieder laut nach“ fragt beim
+  Verkürzen nach, wenn dadurch Stumme sofort laut würden
+  (`logic.muteShortenImpact()`, Regel wie `mute_is_stale()`).
+  Eine überfällige, nicht gespeicherte
   Rückschaltung (`mute_overdue`) erscheint orange als „Evtl. stumm“, nie als
   grünes „Laut“. Live-Aktualisierungen ändern keine offene Bestätigung, kein
   offenes Sheet, keinen gezogenen Regler und keine Eingabe.
