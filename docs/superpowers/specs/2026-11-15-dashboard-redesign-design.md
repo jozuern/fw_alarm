@@ -1,6 +1,6 @@
 # NAS-Dashboard: Neubau des Frontends — Design
 
-Stand: 2026-11-15 · Status: Entwurf zur Freigabe
+Stand: 2026-11-15 · Status: freigegeben (2026-11-15), umgesetzt und am 2026-11-16 aufs NAS ausgerollt (Stand `bf1a7c8`). Maßgeblich für den heutigen Stand ist CLAUDE.md; dieses Dokument beschreibt die Planung.
 
 ## 1. Absicht und Warum
 
