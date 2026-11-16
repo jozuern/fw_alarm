@@ -50,11 +50,12 @@ function makeWatcher(extraConf = '') {
     + 'BARK_KEY="statuskey0001"\nBARK_HOST="https://bark.test"\nFAIL_THRESHOLD=1\n' + extraConf);
   const log = join(dir, 'bark.log').replace(/\\/g, '/');
   return {
-    run(env = {}) {
+    dir,
+    run(env = {}, pathPrefix = '') {
       const r = spawnSync('bash', [script], {
         encoding: 'utf8',
         env: {
-          ...process.env, ...env, PATH: bin + delimiter + process.env.PATH,
+          ...process.env, ...env, PATH: pathPrefix + bin + delimiter + process.env.PATH,
           FW_WATCH_CONF: conf, STATE_DIRECTORY: join(dir, 'state').replace(/\\/g, '/'), FAKE_LOG: log,
         },
       });
@@ -195,4 +196,67 @@ test('Zustandsdatei eines älteren Stands gilt weiter', () => {
   assert.equal(sent.length, 1);
   assert.equal(sent[0].title, 'Alarm-Server wieder erreichbar');
   assert.match(sent[0].body, /nach ca\. 20 min Ausfall; zuletzt: curl-Fehler 7/);
+});
+
+// ---- Als root (DSM-Aufgabe auf dem NAS) ---------------------------------------
+// Als root wird die Konfiguration als root AUSGEFÜHRT (". $CONF"). Liegt sie -
+// oder das Skript oder der Zustandsordner - dort, wo ein anderer Benutzer
+// schreiben darf (auf dem NAS: der Web-Benutzer in den Freigaben), hätte der
+// damit root. id und stat sind hier Attrappen: "root" mit einstellbaren
+// Besitzern/Rechten.
+const rootBin = join(tmp, 'rootbin');
+mkdirSync(rootBin);
+writeFileSync(join(rootBin, 'id'), `#!/usr/bin/env bash
+if [ "\${1:-}" = "-u" ]; then echo "\${FAKE_UID:-0}"; else exec /usr/bin/id "$@"; fi
+`);
+// stat -c '%u %a' PFAD: "0 700", außer der Pfad enthält FAKE_STAT_BAD_MATCH.
+writeFileSync(join(rootBin, 'stat'), `#!/usr/bin/env bash
+path="\${@: -1}"
+if [ -n "\${FAKE_STAT_BAD_MATCH:-}" ] && [[ "$path" == *"$FAKE_STAT_BAD_MATCH"* ]]; then
+  echo "$FAKE_STAT_BAD"
+else
+  echo "0 700"
+fi
+`);
+chmodSync(join(rootBin, 'id'), 0o755);
+chmodSync(join(rootBin, 'stat'), 0o755);
+const AS_ROOT = rootBin + delimiter;
+// Zeile in der Konfiguration, an der man sieht, ob sie ausgeführt wurde.
+const TRIPWIRE = 'echo CONF-AUSGEFUEHRT >&2\n';
+
+test('als root: läuft, wenn Skript, Konfiguration und Ordner nur root gehören', () => {
+  const w = makeWatcher(SERVER + TRIPWIRE);
+  const r = w.run({ FAKE_ALIVE: 'up' }, AS_ROOT);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /CONF-AUSGEFUEHRT/);
+  assert.equal(w.aliveCalls(), 1);
+});
+
+test('als root: was ein anderer Benutzer ändern kann, wird nicht ausgeführt', () => {
+  const cases = [
+    ['watch.conf', '1023 600', 'Konfiguration gehört nicht root'],
+    ['watch.conf', '0 666', 'Konfiguration für alle schreibbar'],
+    ['watch.conf', '0 660', 'Konfiguration für die Gruppe schreibbar'],
+    ['fw-alarm-watch.sh', '1026 755', 'Skript gehört nicht root'],
+    ['cloud_watcher', '0 777', 'Ordner des Skripts für alle schreibbar'],
+    ['/state', '0 1777', 'Zustandsordner für alle schreibbar'],
+    ['watch.conf', '', 'Rechte nicht lesbar'],
+  ];
+  for (const [match, bad, what] of cases) {
+    const w = makeWatcher(SERVER + TRIPWIRE);
+    const r = w.run({ FAKE_ALIVE: 'up', FAKE_STAT_BAD_MATCH: match, FAKE_STAT_BAD: bad }, AS_ROOT);
+    assert.equal(r.code, 2, `${what}: exit ${r.code} ${r.err}`);
+    assert.match(r.err, /Unsichere Rechte/, what);
+    assert.doesNotMatch(r.err, /CONF-AUSGEFUEHRT/, `${what}: Konfiguration wurde trotzdem ausgeführt`);
+    assert.equal(w.aliveCalls(), 0, what);
+    assert.equal(w.sent().length, 0, what);
+    assert.equal(existsSync(join(w.dir, 'state', 'state')), false, `${what}: Zustand wurde geschrieben`);
+  }
+});
+
+test('nicht als root: keine Rechteprüfung (Betrieb unter systemd mit eigenem Benutzer)', () => {
+  const w = makeWatcher(SERVER);
+  const r = w.run({ FAKE_ALIVE: 'up', FAKE_UID: '1001', FAKE_STAT_BAD_MATCH: 'watch.conf', FAKE_STAT_BAD: '0 644' }, AS_ROOT);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(w.aliveCalls(), 1);
 });

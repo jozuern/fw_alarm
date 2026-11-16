@@ -25,6 +25,11 @@
 - Files under `server/`, `nas_bridge/`, `cloud_watcher/` that run on Linux/DSM are LF (extend `.gitattributes`).
 - Commits directly on `main`, German messages with umlauts, ending with the `Co-Authored-By:`/`Claude-Session:` lines from the session reminder. Push before every deploy.
 - Unit tests: `node --test "tests/dashboard/*.test.mjs"` and (new) `node --test "tests/bridge/*.test.mjs"`.
+- **Security amendments (review of 2026-11-16, they override the task texts below):**
+  - This repository is public: real host names and addresses (NAS, VM) appear only as placeholders; the VM address for `server/deploy.sh` lives in the untracked `server/deploy.local`.
+  - On the VM, anything root will execute or that contains secrets (the copy of `server/`, the production `config.php`, the data files during the cutover) is uploaded into a folder in the home directory with mode 0700 — never into `/tmp`, where another local user could plant or read files.
+  - Task 10: the watcher on the NAS is run by root. Script, config and state therefore live in a folder only root can write (`/volume1/@fw_alarm_watch`, mode 0700), NOT in `web_packages` or `web` — the web user `http` can write there (verified), which would hand it root. Stage the files via SMB, then let a one-time root task verify the script's SHA-256, move the files, set owner/mode and delete the staging folder. The script itself refuses to run as root otherwise.
+  - Rollbacks: `bridge_hold.php` is always removed last; nginx on the VM is stopped from A3 to B2.
 
 ## Review Focus
 
@@ -88,7 +93,7 @@ Expected: total ≈ 1900–2000 MB, used ≥ 20 % of total, `active`, a fresh `O
 - [ ] **Step 5: Write `server/setup.sh`** (bash, `set -euo pipefail`, must run as root, safe to run twice): apt install `nginx php8.3-fpm php8.3-cli php8.3-curl php8.3-mbstring rsync`; add Cloudflare apt repo (`pkg.cloudflare.com`, keyring in `/usr/share/keyrings/cloudflare-main.gpg`) and install `cloudflared`; create system user `fwalarm` (no home, nologin); create dirs with owners/modes (app root:root 0755, data fwalarm 0750, sessions fwalarm 0700, `/var/log/fw-alarm` fwalarm 0750); install the files from Steps 1–4 (nginx site enabled, default site disabled; pool installed, Ubuntu's `www.conf` renamed to `www.conf.disabled`); `nginx -t && systemctl reload nginx`; `php-fpm8.3 -t && systemctl restart php8.3-fpm`; `systemctl daemon-reload` (timer NOT enabled); assert `sshd -T | grep -q '^passwordauthentication no'`.
 - [ ] **Step 6: Run it on the VM twice**
 
-Run: `scp -i ~/.ssh/oci_fw_alarm -r server ubuntu@<IP der VM>:/tmp/fw-server && ssh -i ~/.ssh/oci_fw_alarm ubuntu@<IP der VM> 'sudo bash /tmp/fw-server/setup.sh && sudo bash /tmp/fw-server/setup.sh && systemctl is-active nginx php8.3-fpm && systemctl is-enabled fw-alarm-cron.timer; ss -ltn | grep -E ":8080|:80 "'`
+Run: `scp -i ~/.ssh/oci_fw_alarm -r server ubuntu@<IP der VM>:~/fw-server && ssh -i ~/.ssh/oci_fw_alarm ubuntu@<IP der VM> 'sudo bash ~/fw-server/setup.sh && sudo bash ~/fw-server/setup.sh && systemctl is-active nginx php8.3-fpm && systemctl is-enabled fw-alarm-cron.timer; ss -ltn | grep -E ":8080|:80 "'`
 Expected: both runs exit 0; `active active`; timer `disabled`; only `127.0.0.1:8080` listening (no `:80`).
 
 - [ ] **Step 7: Commit** — `git add .gitattributes server && git commit -m "Server: Einrichtung der Oracle-VM (nginx, PHP-FPM, Wächter-Timer, Tunnel-Vorlage)"`
@@ -145,7 +150,7 @@ Expected: `deployed <sha>: N files, 0 mismatches`. (`check.sh local` must FAIL a
 - [ ] **Step 2: Start the Bark mock** — copy `tests/dashboard/sandbox/bark-mock.php` to `/srv/fw-alarm/test/`; `sudo systemd-run --unit fw-alarm-bark-mock -p User=fwalarm -E BARK_LOG=/srv/fw-alarm/test/bark.log php -S 127.0.0.1:8789 /srv/fw-alarm/test/bark-mock.php`.
 - [ ] **Step 3: Local checks + e2e over an SSH tunnel** (no public hostname yet)
 
-Run on the VM: `sudo bash /tmp/fw-server/check.sh local` → all PASS.
+Run on the VM: `sudo bash ~/fw-server/check.sh local` → all PASS.
 Run on the PC: `ssh -N -L 18080:127.0.0.1:8080 -i ~/.ssh/oci_fw_alarm ubuntu@<IP der VM> &` then `SANDBOX_BASE=http://127.0.0.1:18080 SANDBOX_DIR=<scratchpad>/vm-e2e node tests/dashboard/e2e/run.mjs smoke`, same for `api-keys` and `api-settings` (the scenarios that need no local sandbox files).
 Expected: all three scenarios pass; `bark.log` on the VM gained the expected mock entries; `sudo grep -c 'day.app' /srv/fw-alarm/app/config.php` is 0 (the staging app cannot reach real Bark — the watcher on the same VM still does, legitimately).
 
@@ -258,7 +263,7 @@ Expected: syntax ok; remaining `NAS` literals only in comments or the default `T
 
 **Phase B — switch the VM to production**
 - [ ] **B1:** `scp` the copy; install files into `/srv/fw-alarm/data` as fwalarm 0640; compare `sha256sum` NAS copy = VM → zero mismatches; delete `<scratchpad>/data-copy/` and the VM temp copy.
-- [ ] **B2:** `sudo install -o root -g fwalarm -m 0640 /srv/fw-alarm/config.prod.php /srv/fw-alarm/app/config.php && sudo systemctl reload php8.3-fpm`; `sudo bash /tmp/fw-server/check.sh local` → all PASS; `bash server/check.sh public https://alarm.tunero.dev` (no login) → all PASS.
+- [ ] **B2:** `sudo install -o root -g fwalarm -m 0640 /srv/fw-alarm/config.prod.php /srv/fw-alarm/app/config.php && sudo systemctl reload php8.3-fpm`; `sudo bash ~/fw-server/check.sh local` → all PASS; `bash server/check.sh public https://alarm.tunero.dev` (no login) → all PASS.
 - [ ] **B3:** Un-hold: delete `bridge_hold.php` on the NAS. **Hold ends.**
 - [ ] **B4:** Within 2 min: dashboard (`action=status` via the user's login, or `latest_status.json.php` on the VM) shows the box with a fresh status; VM nginx log shows `poll.php` with `bridge=1` about every 10 s; the box's reported `keys_version` equals the server's (so no re-sync and no "Liste übernommen" push). **Abort if not fresh after 5 min.**
 - [ ] **B5:** Replay held mute calls — read `\\<NAS>\web_packages\fw_alarm_data\bridge_held.log` (may be absent = nothing held), run the Task 8 Step 6 helper on the VM; for each recipient with a held state, apply the LAST held state through the VM's loopback (`curl -s http://127.0.0.1:8080/api/mute.php --data-urlencode t=<token from alarm_keys> --data-urlencode state=<on|off>`, run on the VM so the token never leaves it); report names + applied states to the user.

@@ -13,8 +13,11 @@
 # Nicht eingespielt werden SETUP.md, config.example.php und data/.
 # Eingespielt wird nur, was auf origin/main liegt (erst pushen).
 #
-# Ziel überschreibbar: FW_DEPLOY_HOST (Standard ubuntu@<IP der VM>),
-# FW_DEPLOY_KEY (Standard ~/.ssh/oci_fw_alarm).
+# Ziel: Die Adresse der VM steht bewusst NICHT im (öffentlichen) Repo. Sie
+# kommt aus der Umgebung (FW_DEPLOY_HOST=ubuntu@<IP>) oder aus der lokalen,
+# nicht versionierten Datei server/deploy.local mit der Zeile
+#     FW_DEPLOY_HOST=ubuntu@<IP der VM>
+# SSH-Schlüssel: FW_DEPLOY_KEY (Standard ~/.ssh/oci_fw_alarm).
 set -euo pipefail
 
 rev="${1:-}"
@@ -22,13 +25,21 @@ if [ -z "$rev" ]; then
     echo "Aufruf: bash server/deploy.sh <git-rev>" >&2
     exit 2
 fi
-host="${FW_DEPLOY_HOST:-ubuntu@<IP der VM>}"
+cd "$(git rev-parse --show-toplevel)"
+
+host="${FW_DEPLOY_HOST:-}"
+if [ -z "$host" ] && [ -f server/deploy.local ]; then
+    host="$(sed -n 's/^FW_DEPLOY_HOST=//p' server/deploy.local | head -n 1 | tr -d '\r" ')"
+fi
+if ! [[ $host =~ ^[A-Za-z0-9._-]+@[A-Za-z0-9.:_-]+$ ]]; then
+    echo "Ziel fehlt: FW_DEPLOY_HOST=ubuntu@<IP der VM> setzen oder in server/deploy.local eintragen." >&2
+    exit 2
+fi
 key="${FW_DEPLOY_KEY:-$HOME/.ssh/oci_fw_alarm}"
 app="/srv/fw-alarm/app"
 
 ssh_vm() { ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=15 "$host" "$@"; }
 
-cd "$(git rev-parse --show-toplevel)"
 sha="$(git rev-parse --verify --quiet "$rev^{commit}")" || {
     echo "Unbekannter Stand: $rev" >&2
     exit 2
@@ -61,9 +72,17 @@ done < "$tmp/files"
 
 # Archiv ohne Zeilenenden-Umwandlung (core.autocrlf des PCs darf nicht
 # mitreden): Auf dem Server liegen exakt die Bytes aus Git.
-remote_tmp="/tmp/fw-deploy/$sha"
+# Zwischenablage auf der VM: frisch angelegter Ordner mit zufälligem Namen,
+# nur für den eigenen Benutzer (mktemp -d). Ein fester Pfad unter /tmp ließe
+# sich von einem anderen Benutzer der VM vorab anlegen und austauschen -
+# danach kopiert rsync als root daraus in den Webroot.
+remote_tmp="$(ssh_vm 'mktemp -d /tmp/fw-deploy.XXXXXXXXXX')"
+if ! [[ $remote_tmp =~ ^/tmp/fw-deploy\.[A-Za-z0-9]{10}$ ]]; then
+    echo "Zwischenablage auf der VM konnte nicht angelegt werden: $remote_tmp" >&2
+    exit 1
+fi
 git -c core.autocrlf=false -c core.eol=lf archive --format=tar "$sha" nas_dashboard \
-    | ssh_vm "rm -rf '$remote_tmp' && mkdir -p '$remote_tmp' && tar -x -C '$remote_tmp'"
+    | ssh_vm "tar -x -C '$remote_tmp'"
 
 # --delay-updates: Alle Dateien werden erst am Ende gemeinsam umbenannt (die
 # Box fragt alle 10 s an - das Fenster mit gemischtem Stand bleibt winzig).

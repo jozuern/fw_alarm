@@ -34,6 +34,9 @@ nas_dashboard/data/*.php
 nas_bridge/bridge_config.php
 nas_bridge/bridge_hold.php
 
+# Server: Adresse der VM für server/deploy.sh (steht bewusst nicht im Repo)
+server/deploy.local
+
 # Außen-Wächter: die echte Konfiguration (Token + Bark-Key) lebt nur auf der VM
 # (auch Kopien wie fw-alarm-watch.conf.bak, egal in welchem Ordner)
 cloud_watcher/*.conf

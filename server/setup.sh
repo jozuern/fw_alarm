@@ -2,8 +2,12 @@
 # Richtet die Oracle-VM für das FW-Alarm-Dashboard ein: Pakete, Benutzer,
 # Ordner, Nginx, PHP-FPM-Pool, Wächter-Timer, Paketquelle für cloudflared.
 #
-# Aufruf auf der VM (als root), aus einer Kopie des Ordners server/:
-#     sudo bash /tmp/fw-server/setup.sh
+# Aufruf auf der VM (als root), aus einer Kopie des Ordners server/ im
+# EIGENEN Home-Ordner - nicht in /tmp: Dort könnte ein anderer Benutzer der VM
+# (z.B. ein übernommener Web-Prozess) den Ordner vorher anlegen und root ein
+# fremdes Skript unterschieben.
+#     ssh ubuntu@<VM> 'rm -rf ~/fw-server' && scp -r server ubuntu@<VM>:fw-server
+#     ssh ubuntu@<VM> 'sudo bash ~/fw-server/setup.sh'
 #
 # Wiederholbar: Ein zweiter Lauf ändert nichts mehr (außer einem Neustart
 # von PHP-FPM und einem Reload von Nginx). Was das Skript bewusst NICHT tut:
@@ -17,7 +21,24 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# Als root wird installiert, was neben diesem Skript liegt - also nur aus
+# einem Ordner starten, in dem niemand sonst etwas ablegen oder ändern kann.
+here_owner="$(stat -c '%U' "$here")"
+case "$here/" in
+    /tmp/*|/var/tmp/*|/dev/shm/*) here_unsafe="liegt in einem Ordner für alle Benutzer" ;;
+    *) here_unsafe="" ;;
+esac
+if [ -z "$here_unsafe" ] && [ "$here_owner" != root ] && [ "$here_owner" != "${SUDO_USER:-root}" ]; then
+    here_unsafe="gehört $here_owner"
+fi
+if [ -z "$here_unsafe" ] && [ -n "$(find "$here" ! -type l -perm -0002 -print -quit)" ]; then
+    here_unsafe="enthält Dateien, die jeder ändern darf"
+fi
+if [ -n "$here_unsafe" ]; then
+    echo "Abbruch: $here $here_unsafe. Den Ordner server/ in den eigenen Home-Ordner kopieren (siehe Kopf dieser Datei)." >&2
+    exit 1
+fi
 for f in nginx/fw-alarm.conf php/fw-alarm.conf systemd/fw-alarm-cron.service \
          systemd/fw-alarm-cron.timer logrotate/fw-alarm; do
     if [ ! -f "$here/$f" ]; then
@@ -94,6 +115,14 @@ install -o root -g root -m 0644 "$here/nginx/fw-alarm.conf" /etc/nginx/sites-ava
 ln -sfn ../sites-available/fw-alarm /etc/nginx/sites-enabled/fw-alarm
 # Die Standard-Seite von Ubuntu hört auf Port 80 an allen Adressen - weg damit.
 rm -f /etc/nginx/sites-enabled/default
+# Protokolle nur für root und die Gruppe adm lesbar (Nginx legte sie sonst
+# für alle lesbar an): Das Fehlerprotokoll nennt bei einer Störung die ganze
+# Anfragezeile - bei einem Kurzbefehl-Link samt Geheim-Token.
+for log in /var/log/nginx/fw-alarm.access.log /var/log/nginx/fw-alarm.error.log; do
+    [ -e "$log" ] || : > "$log"
+    chown www-data:adm "$log"
+    chmod 0640 "$log"
+done
 nginx -t
 systemctl enable nginx >/dev/null
 systemctl reload-or-restart nginx
@@ -117,6 +146,12 @@ for unit in nginx "php$PHP_VER-fpm"; do
         > "/etc/systemd/system/$unit.service.d/fw-alarm-restart.conf"
 done
 
+step "Nicht benötigte Netzdienste aus"
+# rpcbind (Port 111, für NFS) bringt das Oracle-Abbild mit; die VM braucht es
+# nicht. Die Firewall sperrt den Port zwar, aber was nicht läuft, kann auch
+# bei einer geänderten Firewall (z.B. IPv6) nicht erreicht werden.
+systemctl disable --now rpcbind.socket rpcbind.service >/dev/null 2>&1 || true
+
 step "Wächter-Timer (wird hier NICHT eingeschaltet) und logrotate"
 install -o root -g root -m 0644 "$here/systemd/fw-alarm-cron.service" /etc/systemd/system/fw-alarm-cron.service
 install -o root -g root -m 0644 "$here/systemd/fw-alarm-cron.timer" /etc/systemd/system/fw-alarm-cron.timer
@@ -137,6 +172,14 @@ sockets="$(ss -ltnpH)"
 listen="$(awk '/nginx/ {print $4}' <<<"$sockets" | sort -u | tr '\n' ' ')"
 if [ "$listen" != "127.0.0.1:8080 " ]; then
     echo "FEHLER: Nginx hört auf: ${listen:-nichts} (erwartet nur 127.0.0.1:8080)" >&2
+    exit 1
+fi
+# Von außen erreichbar (nicht nur an 127.0.0.1) darf allein SSH sein - das
+# Dashboard geht ausschließlich durch den Tunnel hinaus.
+exposed="$(awk '$4 !~ /^(127\.|\[::1\])/ {print $4, $6}' <<<"$sockets" | grep -v '"sshd"' || true)"
+if [ -n "$exposed" ]; then
+    echo "FEHLER: Außer SSH hört noch etwas an einer öffentlichen Adresse:" >&2
+    echo "$exposed" >&2
     exit 1
 fi
 if [ ! -S /run/php/fw-alarm.sock ]; then

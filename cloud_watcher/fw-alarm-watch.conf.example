@@ -1,7 +1,10 @@
 # Konfiguration des Außen-Wächters. Liegt auf dem Rechner, der den Wächter
 # ausführt - NICHT auf dem überwachten Server:
-#   auf dem NAS (seit dem Umzug): neben dem Skript, z.B.
-#       /volume1/web_packages/fw_alarm_watch/fw-alarm-watch.conf
+#   auf dem NAS (seit dem Umzug): neben dem Skript in einem Ordner, der NUR
+#       root gehört, z.B. /volume1/@fw_alarm_watch/fw-alarm-watch.conf
+#       (Rechte 600). NICHT in einer Freigabe wie web oder web_packages:
+#       Dort darf der Web-Benutzer schreiben, und die DSM-Aufgabe führt
+#       diese Datei als root aus. Das Skript prüft das und bricht sonst ab.
 #   auf einer Linux-VM mit systemd: /etc/fw-alarm-watch.conf
 #       (Besitzer root, Gruppe fwwatch, Rechte 640)
 # Enthält Geheimnisse: NIE ins Git, NIE in die Vorlage eintragen.

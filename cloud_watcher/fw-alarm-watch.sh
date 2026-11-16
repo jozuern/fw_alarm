@@ -54,6 +54,28 @@ CONF="${FW_WATCH_CONF:-/etc/fw-alarm-watch.conf}"
 STATE_DIR="${STATE_DIRECTORY:-/var/lib/fw-alarm-watch}"
 STATE="$STATE_DIR/state"
 
+# ---- Als root nur mit Dateien, die sonst niemand ändern kann -------------------
+# Läuft das Skript als root (DSM-Aufgabe auf dem NAS), wird die Konfiguration
+# weiter unten ALS ROOT AUSGEFÜHRT (". $CONF"), und der Zustand wird als root
+# geschrieben. Könnte ein anderer Benutzer Skript, Konfiguration oder einen
+# dieser Ordner ändern, hätte er damit root - auf dem NAS darf z.B. der
+# Web-Benutzer "http" in den Freigaben web und web_packages schreiben.
+# Deshalb: alles muss root gehören und darf für Gruppe und Andere nicht
+# schreibbar sein, sonst endet der Lauf, BEVOR irgendetwas gelesen wird.
+# (Unter systemd läuft das Skript als eigener Benutzer - dann entfällt das.)
+if [ "$(id -u)" = "0" ]; then
+    self=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null) || self="${BASH_SOURCE[0]}"
+    for f in "$self" "$(dirname "$self")" "$CONF" "$(dirname "$CONF")" "$STATE_DIR"; do
+        st=$(stat -c '%u %a' "$f" 2>/dev/null) || st=""
+        owner=${st%% *}
+        perms=${st##* }
+        if ! [[ $st =~ ^0\ [0-7]{3,4}$ ]] || [ $(( 8#$perms & 8#022 )) -ne 0 ]; then
+            echo "Unsichere Rechte: $f muss root gehören und darf für Gruppe/Andere nicht schreibbar sein (Besitzer-UID ${owner:-?}, Rechte ${perms:-?}). Als root wird die Konfiguration ausgeführt - Abbruch, nichts gelesen." >&2
+            exit 2
+        fi
+    done
+fi
+
 mode=check
 case "${1:-}" in
     "")     ;;
