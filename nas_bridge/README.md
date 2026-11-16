@@ -42,8 +42,10 @@ Zeitlimits: Verbindung 3 s, gesamt 3,5 s – unter den 4 s, die die Box
 wartet. Ist der Server nicht erreichbar, antwortet die Brücke mit 502 bzw.
 504 (Zeitlimit) und **nie mit 403**: Ein 403 wertet die Box als „Token
 abgelehnt“ und warnt per Bark. Fängt Cloudflare eine Anfrage ab
-(Kopfzeile `cf-mitigated`), meldet die Brücke deshalb ebenfalls 502. Ein
-403 gibt es nur, wenn die App selbst so antwortet (falsches Token).
+(Kopfzeile `cf-mitigated`) oder kommt sonst ein 403, das nicht von der App
+stammt (Sperrseite, Nginx), meldet die Brücke deshalb ebenfalls 502. Ein
+403 gibt es nur, wenn die App selbst so antwortet (falsches Token – daran
+erkannt, dass die Antwort genau `FORBIDDEN` lautet).
 Ursachen stehen im PHP-Fehlerlog des NAS (Zeilen mit `fw-bridge:`).
 
 ## Dateien auf dem NAS (`\\<NAS>\web\fw_alarm\`)

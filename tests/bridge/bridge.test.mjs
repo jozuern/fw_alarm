@@ -127,10 +127,25 @@ test('forwards all five endpoints to the same file name', async () => {
   }
 });
 
-test('passes upstream 403 through', async () => {
-  const r = await call({ method: 'POST', path: '/api/status.php?code=403', headers: FORM, body: 'token=falsch' });
+test('passes the app\'s own 403 (wrong machine token) through', async () => {
+  const r = await call({ method: 'POST', path: '/api/status.php?forbidden=1', headers: FORM, body: 'token=falsch' });
   assert.equal(r.status, 403);
-  assert.equal(r.body, 'code 403\n');
+  assert.equal(r.body, 'FORBIDDEN');
+});
+
+// Die Box wertet JEDES 403 als "Token abgelehnt" und warnt per Bark. Ein 403,
+// das nicht von der App stammt (Sperrseite von Cloudflare ohne cf-mitigated,
+// Nginx), darf deshalb nie als 403 bei ihr ankommen.
+test('a 403 that is not the app\'s becomes 502', async () => {
+  const r = await call({ method: 'POST', path: '/api/status.php?code=403', headers: FORM, body: 'token=t' });
+  assert.equal(r.status, 502);
+  assert.doesNotMatch(r.body, /(^|\n)(ok|type)=/);
+  const head = await call({ method: 'HEAD', path: '/api/mute.php?code=403&t=x&state=on' });
+  assert.equal(head.status, 502);
+  // Andere Fehler der App (z.B. 404 "unbekannter Empfaenger", 429) gehen unverändert durch.
+  const other = await call({ path: '/api/mute.php?code=404&t=x&state=on' });
+  assert.equal(other.status, 404);
+  assert.equal(other.body, 'code 404\n');
 });
 
 test('turns a Cloudflare challenge (403 + cf-mitigated) into 502, never 403', async () => {

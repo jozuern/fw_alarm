@@ -107,6 +107,16 @@ fi
 systemctl enable "php$PHP_VER-fpm" >/dev/null
 systemctl restart "php$PHP_VER-fpm"
 
+step "Nginx und PHP-FPM starten nach einem Absturz von selbst neu"
+# Auf der kleinen VM (1 GB) kann der Kernel bei Speichernot einen Dienst
+# beenden. Ohne diese Einträge bliebe er bis zum nächsten Neustart der VM
+# aus (cloudflared bringt Restart=on-failure schon mit).
+for unit in nginx "php$PHP_VER-fpm"; do
+    install -d -m 0755 "/etc/systemd/system/$unit.service.d"
+    printf '[Service]\nRestart=on-failure\nRestartSec=5s\n' \
+        > "/etc/systemd/system/$unit.service.d/fw-alarm-restart.conf"
+done
+
 step "Wächter-Timer (wird hier NICHT eingeschaltet) und logrotate"
 install -o root -g root -m 0644 "$here/systemd/fw-alarm-cron.service" /etc/systemd/system/fw-alarm-cron.service
 install -o root -g root -m 0644 "$here/systemd/fw-alarm-cron.timer" /etc/systemd/system/fw-alarm-cron.timer

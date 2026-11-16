@@ -4,6 +4,7 @@
 // Jeder Aufruf = eine JSON-Zeile im Log (Methode, Pfad, Query, Kopfzeilen,
 // Rumpf). Die Antwort richtet sich nach der Query:
 //   code=<n>     dieser Statuscode
+//   forbidden=1  403 mit dem Rumpf der App bei falschem Maschinen-Token ("FORBIDDEN")
 //   cfm=1        zusätzlich die Kopfzeile "cf-mitigated: challenge"
 //   redirect=1   303 mit relativer Location, CSP und einem Cookie
 //   slow=<s>     erst nach s Sekunden antworten
@@ -37,6 +38,11 @@ if (isset($_GET['redirect'])) {
     header('Set-Cookie: x=1');
     header('Strict-Transport-Security: max-age=31536000');
     exit;
+}
+if (isset($_GET['forbidden'])) {
+    // Wie require_machine_auth() in nas_dashboard/lib/common.php.
+    http_response_code(403);
+    exit('FORBIDDEN');
 }
 header('Content-Type: text/plain; charset=utf-8');
 if (isset($_GET['code'])) {

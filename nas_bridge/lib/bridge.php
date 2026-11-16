@@ -276,6 +276,14 @@ function bridge_forward(string $file): never
             . implode(',', $responseHeaders['cf-mitigated']) . ', HTTP ' . $status . ')');
         bridge_text(502, "bridge: Server nicht erreichbar\n");
     }
+    // Ein 403 geht nur weiter, wenn es erkennbar von der APP stammt (falsches
+    // Maschinen-Token: Rumpf "FORBIDDEN", siehe require_machine_auth() im
+    // Dashboard). Jedes andere 403 - Sperrseite von Cloudflare ohne
+    // cf-mitigated, Nginx - hieße für die Box fälschlich "Token abgelehnt".
+    if ($status === 403 && trim((string)$responseBody) !== 'FORBIDDEN') {
+        error_log('fw-bridge: ' . $file . ' lieferte ein 403, das nicht von der App stammt - als 502 gemeldet');
+        bridge_text(502, "bridge: Server nicht erreichbar\n");
+    }
 
     http_response_code($status);
     foreach (BRIDGE_RESPONSE_HEADERS as $lower => $name) {
