@@ -603,6 +603,27 @@ test('unreached persisted in localStorage and restored', async () => {
   assert.equal(storage.has('fwAlarm.lastUnreached'), false);
 });
 
+test('Abmelden von Hand: gemerkte Namen und Versand-Merker gehen, Design/Browser-Hinweis bleiben', async () => {
+  const storage = memoryStorage({ 'fwAlarm.theme': 'light' });
+  const h = harness({ storage });
+  h.store.init(ADMIN);
+  h.store.setBrowserAlert(true);
+  h.routes.alarm = () => reply(200, partialResult);
+  await h.store.sendNasAlarm('alarm', '0');
+  storage.setItem('fwAlarm.sendPending', JSON.stringify({ action: 'alarm', at: T0 * 1000 }));
+  assert.equal(storage.has('fwAlarm.lastUnreached'), true);
+  h.store.forgetDevice();
+  assert.equal(storage.has('fwAlarm.lastUnreached'), false);
+  assert.equal(storage.has('fwAlarm.sendPending'), false);
+  assert.equal(storage.getItem('fwAlarm.theme'), 'light');
+  assert.equal(storage.getItem('fwAlarm.browserAlert'), '1');
+  // Gesperrter Speicher: kein Absturz (das Abmelden selbst muss durchgehen).
+  const locked = { getItem() { throw new Error('x'); }, setItem() { throw new Error('x'); }, removeItem() { throw new Error('x'); } };
+  const h2 = harness({ storage: locked });
+  h2.store.init(ADMIN);
+  h2.store.forgetDevice();
+});
+
 test('gemerkte nicht Erreichte: zu alt oder kaputt → verworfen; Speicher gesperrt → kein Absturz', () => {
   const old = { action: 'alarm', at: T0 * 1000 - 13 * 3600 * 1000, startedAt: 0, entries: [{ id: 2, name: 'Tom', reason: 'HTTP 500' }] };
   const storage = memoryStorage({ 'fwAlarm.lastUnreached': JSON.stringify(old) });
@@ -940,6 +961,7 @@ test('Empfänger-Aktionen: Felder, Rückmeldung, neue id nach dem Hinzufügen', 
   h.routes.keys_rename = () => reply(200, { ok: true, message: 'Umbenannt.' });
   h.routes.keys_replace_key = () => reply(200, { ok: true, message: 'Ersetzt.' });
   h.routes.keys_set_phone = () => reply(200, { ok: true, message: 'Gespeichert.' });
+  h.routes.keys_new_mute_token = () => reply(200, { ok: true, message: 'Neue Links.' });
   h.routes.keys_delete = () => reply(200, { ok: false, message: 'Der letzte Empfänger kann nicht gelöscht werden.' });
   assert.deepEqual(plain(await h.store.keyMute(2, false)), { ok: true, text: 'Stumm.', kind: 'ok' });
   assert.equal((await h.store.keyPermanent(2, true)).text, 'Gespeichert.');
@@ -947,6 +969,7 @@ test('Empfänger-Aktionen: Felder, Rückmeldung, neue id nach dem Hinzufügen', 
   await h.store.keyRename(2, 'Thomas');
   await h.store.keyReplace(2, 'neu00000001');
   await h.store.keyPhone(2, '');
+  assert.deepEqual(plain(await h.store.keyNewLinks(2)), { ok: true, text: 'Neue Links.', kind: 'ok' });
   assert.equal((await h.store.keyDelete(1)).text, 'Der letzte Empfänger kann nicht gelöscht werden.');
   const f = (a) => plain(h.posts(a)[0].fields);
   assert.deepEqual(f('keys_mute'), { action: 'keys_mute', id: '2', muted: '0' });
@@ -955,6 +978,7 @@ test('Empfänger-Aktionen: Felder, Rückmeldung, neue id nach dem Hinzufügen', 
   assert.deepEqual(f('keys_rename'), { action: 'keys_rename', id: '2', label: 'Thomas' });
   assert.deepEqual(f('keys_replace_key'), { action: 'keys_replace_key', id: '2', key: 'neu00000001' });
   assert.deepEqual(f('keys_set_phone'), { action: 'keys_set_phone', id: '2', phone: '' });
+  assert.deepEqual(f('keys_new_mute_token'), { action: 'keys_new_mute_token', id: '2' });
   assert.deepEqual(f('keys_delete'), { action: 'keys_delete', id: '1' });
   await settle();
   // Jede Aktion lädt die Liste und (falls sichtbar) den Verlauf nach.

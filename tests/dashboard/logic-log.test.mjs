@@ -8,7 +8,7 @@ test('every known log event has a text', () => {
   for (const ev of ['created','delivered','acked','expired','cancelled','late_ack','demo_enabled','demo_disabled','demo_repaired',
     'key_added','key_removed','key_muted','key_unmuted','key_mute_volume','key_mute_permanent','key_test','notify_changed',
     'nas_alarm_started','false_alarm_started','nas_alarm','false_alarm','relay_alarm','box_offline','box_recovered','box_restart',
-    'nas_web_failed','nas_web_recovered','watcher_silent','watcher_recovered','key_renamed','key_replaced','key_phone_changed','setting_changed'])
+    'nas_web_failed','nas_web_recovered','watcher_silent','watcher_recovered','key_renamed','key_replaced','key_phone_changed','key_token_renewed','setting_changed'])
     assert.notEqual(L.describeLogEntry({ event: ev, label: 'A', old_label: 'B', id: 1, type: 'TEST' }).text, ev);
   assert.equal(L.describeLogEntry({ event: 'relay_alarm', source: 'relay', info: '[13.11. 21:42] x' }).tone, 'alarm');
   assert.ok(L.logMatches({ event: 'key_added', label: 'Anna', key: 'ab…cd' }, 'anna'));
@@ -19,6 +19,7 @@ test('new events', () => {
   assert.equal(d({ event: 'key_renamed', label: 'Neu', old_label: 'Alt', by: 'josh' }).text, 'Empfänger "Alt" umbenannt in "Neu" – von josh');
   assert.equal(d({ event: 'key_replaced', label: 'A', old_key: 'ab…cd', key: 'ef…gh' }).text, 'Bark-Key von "A" ersetzt (ab…cd → ef…gh)');
   assert.equal(d({ event: 'key_phone_changed', label: 'A', by: 'x' }).text, 'Telefonnummer von "A" geändert – von x');
+  assert.equal(d({ event: 'key_token_renewed', label: 'A', by: 'x' }).text, 'Neue Kurzbefehl-Links für "A" erzeugt (die alten gelten nicht mehr) – von x');
   assert.equal(d({ event: 'setting_changed', label: 'Ruhezeit', value: 'aus', by: 'x' }).text, 'Einstellung „Ruhezeit“: aus – von x');
 });
 

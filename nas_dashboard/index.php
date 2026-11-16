@@ -3,13 +3,16 @@ require __DIR__ . '/lib/common.php';
 require __DIR__ . '/lib/shell.php';
 
 $config = load_config();
-start_dashboard_session();
+// Eine Sitzung gibt es nur für Angemeldete: Sie wird fortgesetzt, wenn der
+// Browser ein Sitzungs-Cookie schickt (resume_dashboard_session), und erst
+// bei einer ERFOLGREICHEN Anmeldung neu angelegt. Die Anmeldeseite selbst
+// braucht keine (der Schutz des Login-Formulars hängt an Sec-Fetch-Site).
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'logout') {
     // Logout nur per POST + CSRF (ein fremdes <img src="?logout=1"> soll dich
     // nicht abmelden können).
     // Abmelden räumt vollständig auf: Sitzungsdaten, Sitzung UND Cookie.
-    if (is_dashboard_authed() && !empty($_SESSION['csrf'])
+    if (resume_dashboard_session() && !empty($_SESSION['csrf'])
         && hash_equals((string)$_SESSION['csrf'], (string)($_POST['csrf'] ?? ''))) {
         end_dashboard_session();
     }
@@ -36,7 +39,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
     // Host-Header umschreibt, würde der JEDEN Login ablehnen - und ohne Login
     // gibt es keinen manuellen REAL ALARM. Fehlt der Header (sehr alte
     // Browser, Aufruf per http://), wird der Login nicht blockiert.
-    $crossSite = (string)($_SERVER['HTTP_SEC_FETCH_SITE'] ?? '') === 'cross-site';
+    // Erlaubt sind nur 'same-origin' (das eigene Formular) und 'none' (vom
+    // Browser selbst ausgelöst, z.B. Neu-Laden). Auch 'same-site' wird
+    // abgelehnt: Das wäre eine ANDERE Seite unter derselben Domain - läuft
+    // das Dashboard als alarm.example.org, zählt dazu alles auf example.org
+    // und dessen Unterseiten, und die haben hier nichts abzuschicken.
+    $fetchSite = strtolower(trim((string)($_SERVER['HTTP_SEC_FETCH_SITE'] ?? '')));
+    $crossSite = $fetchSite !== '' && $fetchSite !== 'same-origin' && $fetchSite !== 'none';
 
     // Versuch VOR der Passwortprüfung atomar zählen (Prüfen + Zählen in einem
     // Schritt): Parallele Requests bekommen so nicht mehr Versuche als erlaubt.
@@ -75,11 +84,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
         }
         if ($role !== '') {
             login_throttle_clear($config);
+            // Erst JETZT eine Sitzung öffnen - und ihr sofort eine frische ID
+            // geben (eine mitgeschickte alte ID wird dabei verworfen).
+            start_dashboard_session();
             session_regenerate_id(true);
+            $_SESSION = [];
             refresh_dashboard_cookie();
             $_SESSION['authed'] = true;
             $_SESSION['user'] = $user;
             $_SESSION['role'] = $role;
+            $_SESSION['last_seen'] = time();
+            // Bindet die Sitzung an die Zugangsdaten: Ein geändertes Passwort
+            // meldet sie ab (siehe dashboard_auth_stamp()).
+            $_SESSION['auth_stamp'] = dashboard_auth_stamp($config, $role, $user);
             ensure_csrf();
             // Optionale Admin-Meldung "Anmeldung am Dashboard" (Standard: aus).
             // Gesendet wird erst NACH der Antwort - und die Sitzung wird vorher
@@ -128,7 +145,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
     }
 }
 
-$authed = is_dashboard_authed();
+$authed = resume_dashboard_session();
 $csrf = $authed ? ensure_csrf() : '';
 
 // Ausgabe: Angemeldet die App-Hülle der Oberfläche, sonst die Anmeldeseite

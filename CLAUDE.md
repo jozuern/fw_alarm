@@ -308,7 +308,13 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   die Version; für den AKTIVEN Demo-Empfänger abgelehnt, weil `demo_mode.json`
   den Key kopiert hält; Duplikat-Prüfung wie `keys_add`; `key_replaced` mit
   beiden Keys nur maskiert) und `keys_set_phone` (Telefonnummer `''` = löschen,
-  sonst `/^[0-9+\-\/() ]{3,30}$/`; KEIN Bump; `key_phone_changed` ohne Nummer).
+  sonst `/^[0-9+\-\/() ]{3,30}$/`; KEIN Bump; `key_phone_changed` ohne Nummer)
+  sowie `keys_new_mute_token` (neuer Geheim-Token = neue Kurzbefehl-Links, die
+  bisherigen gelten sofort nicht mehr – der Ausweg, wenn ein Link in falsche
+  Hände geraten ist; Stumm-Zustand bleibt; KEIN Bump; der Token steht weder in
+  der Antwort noch im Verlauf, Ereignis `key_token_renewed`; der alte
+  `key=`-Link hängt am Bark-Key und wird nur durch `keys_replace_key`
+  entwertet).
   `keys_add` nimmt optional `phone` (gleiche Prüfung; ungültig = nichts
   angelegt). Die Telefonnummer ist reine Dashboard-Anzeige: `keys_list` liefert
   sie nur der Admin-Rolle, NIE `api/keys.php`, Bark-Texte oder der Verlauf.
@@ -525,7 +531,10 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Sperrfenster pro Absender (IPv4 einzeln, IPv6 als /64) nach zu vielen
   Fehlversuchen als Brute-Force-Bremse — der Versuch wird VOR
   `password_verify` atomar gezählt (`throttle_hit()`), Login-POSTs von fremden
-  Seiten (nur `Sec-Fetch-Site: cross-site` — bewusst KEIN Origin/Host-Vergleich,
+  Seiten (maßgeblich ist allein `Sec-Fetch-Site`: erlaubt sind `same-origin`,
+  `none` und ein fehlender Header; `cross-site` UND `same-site` werden
+  abgelehnt – unter `alarm.tunero.dev` wäre `same-site` jede andere Seite auf
+  tunero.dev — bewusst KEIN Origin/Host-Vergleich,
   der hinter einem Host-umschreibenden Proxy jeden Login sperren würde) werden
   vorher abgewiesen; alle
   Throttle-Locks sind nicht fatal, damit ein fehlendes Schreibrecht den Login
@@ -539,12 +548,39 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   weg, sobald die Home-Bildschirm-App geschlossen wird; die Eigenschaften
   kommen aus `dashboard_cookie_options()`; Logout löscht auch
   das Cookie; die Status-Antwort liefert das aktuelle CSRF-Token mit, damit
-  ein alter Tab nach Neu-Login nicht am veralteten Token scheitert),
+  ein alter Tab nach Neu-Login nicht am veralteten Token scheitert;
+  eine Sitzung gibt es NUR für Angemeldete: `index.php`, `dashboard_api.php`
+  und `classic.php` setzen sie über `resume_dashboard_session()` fort (nur
+  wenn ein Sitzungs-Cookie mitkommt; eine nicht angemeldete Sitzung wird
+  sofort verworfen, ohne Lösch-Cookie – das überschriebe bei einer
+  verspäteten Anfrage das Cookie einer Neuanmeldung), angelegt wird sie erst
+  bei erfolgreicher Anmeldung – anonyme Aufrufe bekommen weder Cookie noch
+  Sitzungsdatei (sonst füllte jeder Scanner den Sitzungsordner); die Sitzung
+  ist an die Zugangsdaten gebunden (`auth_stamp` =
+  `dashboard_auth_stamp()`, HMAC über Rolle+Benutzer mit dem Passwort-Hash
+  aus config.php): Passwort ändern meldet ALLE Sitzungen dieses Kontos ab –
+  der einzige Weg, ein verlorenes, angemeldetes Handy auszusperren, denn
+  eine pollende Sitzung läuft sonst nie ab),
   `session_write_close()` direkt
   nach der Auth in `dashboard_api.php` (ein laufender REAL ALARM blockiert so
   keine anderen Requests derselben Sitzung), ändernde Aktionen nur per POST,
-  Sicherheits-Header/CSP zentral oben in `common.php`, `commands.log`-Rotation
-  ab 5 MB, Assets mit `?v=filemtime()`-Cache-Busting). Zusätzlich optionaler
+  Sicherheits-Header/CSP zentral oben in `common.php` (dazu
+  `Cache-Control: no-store` für JEDE PHP-Antwort – ein von einem Proxy/CDN
+  zwischengespeichertes `ok=1` des Kurzbefehl-Links hieße, dass nichts
+  geschaltet wurde), `commands.log`-Rotation
+  ab 5 MB, Assets mit `?v=filemtime()`-Cache-Busting). Hinter einem
+  Reverse-Proxy/Tunnel (geplant: Cloudflare Tunnel) sieht PHP nur die Adresse
+  des Proxys und kein HTTPS: Dafür gibt es `trusted_proxies` +
+  `proxy_client_ip_header` in config.php (beide leer = wie bisher nur
+  `REMOTE_ADDR`). NUR bei Anfragen von einem dieser Proxys zählen
+  `X-Forwarded-Proto` (`request_is_https()` → Secure-Cookie, HSTS) und die
+  Adress-Kopfzeile (`login_client_ip()`, bei `X-Forwarded-For` der LETZTE
+  Eintrag) – alle Bremsen pro Absender laufen über `client_throttle_key()`.
+  Nie eine Forwarded-Kopfzeile ohne diese Prüfung auswerten (sonst sucht sich
+  jeder Besucher seine Adresse aus). `api/health.php` lehnt Aufrufe mit
+  Proxy-Kopfzeilen ab (ein Tunnel auf dem NAS käme sonst als 127.0.0.1 durch).
+  Bark-Antworten werden nicht eingelesen (`bark_post_many()` verwirft den
+  Inhalt, es zählt nur der HTTP-Code; keine Weiterleitungen). Zusätzlich optionaler
   Lese-Benutzer (`dashboard_readonly_user`/`..._password_hash`, Rolle in
   `$_SESSION['role']`, fehlende Rolle = `readonly`, fail-closed): sieht
   Status + Empfängerliste, alle ändernden/auslösenden
@@ -622,7 +658,7 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   daraus, wenn die DSM-Aufgabe fehlt oder hängt. Weil der Wächter als root
   läuft, prüft er die Schreibrechte des Web-Benutzers über einen Selbsttest:
   `web_health_check()` ruft `api/health.php` per `https://127.0.0.1/…` auf
-  (`health_check_url`; antwortet NUR auf Loopback, sonst 404), das als `http`
+  (`health_check_url`; antwortet NUR auf Loopback ohne Proxy-Kopfzeilen, sonst 404), das als `http`
   `data_dir_write_check()` ausführt (Lock, Schreiben, Zurücklesen, Löschen).
   Ab 2 Fehlschlägen in Folge Bark „NAS-Dashboard DEFEKT“, Erinnerung alle
   24 h, einmal „wieder OK“; Verlaufs-Events `nas_web_failed`/
@@ -739,6 +775,10 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   `localStorage` (`fwAlarm.lastUnreached`, max. 12 h – iOS verwirft
   `sessionStorage` mit der Home-Bildschirm-App); angezeigt wird
   `unreached.entries` (zusammengeführt), nie nur das frische `failed`.
+  Abmelden von Hand löscht beides vom Gerät (`store.forgetDevice()`: die
+  Namen und den Merker „Versand ohne Ergebnis“ – sonst läse sie der Nächste
+  an diesem Browser); läuft die Sitzung nur ab (401), bleiben sie bewusst
+  stehen. Design und Browser-Hinweis bleiben immer.
   Scheitert ein Speichern, erhöht der Store `state.rev[slice]` – Bedienelemente
   mit eigenem Zustand sind darauf geschlüsselt und springen zurück.
   Alarm an alle, Entwarnung und die Nachsendung sperrt NUR `alarmInFlight`

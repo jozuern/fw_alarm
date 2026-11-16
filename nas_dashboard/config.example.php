@@ -34,6 +34,23 @@ return [
     'login_max_failures' => 8,
     'login_lockout_window_seconds' => 900,
 
+    // ==== Nur hinter einem Reverse-Proxy / Tunnel (sonst leer lassen) ========
+    // Läuft das Dashboard hinter einem Proxy auf demselben Rechner (Cloudflare
+    // Tunnel, Nginx, DSM-"Reverse Proxy"), kommen aus Sicht von PHP ALLE
+    // Aufrufe von dessen Adresse, und HTTPS endet schon am Proxy. Ohne diese
+    // beiden Einträge zählt die Login-Sperre dann alle Besucher als EINE
+    // Adresse (jeder sperrt mit ein paar Fehlversuchen den Admin aus), und das
+    // Sitzungs-Cookie geht ohne "Secure" raus.
+    // trusted_proxies: Adressen, von denen der Proxy PHP anspricht - nur von
+    // dort werden die Kopfzeilen X-Forwarded-Proto und die unten genannte
+    // angenommen. NIE eintragen, wenn PHP auch direkt aus dem Internet
+    // erreichbar ist (dann könnte sich jeder eine Adresse aussuchen).
+    // proxy_client_ip_header: Kopfzeile, in die DIESER Proxy die echte Adresse
+    // des Besuchers schreibt: 'CF-Connecting-IP' (Cloudflare Tunnel),
+    // 'X-Real-IP' oder 'X-Forwarded-For' (dort zählt der letzte Eintrag).
+    'trusted_proxies' => [],            // z.B. ['127.0.0.1', '::1']
+    'proxy_client_ip_header' => '',     // z.B. 'CF-Connecting-IP'
+
     // Nach so vielen Sekunden ohne Status-Push gilt die Box als offline.
     'offline_after_seconds' => 180,
 

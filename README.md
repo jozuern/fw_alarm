@@ -577,6 +577,10 @@ https://dein-name.synology.me/fw_alarm/api/mute.php?t=GEHEIM_TOKEN&state=off   (
 (Die ältere Link-Form `?key=EIGENER_BARK_KEY` funktioniert weiterhin, damit
 bestehende Kurzbefehle nicht kaputtgehen.)
 
+Ist ein Link in falsche Hände geraten (weitergeleitete Nachricht,
+Bildschirmfoto, altes Handy), erzeugst du am Empfänger mit „Neue Links
+erzeugen" neue – die bisherigen funktionieren dann sofort nicht mehr.
+
 Das lässt sich auf dem iPhone vollautomatisch machen (App **Kurzbefehle**):
 
 1. Kurzbefehle-App → Reiter **Automation** → **Neue Automation** → **Ankommen**.

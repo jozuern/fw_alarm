@@ -1058,6 +1058,19 @@
   const keyRename = (id, label) => keyAction({ action: 'keys_rename', id: String(id), label: String(label || '').trim() });
   const keyReplace = (id, key) => keyAction({ action: 'keys_replace_key', id: String(id), key: String(key || '').trim() });
   const keyPhone = (id, phone) => keyAction({ action: 'keys_set_phone', id: String(id), phone: String(phone || '').trim() });
+  // Neue Kurzbefehl-Links (neuer Geheim-Token): Die bisherigen Links gelten
+  // danach nicht mehr. Den neuen Token bringt das Nachladen der Liste.
+  const keyNewLinks = (id) => keyAction({ action: 'keys_new_mute_token', id: String(id) });
+
+  // Abmelden von Hand: Was dieses Gerät sich gemerkt hat (Namen der zuletzt
+  // nicht Erreichten, Merker „Versand ohne Ergebnis“), geht mit - sonst läse
+  // es der Nächste an diesem Browser. Design und Browser-Hinweis bleiben
+  // (nichts Persönliches). Läuft die Sitzung nur AB (401), bleibt die Liste
+  // bewusst stehen: Sie wird nach der Neuanmeldung noch gebraucht.
+  function forgetDevice() {
+    writeStored(UNREACHED_STORE, null);
+    writeStored(SEND_STORE, null);
+  }
 
   // Test-Push: höchstens einer gleichzeitig (der Versand dauert bis ~20 s).
   // slice: null - er ändert keine Listendaten; scheitert er, darf er die
@@ -1181,8 +1194,8 @@
     refreshAll, refreshStatus, refreshKeys, refreshLog, refreshAlarmInfo, refreshNotify, refreshSettings,
     openConfirm, closeConfirm, confirmNow, confirmAlarm, confirmResend,
     enqueueTest, enqueueBoxAlarm, cancelCommand, sendNasAlarm, clearResult, dismissResult,
-    demoSet, keyAdd, keyDelete, keyMute, keyPermanent, keyVolume, keyTest, keyRename, keyReplace, keyPhone,
-    notifySet, notifyTest, settingsSet,
+    demoSet, keyAdd, keyDelete, keyMute, keyPermanent, keyVolume, keyTest, keyRename, keyReplace, keyPhone, keyNewLinks,
+    notifySet, notifyTest, settingsSet, forgetDevice,
     setLogFilter, setLogQuery, loadMoreLog, verifyInLog,
     setBrowserAlert, onTransition
   };

@@ -190,7 +190,9 @@
   // ---- Rahmen ------------------------------------------------------------------
   function logout() {
     const form = root.document.getElementById('logout-form');
-    if (form) form.submit();
+    if (!form) return;
+    store.forgetDevice();   // gemerkte Namen gehen mit der Abmeldung
+    form.submit();
   }
 
   function NavLabel({ item, badge }) {

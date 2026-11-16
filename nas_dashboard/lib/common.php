@@ -9,16 +9,20 @@ date_default_timezone_set('Europe/Berlin');
 // Für den ESP32 sind die Header wirkungslos, aber unschädlich.
 if (!headers_sent()) {
     header('X-Frame-Options: DENY');
-    header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    // Jede PHP-Antwort ist dynamisch (Status, Empfängerliste, Kurzbefehl-Link):
+    // Weder der Browser noch ein Proxy/CDN davor darf sie zwischenspeichern.
+    // Ein zwischengespeichertes "ok=1" des Kurzbefehl-Links hieße sonst: Der
+    // Kollege glaubt, er sei wieder laut - das NAS hat den Aufruf nie gesehen.
+    header('Cache-Control: no-store');
     header('X-Content-Type-Options: nosniff');
     header('Referrer-Policy: strict-origin-when-cross-origin');
     header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
     // Privates Betriebs-Werkzeug im offenen Internet: Suchmaschinen sollen
     // weder die Login-Seite noch API-Antworten indexieren.
     header('X-Robots-Tag: noindex, nofollow');
-    if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
-        header('Strict-Transport-Security: max-age=31536000');
-    }
+    // Strict-Transport-Security setzt load_config() - ob die Anfrage per HTTPS
+    // kam, hängt hinter einem Proxy von config.php ab (request_is_https()).
 }
 
 // Guard-Zeile am Anfang jeder Laufzeitdatei: Die Dateien heißen bewusst *.php,
@@ -39,7 +43,83 @@ function load_config(): array
     if (isset($config['timezone'])) {
         date_default_timezone_set((string)$config['timezone']);
     }
+    app_config($config);
+    if (!headers_sent() && request_is_https()) {
+        header('Strict-Transport-Security: max-age=31536000');
+    }
     return $config;
+}
+
+// Die geladene Konfiguration für Funktionen, die tief im Ablauf stecken und
+// kein $config durchgereicht bekommen (Cookie-Eigenschaften, Absender-Adresse,
+// Sitzungsprüfung). load_config() setzt sie; davor ist sie leer.
+function app_config(?array $set = null): array
+{
+    static $config = [];
+    if ($set !== null) {
+        $config = $set;
+    }
+    return $config;
+}
+
+// ================= HINTER EINEM REVERSE-PROXY / TUNNEL =====================
+// Läuft das Dashboard hinter einem Proxy (Cloudflare Tunnel, Nginx/DSM-
+// Reverse-Proxy auf demselben Host), sieht PHP als Absender JEDER Anfrage die
+// Adresse des Proxys und kein HTTPS. Ohne Gegenmaßnahme hieße das:
+// - die Login-Sperre zählt alle Besucher als EINE Adresse - jeder im Internet
+//   sperrt mit 8 Fehlversuchen den Admin aus (genau dann, wenn er den REAL
+//   ALARM braucht);
+// - das Sitzungs-Cookie ginge ohne "Secure" raus, HSTS fehlte.
+// Deshalb zwei Einträge in config.php (beide leer = wie bisher, es zählt
+// allein REMOTE_ADDR):
+//   trusted_proxies         Adressen, von denen der Proxy PHP anspricht
+//                           (z.B. ['127.0.0.1', '::1'])
+//   proxy_client_ip_header  Kopfzeile, in die DIESER Proxy die echte Adresse
+//                           schreibt ('CF-Connecting-IP', 'X-Real-IP' oder
+//                           'X-Forwarded-For')
+// Die Kopfzeilen zählen NUR bei Anfragen, die wirklich von einem dieser
+// Proxys kommen - sonst könnte sich jeder Besucher eine Adresse aussuchen
+// (Sperre umgehen oder gezielt die Adresse des Admins sperren).
+
+// Adresse in vergleichbarer Form (gepackt; IPv4-in-IPv6 ::ffff:a.b.c.d zählt
+// wie die IPv4). null = keine gültige Adresse.
+function packed_ip(string $ip): ?string
+{
+    $bin = @inet_pton(trim($ip));
+    if ($bin === false) {
+        return null;
+    }
+    if (strlen($bin) === 16 && substr($bin, 0, 12) === str_repeat("\0", 10) . "\xff\xff") {
+        return substr($bin, 12);
+    }
+    return $bin;
+}
+
+function request_from_trusted_proxy(): bool
+{
+    $proxies = app_config()['trusted_proxies'] ?? [];
+    $remote = packed_ip((string)($_SERVER['REMOTE_ADDR'] ?? ''));
+    if (!is_array($proxies) || $remote === null) {
+        return false;
+    }
+    foreach ($proxies as $proxy) {
+        if (is_string($proxy) && packed_ip($proxy) === $remote) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Kam die Anfrage beim Besucher per HTTPS an? Direkt (Web Station) sagt es
+// der Webserver; hinter einem vertrauenswürdigen Proxy dessen
+// X-Forwarded-Proto.
+function request_is_https(): bool
+{
+    if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+        return true;
+    }
+    return request_from_trusted_proxy()
+        && strtolower(trim((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''))) === 'https';
 }
 
 function data_dir(array $config): string
@@ -455,9 +535,23 @@ function require_machine_auth(array $config): void
 // Alle Lock-Zugriffe sind NICHT fatal: Fehlt das Schreibrecht auf den
 // data_dir, wird nur nicht gebremst - Login und Alarm bleiben erreichbar.
 
+// Adresse des Besuchers: REMOTE_ADDR - außer die Anfrage kommt von einem
+// vertrauenswürdigen Proxy (siehe oben), dann die Adresse aus dessen
+// Kopfzeile. Bei X-Forwarded-For zählt der LETZTE Eintrag: Den hat der Proxy
+// selbst angehängt, alles davor kann der Besucher frei erfinden.
 function login_client_ip(): string
 {
-    return (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    $remote = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    if (!request_from_trusted_proxy()) {
+        return $remote;
+    }
+    $header = strtoupper(str_replace('-', '_', trim((string)(app_config()['proxy_client_ip_header'] ?? ''))));
+    if ($header === '' || preg_match('/^[A-Z0-9_]+$/', $header) !== 1) {
+        return $remote;
+    }
+    $parts = explode(',', (string)($_SERVER['HTTP_' . $header] ?? ''));
+    $candidate = trim((string)end($parts));
+    return packed_ip($candidate) !== null ? $candidate : $remote;
 }
 
 // Schlüssel, unter dem ein Absender gezählt wird: IPv4 einzeln, IPv6 als
@@ -575,7 +669,7 @@ function dashboard_cookie_options(): array
 {
     return [
         'path' => dashboard_cookie_path(),
-        'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+        'secure' => request_is_https(),
         'httponly' => true,
         'samesite' => 'Strict',
     ];
@@ -592,6 +686,8 @@ function refresh_dashboard_cookie(): void
         ['expires' => time() + SESSION_MAX_IDLE_SECONDS] + dashboard_cookie_options());
 }
 
+const DASHBOARD_SESSION_NAME = 'boss925_dashboard';
+
 function start_dashboard_session(): void
 {
     // Ohne diese Zeile räumt der Session-GC von PHP eine Sitzung schon nach
@@ -600,9 +696,62 @@ function start_dashboard_session(): void
     ini_set('session.gc_maxlifetime', (string)SESSION_MAX_IDLE_SECONDS);
     // Nur vom Server vergebene Sitzungs-IDs annehmen (keine untergeschobenen).
     ini_set('session.use_strict_mode', '1');
-    session_name('boss925_dashboard');
+    // Die Sitzungs-ID kommt ausschließlich aus dem Cookie - nie aus der
+    // Adresse (dort landete sie in Logs, Verlauf und Referer).
+    ini_set('session.use_only_cookies', '1');
+    ini_set('session.use_trans_sid', '0');
+    session_name(DASHBOARD_SESSION_NAME);
     session_set_cookie_params(['lifetime' => SESSION_MAX_IDLE_SECONDS] + dashboard_cookie_options());
     session_start();
+}
+
+// Sitzung NUR fortsetzen, nie für einen Unbekannten anlegen: Ohne
+// Sitzungs-Cookie wird gar keine geöffnet, und eine Sitzung, die nicht (mehr)
+// angemeldet ist, wird sofort wieder verworfen. Früher bekam jeder anonyme
+// Aufruf (Suchmaschine, Scanner) eine eigene leere Sitzung samt 12-h-Cookie -
+// eine Datei pro Aufruf, die erst nach 12 h aufgeräumt wird. Wer das
+// Dashboard mit Anfragen überzieht, füllte so den Sitzungsordner des NAS.
+// true = angemeldet (Sitzung offen, last_seen und Cookie erneuert).
+// Das Cookie wird hier bewusst NICHT gelöscht: Trifft eine noch laufende
+// Anfrage mit der ALTEN ID erst nach einer Neuanmeldung ein, überschriebe
+// ein Lösch-Cookie sonst das gerade vergebene neue.
+function resume_dashboard_session(): bool
+{
+    $id = $_COOKIE[DASHBOARD_SESSION_NAME] ?? null;
+    if (!is_string($id) || preg_match('/^[A-Za-z0-9,-]{16,256}$/', $id) !== 1) {
+        return false;
+    }
+    start_dashboard_session();
+    if (is_dashboard_authed()) {
+        return true;
+    }
+    $_SESSION = [];
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_destroy();
+    }
+    if (!headers_sent()) {
+        header_remove('Set-Cookie');
+    }
+    return false;
+}
+
+// Fingerabdruck der Zugangsdaten, mit denen sich jemand angemeldet hat: Die
+// Sitzung gilt nur, solange Benutzername UND Passwort-Hash in config.php
+// dieselben sind. Wer das Passwort ändert (verlorenes oder entsperrt
+// liegengebliebenes Handy, weitergegebenes Passwort), meldet damit ALLE
+// Sitzungen dieses Kontos ab - sonst bliebe eine offene Sitzung gültig,
+// solange ihr Tab weiterpollt (das zählt als Aktivität), also unbegrenzt.
+// Ebenso endet die Sitzung des Lese-Benutzers, wenn sein Konto entfernt wird.
+// '' = dieses Konto gibt es (so) nicht mehr.
+function dashboard_auth_stamp(array $config, string $role, string $user): string
+{
+    $isAdmin = $role === 'admin';
+    $name = (string)($config[$isAdmin ? 'dashboard_user' : 'dashboard_readonly_user'] ?? '');
+    $hash = (string)($config[$isAdmin ? 'dashboard_password_hash' : 'dashboard_readonly_password_hash'] ?? '');
+    if ($name === '' || $hash === '' || !hash_equals($name, $user)) {
+        return '';
+    }
+    return hash_hmac('sha256', $role . "\n" . $user, $hash);
 }
 
 // Abmelden: Sitzungsdaten leeren, Sitzung zerstören UND das Cookie löschen
@@ -628,6 +777,13 @@ function is_dashboard_authed(): bool
     }
     $last = (int)($_SESSION['last_seen'] ?? 0);
     if ($last > 0 && time() - $last > SESSION_MAX_IDLE_SECONDS) {
+        $_SESSION = [];
+        session_destroy();
+        return false;
+    }
+    // Zugangsdaten seit der Anmeldung geändert (siehe dashboard_auth_stamp)?
+    $stamp = dashboard_auth_stamp(app_config(), dashboard_role(), (string)($_SESSION['user'] ?? ''));
+    if ($stamp === '' || !hash_equals($stamp, (string)($_SESSION['auth_stamp'] ?? ''))) {
         $_SESSION = [];
         session_destroy();
         return false;
@@ -1002,6 +1158,9 @@ function log_event_types(): array
         ]],
         // Die Telefonnummer selbst steht bewusst NIE im Verlauf.
         'key_phone_changed' => ['cat' => 'keys', 'fields' => ['by' => $by, 'label' => $label]],
+        // Neue Kurzbefehl-Links (Geheim-Token ersetzt) - der Token selbst
+        // steht nie im Verlauf.
+        'key_token_renewed' => ['cat' => 'keys', 'fields' => ['by' => $by, 'label' => $label]],
         'key_muted' => ['cat' => 'keys', 'fields' => [
             'by' => $by, 'label' => $label, 'key' => $key, 'source' => ['str', 'source'],
         ]],
@@ -2078,6 +2237,13 @@ function bark_post_many(array $config, array $jobs, int $tries): array
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_CONNECTTIMEOUT => 5,
                 CURLOPT_TIMEOUT => 10,
+                // Es zählt nur der HTTP-Code. Den Inhalt der Antwort gar nicht
+                // erst sammeln: Ein gestörter oder gekaperter Bark-Server
+                // könnte sonst mit einer riesigen Antwort den Speicher von PHP
+                // sprengen - mitten im REAL ALARM, das Ergebnis ginge verloren.
+                // Bewusst auch keine Weiterleitungen (cURL-Standard).
+                CURLOPT_WRITEFUNCTION => static fn($handle, string $chunk): int => strlen($chunk),
+                CURLOPT_FOLLOWLOCATION => false,
             ]);
             curl_multi_add_handle($multi, $ch);
             $handles[$i] = $ch;

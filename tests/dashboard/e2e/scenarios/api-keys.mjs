@@ -76,17 +76,44 @@ export default async function ({ base, assert }) {
     const ro = await apiSession(base, 'leser', 'test');
     const roList = await ro.get('keys_list');
     assert(roList.keys.length > 0 && roList.keys.every((x) => !('phone' in x)), 'Lese-Rolle sieht kein phone');
-    for (const a of ['keys_rename', 'keys_replace_key', 'keys_set_phone']) {
+    assert(roList.keys.every((x) => !('mute_token' in x)), 'Lese-Rolle sieht keinen Kurzbefehl-Token');
+    for (const a of ['keys_rename', 'keys_replace_key', 'keys_set_phone', 'keys_new_mute_token']) {
       assert((await ro.post({ action: a, id: id1, label: 'x', key: k3, phone: '123' })).status === 403, a + ' für Lese-Rolle 403');
     }
 
-    // Verlauf: Ereignisse da, keine Telefonnummer, kein Klartext-Key
+    // Neue Kurzbefehl-Links: Der alte Link gilt sofort nicht mehr (ein
+    // weitergegebener Link lässt sich so entwerten), der neue schaltet.
+    const mute = async (t, state) => {
+      const res = await fetch(`${base}/api/mute.php?` + new URLSearchParams({ t, state }));
+      return { status: res.status, text: await res.text(), cache: res.headers.get('cache-control') || '' };
+    };
+    let m = await mute(token, 'on');
+    assert(m.status === 200 && /muted=1/.test(m.text), 'alter Link schaltet vor dem Erneuern: ' + m.text);
+    assert(/no-store/.test(m.cache), 'Kurzbefehl-Antwort darf nicht zwischengespeichert werden: ' + m.cache);
+    const vTok = (await list()).version;
+    r = await s.post({ action: 'keys_new_mute_token', id: id1 });
+    assert(r.ok === true, 'keys_new_mute_token: ' + JSON.stringify(r));
+    assert(!JSON.stringify(r).includes(token), 'Antwort enthält keinen Token');
+    k = byId(await list(), id1);
+    const token2 = k.mute_token;
+    assert(typeof token2 === 'string' && token2.length >= 8 && token2 !== token, 'neuer Token: ' + token2);
+    assert(k.muted === true, 'Stumm-Zustand bleibt beim Erneuern');
+    assert((await list()).version === vTok, 'neue Links erhöhen die Version nicht');
+    m = await mute(token, 'off');
+    assert(m.status === 404, 'alter Link nach dem Erneuern ungültig, war HTTP ' + m.status);
+    assert(byId(await list(), id1).muted === true, 'alter Link hat nichts geschaltet');
+    m = await mute(token2, 'off');
+    assert(m.status === 200 && /muted=0/.test(m.text), 'neuer Link schaltet: ' + m.text);
+    assert((await s.post({ action: 'keys_new_mute_token', id: 999999 })).ok === false, 'unbekannte id abgelehnt');
+
+    // Verlauf: Ereignisse da, keine Telefonnummer, kein Klartext-Key, kein Token
     const logRes = await s.get('log_view', { limit: 40, filter: 'keys' });
     const events = logRes.entries.map((e) => e.event);
-    for (const e of ['key_renamed', 'key_replaced', 'key_phone_changed']) assert(events.includes(e), 'Verlauf ohne ' + e);
+    for (const e of ['key_renamed', 'key_replaced', 'key_phone_changed', 'key_token_renewed']) assert(events.includes(e), 'Verlauf ohne ' + e);
     const raw = JSON.stringify(logRes);
     assert(!raw.includes('1234567') && !raw.includes('99887'), 'Telefonnummer im Verlauf');
     assert(!raw.includes(k1) && !raw.includes(k2), 'Klartext-Key im Verlauf');
+    assert(!raw.includes(token) && !raw.includes(token2), 'Kurzbefehl-Token im Verlauf');
 
     // Telefon entfernen
     assert((await s.post({ action: 'keys_set_phone', id: id1, phone: '' })).ok === true, 'phone leeren');

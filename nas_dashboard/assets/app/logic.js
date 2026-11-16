@@ -905,6 +905,8 @@
         return mk(`Bark-Key von "${entry.label}" ersetzt (${entry.old_key} → ${entry.key})${who}`, '', 'edit');
       case 'key_phone_changed':
         return mk(`Telefonnummer von "${entry.label}" geändert${who}`, '', 'edit');
+      case 'key_token_renewed':
+        return mk(`Neue Kurzbefehl-Links für "${entry.label}" erzeugt (die alten gelten nicht mehr)${who}`, '', 'edit');
       case 'key_muted': {
         const src = entry.source === 'shortcut' ? ' – per Kurzbefehl-Link' : who;
         return mk(`Empfänger "${entry.label}" stummgeschaltet (Arbeitsmodus, Alarme mit Stumm-Lautstärke)${src}`, 'warn', 'mute');

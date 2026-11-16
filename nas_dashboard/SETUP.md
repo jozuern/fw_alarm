@@ -15,11 +15,28 @@ bearbeiten → Erweiterungen), dass **curl** aktiviert ist – der manuelle
 REAL ALARM sendet damit direkt vom NAS an Bark (an alle Empfänger parallel).
 Weitere Erweiterungen (z. B. mbstring) sind nicht nötig.
 
-**Kein DSM-Reverse-Proxy davor:** Läuft das Dashboard hinter dem
-„Reverse Proxy“ von DSM (Anmeldeportal → Erweitert), kommen aus Sicht von PHP
-ALLE Aufrufe von `127.0.0.1`. Dann zählt die Login-Sperre alle Besucher als
-eine Adresse (ein Angreifer sperrt alle aus), und `api/health.php` wäre von
-außen erreichbar. Web Station direkt auf Port 443 ausliefern lassen.
+**Möglichst kein Reverse-Proxy davor:** Läuft das Dashboard hinter einem
+Proxy auf demselben Rechner („Reverse Proxy“ von DSM unter Anmeldeportal →
+Erweitert, Nginx, Cloudflare Tunnel), kommen aus Sicht von PHP ALLE Aufrufe von
+`127.0.0.1`, und HTTPS endet schon am Proxy. Am einfachsten: Web Station direkt
+auf Port 443 ausliefern lassen. Geht das nicht, in `config.php` **beide**
+Einträge setzen:
+
+```php
+'trusted_proxies' => ['127.0.0.1', '::1'],
+'proxy_client_ip_header' => 'CF-Connecting-IP',   // bzw. 'X-Real-IP' / 'X-Forwarded-For'
+```
+
+Ohne sie zählt die Login-Sperre alle Besucher als eine Adresse (jeder im
+Internet sperrt mit ein paar Fehlversuchen den Admin aus – genau dann, wenn er
+den REAL ALARM braucht), und das Sitzungs-Cookie geht ohne „Secure“ raus. Der
+Proxy muss `X-Forwarded-Proto: https` mitschicken (Cloudflare Tunnel tut das).
+Prüfen: Nach einer Anmeldung über die öffentliche Adresse zeigt die Meldung
+„Anmeldung am Dashboard“ (Einstellungen → Meldungen an mich) die echte Adresse
+des Besuchers, nicht `127.0.0.1`. `api/health.php` lehnt weitergereichte
+Aufrufe ab (erkennbar an den Kopfzeilen des Proxys) und bleibt so von außen
+unerreichbar. Die Einträge NICHT setzen, wenn PHP zusätzlich direkt aus dem
+Internet erreichbar ist.
 
 ## 2. Dateien ablegen
 
@@ -334,6 +351,15 @@ sicher neu holt.
   sowie `index.php`-Platzhalter gegen Verzeichnislisting in `api/`, `lib/`,
   `cron/` und im `data_dir`. Logins von fremden Seiten (Login-CSRF) werden
   abgewiesen, bevor sie die Login-Sperre zählen.
+- **Handy verloren oder Passwort weitergegeben?** In `config.php` einen neuen
+  `dashboard_password_hash` eintragen: Das meldet sofort ALLE Sitzungen dieses
+  Kontos ab (auch die auf dem verlorenen Gerät). Eine offene Sitzung läuft
+  sonst nicht von selbst ab, solange ihr Tab weiter abfragt. Entsprechend
+  beendet ein geänderter/entfernter Lese-Benutzer dessen Sitzungen.
+- **Kurzbefehl-Link in falschen Händen?** Am Empfänger „Neue Links erzeugen“
+  – die bisherigen Links gelten sofort nicht mehr; die neuen im Kurzbefehl
+  des Empfängers eintragen. (Alte Links der Form `?key=…` hängen am Bark-Key:
+  dafür „Key ersetzen“.)
 - Kurzbefehl-Links (`api/mute.php`) möglichst nicht per Messenger/Mail
   verschicken: Link-Vorschauen und Mail-Scanner rufen Links schon beim
   Absender ab. Bekannte Vorschau-Abrufe (und HEAD-Anfragen) schalten zwar

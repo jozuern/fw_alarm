@@ -17,6 +17,17 @@ if (!in_array($remote, ['127.0.0.1', '::1', '::ffff:127.0.0.1'], true)) {
     http_response_code(404);
     exit;
 }
+// Von einem Proxy/Tunnel auf dem NAS weitergereicht (Cloudflare Tunnel,
+// Reverse-Proxy)? Der kommt ebenfalls von 127.0.0.1, bringt aber eine dieser
+// Kopfzeilen mit - der Wächter (cURL direkt) schickt keine davon. So bleibt
+// der Selbsttest auch hinter einem Proxy von außen unerreichbar.
+foreach (['HTTP_X_FORWARDED_FOR', 'HTTP_X_FORWARDED_HOST', 'HTTP_X_FORWARDED_PROTO', 'HTTP_X_REAL_IP',
+    'HTTP_FORWARDED', 'HTTP_VIA', 'HTTP_CF_CONNECTING_IP', 'HTTP_CF_RAY', 'HTTP_CDN_LOOP'] as $proxyHeader) {
+    if (isset($_SERVER[$proxyHeader])) {
+        http_response_code(404);
+        exit;
+    }
+}
 
 $config = load_config();
 $result = data_dir_write_check($config);

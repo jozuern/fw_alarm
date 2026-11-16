@@ -9,9 +9,8 @@
 require __DIR__ . '/lib/common.php';
 
 $config = load_config();
-start_dashboard_session();
 
-if (!is_dashboard_authed()) {
+if (!resume_dashboard_session()) {
     header('Location: index.php');
     exit;
 }

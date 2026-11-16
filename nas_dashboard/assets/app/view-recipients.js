@@ -352,9 +352,23 @@
     };
     const row = (state, label) => html`<${ui.Row} key=${state} class=${`rcp-link-${state}`} label=${label} icon="link" iconTone="neutral"
       value=${copied === state ? '✓ kopiert' : 'Kopieren'} tone=${copied === state ? 'ok' : ''} chevron=${false} onClick=${() => copy(state)}/>`;
+    // Link in falsche Hände geraten (weitergeleitet, Bildschirmfoto, altes
+    // Handy)? Neue Links erzeugen - die bisherigen gelten sofort nicht mehr.
+    const renew = () => {
+      setMsg(null);
+      store.openConfirm({
+        title: `Neue Kurzbefehl-Links für „${entry.label}“?`,
+        text: 'Die bisherigen Links „Stumm“ und „Laut“ funktionieren danach NICHT mehr – auch nicht in den Kurzbefehlen auf dem iPhone des Empfängers. Dort müssen die neuen Links eingetragen werden. Gedacht für den Fall, dass ein Link in falsche Hände geraten ist.',
+        confirmLabel: 'Ja, neue Links erzeugen',
+        hold: false,
+        onConfirm: () => store.keyNewLinks(Number(entry.id)).then(show)
+      });
+    };
     return [
       row('on', 'Kurzbefehl-Link „Stumm“'),
       row('off', 'Kurzbefehl-Link „Laut“'),
+      html`<${ui.Row} key="renew" class="rcp-link-renew" label="Neue Links erzeugen" sub="macht die bisherigen Links ungültig"
+        icon="restart" iconTone="neutral" onClick=${renew}/>`,
       msg ? html`<li class="row row-block rcp-msg-row" key="msg"><${ui.Msg} msg=${msg} class="rcp-msg-link"/></li>` : null
     ];
   }

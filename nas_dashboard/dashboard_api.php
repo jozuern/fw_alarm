@@ -5,13 +5,17 @@ const FW_ALARM_JSON_API = true;
 require __DIR__ . '/lib/common.php';
 
 $config = load_config();
-start_dashboard_session();
-require_dashboard_auth();
+// Nur eine bestehende, angemeldete Sitzung fortsetzen - ein Aufruf ohne
+// gültige Anmeldung legt keine an (siehe resume_dashboard_session()).
+if (!resume_dashboard_session()) {
+    http_response_code(401);
+    json_response(['ok' => false]);
+}
 // Sitzung sofort wieder freigeben: PHP-Datei-Sessions bleiben gesperrt,
 // solange ein Skript läuft. Ein REAL ALARM (bis ~1 min) hätte sonst ALLE
 // anderen Anfragen dieses Browsers blockiert - die Statusanzeige fror ein,
 // ENTWARNUNG und Abbrechen warteten. $_SESSION bleibt danach lesbar (CSRF,
-// Rolle, Benutzer); last_seen hat require_dashboard_auth() schon gesetzt.
+// Rolle, Benutzer); last_seen hat resume_dashboard_session() schon gesetzt.
 session_write_close();
 
 $method = (string)($_SERVER['REQUEST_METHOD'] ?? 'GET');
@@ -51,6 +55,7 @@ const DASHBOARD_ACTIONS = [
     'keys_rename'             => ['post' => true, 'csrf' => true, 'admin' => true],
     'keys_replace_key'        => ['post' => true, 'csrf' => true, 'admin' => true],
     'keys_set_phone'          => ['post' => true, 'csrf' => true, 'admin' => true],
+    'keys_new_mute_token'     => ['post' => true, 'csrf' => true, 'admin' => true],
     'keys_mute'               => ['post' => true, 'csrf' => true, 'admin' => true],
     'keys_set_mute_permanent' => ['post' => true, 'csrf' => true, 'admin' => true],
     'keys_set_mute_volume'    => ['post' => true, 'csrf' => true, 'admin' => true],
@@ -725,6 +730,36 @@ if ($action === 'keys_set_phone') {
         log_key_event($config, 'key_phone_changed', $result['entry'], $user);
     }
     unset($result['entry']);
+
+    json_response($result);
+}
+
+// Neue Kurzbefehl-Links für EINEN Empfänger: vergibt einen neuen Geheim-Token,
+// die bisherigen Links (api/mute.php?t=...) sind damit sofort ungültig. Der
+// Ausweg, wenn ein Link in falsche Hände geraten ist (weitergeleitete
+// Nachricht, Bildschirmfoto, altes Handy) - wer ihn kennt, könnte den Kollegen
+// sonst auf Dauer immer wieder stumm schalten. Am Stumm-Zustand selbst ändert
+// sich nichts (ggf. danach von Hand laut schalten). KEIN Versions-Bump: Die
+// Box kennt die Tokens nicht. Der neue Token steht nicht in der Antwort - die
+// Oberfläche holt ihn mit der Liste (keys_list, nur Admin). Der alte
+// key=-Link (eigener Bark-Key) bleibt gültig; den entwertet nur "Key ersetzen".
+if ($action === 'keys_new_mute_token') {
+    $id = (int)($_POST['id'] ?? 0);
+
+    $result = mutate_alarm_keys($config, function (array &$state) use ($id): array {
+        $idx = find_key_index($state, $id);
+        if ($idx < 0) {
+            return ['ok' => false, 'message' => 'Empfänger nicht gefunden.'];
+        }
+        $state['keys'][$idx]['mute_token'] = new_mute_token();
+        return ['ok' => true, 'changed' => true, 'write' => true, 'entry' => $state['keys'][$idx],
+            'message' => 'Neue Kurzbefehl-Links erzeugt – die bisherigen Links funktionieren ab sofort nicht mehr. '
+                . 'Die neuen Links kopieren und im Kurzbefehl des Empfängers eintragen.'];
+    });
+    if (!empty($result['ok']) && !empty($result['changed'])) {
+        log_key_event($config, 'key_token_renewed', $result['entry'], $user);
+    }
+    unset($result['entry']);   // weder Klartext-Key noch Token in der Antwort
 
     json_response($result);
 }
