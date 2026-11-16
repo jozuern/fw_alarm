@@ -272,7 +272,7 @@ Expected: syntax ok; remaining `NAS` literals only in comments or the default `T
 - [ ] **C3:** User presses **TEST** in the new dashboard → passive push arrives on the user's phone; command shows `acked`.
 - [ ] **C4:** User toggles their OWN old mute link (old NAS URL) on, then off; dashboard follows both times; final state loud.
 - [ ] **C5:** Deploy `index.php` and `classic.php` from `bridge-live/` to the NAS; delete `cron/` and `api/health.php` from the NAS (old entry points that could still send pushes). Check: `https://dein-name.synology.me/fw_alarm/` → 302 to `https://alarm.tunero.dev/`.
-- [ ] **C6:** Everyone who opens the dashboard on the old address re-adds the Home-Bildschirm-App / bookmark from `https://alarm.tunero.dev/` and logs in there (assign a task to the user; read-only users per the user's answer in Task 8).
+- [ ] **C6:** The C5 redirect already takes everyone on the old address to the new one, so this is not urgent: assign the user a task to re-add their Home-Bildschirm-App / bookmark from `https://alarm.tunero.dev/` and to tell the one read-only user to do the same when convenient (user's answer 2026-11-16: one read-only user, not critical).
 - [ ] **C7 (next morning):** heartbeat arrived as usual; 96 cron runs in the journal without error; dashboard still logged in on the iPhone after the night; nginx log shows no 5xx bursts. Then `sudo rm -rf /srv/fw-alarm/data.staging /srv/fw-alarm/test` and delete `<scratchpad>/staging-secrets.env`.
 
 ---

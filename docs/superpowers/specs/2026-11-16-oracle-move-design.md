@@ -1,6 +1,7 @@
 # Umzug des Dashboards auf die Oracle-VM — Design
 
-Stand: 2026-11-16 · Status: Entwurf, wartet auf Freigabe. Maßgeblich für den
+Stand: 2026-11-16 · Status: freigegeben (Antworten des Nutzers zur alten
+Adresse und zu Passkeys eingearbeitet), Umsetzung nicht begonnen. Maßgeblich für den
 heutigen Stand bleibt CLAUDE.md; dieses Dokument beschreibt die Planung.
 
 ## 1. Absicht und Warum
@@ -209,7 +210,14 @@ nach dem Umzug an die Stelle des Dashboards im NAS-Webordner tritt.
   „Feierabend → laut“ in den Halt fiel, unbemerkt stumm.
 - **Ersatzseiten:** `index.php` und `classic.php` leiten auf die neue
   Adresse um (302); `dashboard_api.php` antwortet 410 mit
-  `{"ok":false,"code":"moved",…}` (im Halt-Zustand 503).
+  `{"ok":false,"code":"moved",…}` (im Halt-Zustand 503). Bewusst 302,
+  nicht 301: Eine dauerhafte Weiterleitung merkt sich der Browser, ein
+  Rückweg auf das NAS käme dann bei niemandem mehr an. Wer die alte
+  Adresse nutzt (der Admin und eine Person mit Lese-Zugang, laut Nutzer
+  nicht kritisch), landet so automatisch auf der neuen; die
+  Home-Bildschirm-App einmal neu anzulegen ist trotzdem sinnvoll (iOS
+  öffnet eine fremde Adresse aus der App heraus in einem Browser-Fenster),
+  aber nicht eilig.
 - **Bleibt auf dem NAS:** `assets/app.css`, `assets/favicon.svg` und
   `assets/app/theme-boot.js` (die Browser-Seite des Mute-Links lädt sie
   relativ), der alte
@@ -280,8 +288,8 @@ Empfänger (`keys_test`, mit Alarmton). Regeln für den ganzen Umzug:
   (Passwort ändern meldet auch Passkey-Sitzungen ab). Zusätzlich: Wird
   ein Passkey gelöscht, enden die mit ihm angemeldeten Sitzungen, und
   ein geändertes Passwort macht die Passkeys dieses Kontos ungültig
-  (Handy verloren = Passwort ändern schließt jeden Zugang; Vorschlag,
-  Bestätigung des Nutzers steht aus).
+  (Handy verloren = Passwort ändern schließt jeden Zugang; vom Nutzer
+  am 16.11.2026 bestätigt — Passkeys sind danach neu anzulegen).
 - RP-ID und Herkunft aus `public_base_url` (optional `passkey_rp_id`);
   `userVerification` erforderlich; Attestation `none`; ES256 und RS256.
 - Herausforderungen liegen kurzlebig (5 min, einmalig) im Datenordner,
