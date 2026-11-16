@@ -285,7 +285,7 @@ function backup_then_write(array $config, string $name, array $data): bool
 
 // Fehlermeldung, wenn eine Lock-Datei nicht zu öffnen ist (meist fehlendes
 // Schreibrecht des Web-Benutzers auf den data_dir).
-const LOCK_FAILED_MESSAGE = 'Fehler: Datenordner nicht beschreibbar (auf dem Server: sudo chown -R fwalarm: /srv/fw-alarm/data).';
+const LOCK_FAILED_MESSAGE = 'Fehler: Datenordner nicht beschreibbar (Rechte des Web-Benutzers auf dem Server prüfen).';
 
 function open_lock(array $config, string $name)
 {
@@ -511,6 +511,40 @@ function web_health_check(array $config): array
             'detail' => 'Selbsttest falsch eingerichtet (HTTP ' . $http . ' - health_check_url in config.php pruefen)'];
     }
     return ['ok' => false, 'blocks_pushes' => true, 'detail' => 'Selbsttest lieferte HTTP ' . $http];
+}
+
+// Text der Meldung "Dashboard DEFEKT" hinter der Ursache ($web['detail']):
+// Wirkung, der Satz zu den Bark-Alarmen und - passend zur Ursache - was auf
+// dem Server zu tun ist. Bark-Text: ASCII. Der Befehl steht am Ende, damit
+// er sich sauber kopieren lässt.
+// Die Wirkung hängt an blocks_pushes, nicht am Schritt: Sind nur einzelne
+// Dateien betroffen (step=perm), aber nicht die Locks der Box, stimmt
+// "Status-Pushs scheitern" nicht - dann genau sagen, was klemmt. Ein falsch
+// eingerichteter Selbsttest (blocks_pushes=false ohne step) blockiert gar
+// nichts.
+// Was zu tun ist, hängt dagegen am Schritt: Nennt der Selbsttest einen
+// (lock/write/read/delete/perm), liegt es an den Rechten im Datenordner.
+// Ohne Schritt hat der Webserver gar nicht bzw. mit einem Fehler geantwortet
+// - dann hilft kein chown, sondern ein Blick auf die Dienste.
+function web_fail_notice_text(array $web): string
+{
+    $step = (string)($web['step'] ?? '');
+    if (!empty($web['blocks_pushes'])) {
+        $impact = '. Login und Status-Pushs der Box scheitern! ';
+    } elseif ($step === 'perm') {
+        $impact = '. Verlauf, Empfaenger-Aenderungen oder Stummschalten koennen dadurch scheitern. ';
+    } else {
+        $impact = '. Der Selbsttest selbst kommt nicht durch - Status-Pushs der Box sind davon '
+            . 'vermutlich nicht betroffen. ';
+    }
+    if ($step !== '') {
+        $todo = ' Auf dem Server: sudo chown -R fwalarm: /srv/fw-alarm/data';
+    } elseif (!empty($web['blocks_pushes'])) {
+        $todo = ' Auf dem Server pruefen: systemctl status nginx php8.3-fpm';
+    } else {
+        $todo = '';
+    }
+    return $impact . 'Bark-Alarme der Box laufen davon unabhaengig weiter.' . $todo;
 }
 
 // Maschinen-Token NUR per POST akzeptieren: GET-Parameter landen sonst im
@@ -2448,9 +2482,9 @@ function admin_notify_types(array $config): array
                 'silent_after_s' => ['label' => 'Melden nach',
                     'choices' => [1800 => '30 Min', 3600 => '1 Std', 7200 => '2 Std', 21600 => '6 Std'],
                     'default' => 3600],
-                'repeat_hours' => ['label' => 'Erinnern, solange sie stumm bleibt',
+                'repeat_hours' => ['label' => 'Erinnern, solange er stumm bleibt',
                     'choices' => notify_hours_choices([0, 24, 72, 168]), 'default' => 72],
-                'recovery' => ['label' => 'Auch melden, wenn sie wieder da ist',
+                'recovery' => ['label' => 'Auch melden, wenn er wieder da ist',
                     'choices' => $yesNo, 'default' => 1],
             ],
         ],

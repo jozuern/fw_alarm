@@ -189,27 +189,10 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
         $webCatchUp = !empty($state['web_push_pending']) && !empty($types['nas_web']['enabled']);
         if ($webFailCount >= 2 && ($webNotifiedAt === 0 || $webCatchUp
             || ($webRepeat > 0 && time() - $webNotifiedAt > $webRepeat))) {
-            // Bark-Texte bewusst ASCII (keine Umlaute).
-            // Die Wirkung hängt an blocks_pushes, nicht am Schritt: Sind nur
-            // einzelne Dateien betroffen (step=perm), aber nicht die Locks
-            // der Box, stimmt "Status-Pushs scheitern" nicht - dann genau
-            // sagen, was klemmt. Ein falsch eingerichteter Selbsttest
-            // (blocks_pushes=false ohne step) blockiert gar nichts.
-            if (!empty($web['blocks_pushes'])) {
-                $impact = '. Login und Status-Pushs der Box scheitern! '
-                    . 'Meist gehoert der Datenordner nicht dem Web-Benutzer - auf dem Server: '
-                    . 'sudo chown -R fwalarm: /srv/fw-alarm/data ';
-            } elseif (($web['step'] ?? '') === 'perm') {
-                $impact = '. Verlauf, Empfaenger-Aenderungen oder Stummschalten koennen dadurch scheitern. '
-                    . 'Die Datei(en) im Datenordner dem Web-Benutzer zuordnen - auf dem Server: '
-                    . 'sudo chown -R fwalarm: /srv/fw-alarm/data ';
-            } else {
-                $impact = '. Der Selbsttest selbst kommt nicht durch - Status-Pushs der Box sind davon '
-                    . 'vermutlich nicht betroffen. ';
-            }
+            // Bark-Texte bewusst ASCII (keine Umlaute). Wirkung und Hinweis
+            // je nach Ursache: web_fail_notice_text() in lib/common.php.
             $ok = $notify('nas_web', 'Dashboard DEFEKT',
-                date('[d.m.Y H:i] ') . $web['detail'] . $impact
-                . 'Bark-Alarme der Box laufen davon unabhaengig weiter.');
+                date('[d.m.Y H:i] ') . $web['detail'] . web_fail_notice_text($web));
             if ($ok) {
                 if ($webNotifiedAt === 0) {
                     append_command_log($config, ['event' => 'nas_web_failed', 'detail' => $web['detail']]);

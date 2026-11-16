@@ -5,6 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadScripts } from './helpers.mjs';
@@ -106,8 +107,6 @@ test('Verlauf: Ereignisse des Servers und des Außen-Wächters', () => {
 
 test('Wächter-Meldungen (PHP): neue Hinweise, weiterhin ASCII', () => {
   const cron = read('nas_dashboard/cron/check_offline.php');
-  // Rechte-Hinweis für den Server statt der DSM-Klickfolge
-  assert.match(cron, /sudo chown -R fwalarm: \/srv\/fw-alarm\/data/);
   // Außen-Wächter ist jetzt das NAS: was zu Hause zu prüfen ist
   assert.match(cron, /Der Aussen-Waechter \(NAS\) hat sich \{\$since\} gemeldet\./);
   assert.match(cron, /DSM-Aufgabe fw-alarm-watch/);
@@ -122,5 +121,55 @@ test('Wächter-Meldungen (PHP): neue Hinweise, weiterhin ASCII', () => {
   const common = read('nas_dashboard/lib/common.php');
   assert.match(common, /'Webserver nicht erreichbar \('/);
   assert.match(common, /'Manuelle Alarmierung ueber das Dashboard!'/);
-  assert.match(common, /const LOCK_FAILED_MESSAGE = 'Fehler: Datenordner nicht beschreibbar \(auf dem Server: sudo chown -R fwalarm: \/srv\/fw-alarm\/data\)\.';/);
+  // Diese Meldung sieht jeder Aufrufer (auch die Lese-Rolle, auch ohne
+  // Anmeldung): kein Pfad und kein Benutzername des Servers. Der Befehl
+  // steht in der Bark-Meldung an den Admin und im Fehlerlog.
+  const lockMsg = (common.match(/const LOCK_FAILED_MESSAGE = '([^']*)';/) || [])[1] || '';
+  assert.equal(lockMsg, 'Fehler: Datenordner nicht beschreibbar (Rechte des Web-Benutzers auf dem Server prüfen).');
+  assert.doesNotMatch(lockMsg, /\/srv|fwalarm|chown/);
+  // Außen-Wächter ist "er" (früher "sie", die VM).
+  assert.match(common, /'Erinnern, solange er stumm bleibt'/);
+  assert.match(common, /'Auch melden, wenn er wieder da ist'/);
+  assert.doesNotMatch(common, /solange sie stumm bleibt|wenn sie wieder da ist/);
+});
+
+// Text der Meldung "Dashboard DEFEKT" hinter der Ursache ($web['detail']):
+// Wirkung, der Satz zu den Bark-Alarmen und - passend zur Ursache - was auf
+// dem Server zu tun ist.
+function webFailText(web) {
+  return execFileSync('php', ['-r',
+    "require 'nas_dashboard/lib/common.php'; echo web_fail_notice_text(json_decode($argv[1], true));",
+    JSON.stringify(web)], { cwd: root, encoding: 'utf8' });
+}
+
+test('„Dashboard DEFEKT“: der Hinweis passt zur Ursache', () => {
+  const CHOWN = /Auf dem Server: sudo chown -R fwalarm: \/srv\/fw-alarm\/data$/;
+  const SERVICES = /Auf dem Server pruefen: systemctl status nginx php8\.3-fpm$/;
+  // Datenordner nicht beschreibbar (Selbsttest nennt einen Schritt)
+  const dir = webFailText({ ok: false, step: 'lock', blocks_pushes: true, detail: 'x' });
+  assert.match(dir, /^\. Login und Status-Pushs der Box scheitern! /);
+  assert.match(dir, CHOWN);
+  // Einzelne Dateien, Box-Pushs nicht betroffen
+  const perm = webFailText({ ok: false, step: 'perm', blocks_pushes: false, detail: 'x' });
+  assert.match(perm, /^\. Verlauf, Empfaenger-Aenderungen oder Stummschalten koennen dadurch scheitern\. /);
+  assert.match(perm, CHOWN);
+  // Einzelne Dateien, die auch die Box-Pushs blockieren (Lock-Dateien)
+  const permBlock = webFailText({ ok: false, step: 'perm', blocks_pushes: true, detail: 'x' });
+  assert.match(permBlock, /^\. Login und Status-Pushs der Box scheitern! /);
+  assert.match(permBlock, CHOWN);
+  // Webserver/PHP antwortet nicht oder mit 5xx: KEIN Rechte-Hinweis
+  const web = webFailText({ ok: false, blocks_pushes: true, detail: 'Webserver nicht erreichbar (x)' });
+  assert.match(web, /^\. Login und Status-Pushs der Box scheitern! /);
+  assert.match(web, SERVICES);
+  assert.doesNotMatch(web, /chown/);
+  // Selbsttest falsch eingerichtet: nichts zu reparieren außer der Einstellung
+  const cfg = webFailText({ ok: false, blocks_pushes: false, detail: 'Selbsttest falsch eingerichtet' });
+  assert.match(cfg, /^\. Der Selbsttest selbst kommt nicht durch/);
+  assert.doesNotMatch(cfg, /chown|systemctl/);
+  for (const t of [dir, perm, permBlock, web, cfg]) {
+    assert.match(t, /Bark-Alarme der Box laufen davon unabhaengig weiter\./);
+    assert.match(t, /^[ -~]+$/);
+  }
+  // check_offline.php nutzt genau diesen Text.
+  assert.match(read('nas_dashboard/cron/check_offline.php'), /\$web\['detail'\] \. web_fail_notice_text\(\$web\)/);
 });
