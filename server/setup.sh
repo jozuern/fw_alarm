@@ -55,6 +55,28 @@ if [ "$(cat /etc/apt/sources.list.d/cloudflared.list 2>/dev/null || true)" != "$
 fi
 apt-get install -y -q cloudflared
 
+step "Auslagerungsdatei (1 GB)"
+# Die VM hat bewusst nur 1 GB Speicher: Oracle stoppt Always-Free-VMs, deren
+# Speicher-, CPU- und Netzauslastung über 7 Tage unter 20 % bleibt - mit
+# 2 GB lag die Speicherauslastung genau an dieser Grenze. Die
+# Auslagerungsdatei fängt Spitzen ab (apt-Updates, mehrere PHP-Prozesse).
+# (Erst einlesen, dann suchen - siehe Hinweis zu pipefail unten.)
+swaps="$(swapon --show=NAME --noheadings)"
+if ! grep -qx '/swapfile' <<<"$swaps"; then
+    if [ ! -f /swapfile ]; then
+        dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none
+        chmod 600 /swapfile
+        mkswap /swapfile >/dev/null
+    fi
+    swapon /swapfile
+fi
+if ! grep -q '^/swapfile[[:space:]]' /etc/fstab; then
+    printf '/swapfile none swap sw 0 0\n' >> /etc/fstab
+fi
+# Nur als Sicherheitsnetz: erst auslagern, wenn es wirklich eng wird.
+printf 'vm.swappiness = 10\n' > /etc/sysctl.d/60-fw-alarm-swap.conf
+sysctl -q -p /etc/sysctl.d/60-fw-alarm-swap.conf
+
 step "Benutzer fwalarm"
 if ! id -u fwalarm >/dev/null 2>&1; then
     useradd --system --user-group --no-create-home --home-dir /nonexistent \
