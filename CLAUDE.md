@@ -34,9 +34,19 @@ Kernprinzip im README betont und einzuhalten: **Zusatz, kein Ersatz** für den M
   sagen „Server“; „NAS“ steht dort nur noch für den Außen-Wächter
   (`tests/dashboard/wording.test.mjs` prüft das).
 - **Deploy**: `git push origin main`, dann `bash server/deploy.sh HEAD`
-  (prüft jede Datei auf dem Server gegen Git) und
+  (sichert zuerst, prüft danach jede Datei auf dem Server gegen Git) und
   `bash server/check.sh public https://alarm.tunero.dev`. Die Brücke wird per
   SMB auf das NAS kopiert (`nas_bridge/README.md`).
+- **Sicherung**: Empfängerliste (Bark-Keys, Kurzbefehl-Tokens), Verlauf und
+  `config.php` gibt es nur auf der VM. `server/backup.sh` holt sie als ein
+  Archiv auf den PC (`~/fw-alarm-backups`, die letzten 30); `deploy.sh` ruft
+  es VOR jeder Änderung auf dem Server auf und spielt auch dann ein, wenn die
+  Sicherung scheitert (Warnung, Rückgabe 3). Die Archive enthalten
+  Geheimnisse: nie im Repo (das Skript bricht dann ab), in keinem
+  Cloud-Ordner. Ein Archiv gilt erst nach der Prüfung als Sicherung (lesbar,
+  Empfängerliste und `config.php` enthalten) – eine gescheiterte löscht keine
+  älteren. Zurückspielen: `server/README.md`. Tests:
+  `node --test "tests/server/*.test.mjs"` (ssh als Attrappe).
 - **Das Repo ist öffentlich**: keine echten Adressen (NAS, VM) in
   versionierten Dateien, nur Platzhalter (`dein-name.synology.me`, `<NAS>`,
   `<IP der VM>`); die VM-Adresse für `deploy.sh` steht in der nicht

@@ -153,6 +153,12 @@ die Prüfsumme **jeder** Datei auf dem Server mit Git:
 darf beim Neuladen ausreden (bis 40 s). Zurück auf einen älteren Stand:
 `bash server/deploy.sh <älterer-commit>`.
 
+Bevor sich auf dem Server etwas ändert, holt `deploy.sh` eine **Sicherung**
+von Daten und `config.php` auf diesen PC (`server/backup.sh`, siehe
+„Sicherung und Rückweg“). Scheitert sie, wird trotzdem eingespielt – der
+Lauf endet dann mit einer Warnung und Rückgabe 3; danach
+`bash server/backup.sh` von Hand wiederholen.
+
 `check.sh` prüft, ohne etwas auszulösen: Anmeldeseite, Sicherheits-Kopfzeilen,
 gesperrte Pfade (`config.php`, `lib/`, `cron/`, `data/`), Dateitypen, die
 Antwort auf einen Aufruf wie von der Box (TLS 1.2, kein `Accept`) und auf
@@ -214,13 +220,77 @@ sudo -u fwalarm php /srv/fw-alarm/app/cron/check_offline.php   # Wächter von Ha
 
 ## Sicherung und Rückweg
 
-- In der Oracle-Konsole liegt eine Sicherung des Boot-Volumes von vor dem
-  Umzug (`pre-move-2026-11`).
-- Die Daten des Dashboards sind wenige kleine Dateien unter
-  `/srv/fw-alarm/data`; eine Kopie davon genügt als Sicherung
-  (`sudo tar czf - -C /srv/fw-alarm data | ssh … 'cat > fw-alarm-data.tgz'`).
-- Auf dem NAS liegt der alte Datenordner als eingefrorener Stand vom
-  Umzugstag. Ein Rückzug auf das NAS hieße: Brücke anhalten
-  (`bridge_hold.php`), Daten zurückkopieren, die alten Dashboard-Dateien aus
-  Git (`bf1a7c8`) wieder einspielen, DSM-Aufgabe `check_offline.php` wieder
-  einschalten.
+Die Empfängerliste (Bark-Keys und die Kurzbefehl-Tokens der Kollegen), der
+Verlauf, die Einstellungen und `config.php` liegen nur auf der VM. Geht sie
+verloren, braucht ohne Sicherung jeder Kollege neue Kurzbefehl-Links. Die Box
+alarmiert in jedem Fall weiter (sie hat ihre Liste selbst gespeichert).
+
+### Kopie auf dem PC
+
+```bash
+bash server/backup.sh
+```
+
+holt `/srv/fw-alarm/data` und `config.php` als ein Archiv nach
+`~/fw-alarm-backups` (`fw-alarm-<Zeit in UTC>.tgz`; die letzten 30 bleiben,
+`FW_BACKUP_KEEP`). `deploy.sh` macht das vor jedem Einspielen von selbst;
+nach einer Änderung an den Empfängern lohnt ein Aufruf von Hand. Ein Archiv
+wird erst nach einer Prüfung abgelegt (lesbar, Empfängerliste und
+`config.php` enthalten) – scheitert sie, bleibt nichts liegen und keine
+ältere Sicherung wird gelöscht.
+
+Das Archiv enthält **Geheimnisse** (alle Bark-Keys, Tokens, Passwort-Hashes):
+Es liegt im eigenen Benutzerordner, nie im Repo (das Skript bricht dann ab)
+und in keinem Ordner, der in eine Cloud abgeglichen wird.
+
+### Wöchentliche Sicherung des Boot-Volumes (Oracle)
+
+In der Oracle-Konsole (Storage → Block Storage → Backup Policies) gibt es die
+Richtlinie `fw-alarm-weekly`: jeden Montag 00:00 UTC eine inkrementelle
+Sicherung, Aufbewahrung 15 Tage. Sie ist dem Boot-Volume
+`fw-alarm-watch (Boot Volume)` zugewiesen; die Sicherungen stehen unter
+„Boot Volume Backups“. Dort liegt auch die manuelle Sicherung von vor dem
+Umzug (`pre-move-2026-11`).
+
+Always Free erlaubt insgesamt **5** Volume-Sicherungen. Mit 15 Tagen liegen
+höchstens 3 automatische dort, dazu die manuelle. Die Aufbewahrung deshalb
+nicht verlängern und keine weiteren manuellen Sicherungen ansammeln – über
+der Grenze scheitern die automatischen, ohne dass es jemand merkt.
+
+Aus einer Sicherung lässt sich in der Konsole ein neues Boot-Volume erzeugen
+und damit eine Instanz starten. Sie bekommt eine neue öffentliche Adresse
+(`server/deploy.local` anpassen); der Tunnel verbindet sich von selbst wieder.
+Die Daten sind dann so alt wie die Sicherung – danach die jüngste Kopie vom
+PC zurückspielen (nächster Abschnitt).
+
+### Zurückspielen
+
+Auf einer neuen VM zuerst „Einrichten“, Tunnel und ein `deploy.sh`. Dann:
+
+```bash
+# vom PC: Archiv in einen eigenen Ordner auf der VM (nie /tmp)
+ssh -i ~/.ssh/oci_fw_alarm ubuntu@<IP> 'install -d -m 700 ~/fw-restore'
+scp -i ~/.ssh/oci_fw_alarm ~/fw-alarm-backups/fw-alarm-<Zeit>.tgz ubuntu@<IP>:fw-restore/
+
+# auf der VM
+sudo systemctl stop nginx fw-alarm-cron.timer        # niemand schreibt mehr
+sudo mv /srv/fw-alarm/data /srv/fw-alarm/data.alt    # den jetzigen Stand aufheben
+sudo tar -xzf ~/fw-restore/fw-alarm-<Zeit>.tgz -C /srv/fw-alarm
+sudo chown -R fwalarm:fwalarm /srv/fw-alarm/data && sudo chmod 750 /srv/fw-alarm/data
+sudo chown root:fwalarm /srv/fw-alarm/app/config.php && sudo chmod 640 /srv/fw-alarm/app/config.php
+rm -rf ~/fw-restore
+sudo systemctl start nginx fw-alarm-cron.timer
+sudo bash ~/fw-server/check.sh local
+```
+
+Danach im Dashboard die Empfänger ansehen: Die Stumm-Zustände sind die vom
+Zeitpunkt der Sicherung. Einmal den eigenen Eintrag stumm und wieder laut
+schalten – das erhöht die Version der Liste, und die Box holt sie sicher neu.
+`data.alt` löschen, wenn alles stimmt.
+
+### Rückzug auf das NAS
+
+Ein Rückzug hieße: Brücke anhalten (`bridge_hold.php`), die Daten aus einer
+Sicherung in den Datenordner des NAS kopieren, die alten Dashboard-Dateien
+aus Git (`bf1a7c8`) samt einer `config.php` wieder einspielen, DSM-Aufgabe
+`check_offline.php` wieder anlegen.

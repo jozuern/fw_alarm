@@ -4,10 +4,13 @@
 # Aufruf vom PC (Git Bash), im Repo:
 #     bash server/deploy.sh <git-rev>          z.B. HEAD
 #
-# Ablauf: git archive <rev> → VM (/tmp/fw-deploy/<sha>) → rsync in den Webroot
+# Ablauf: Sicherung von Daten + config.php auf diesen PC (server/backup.sh)
+# → git archive <rev> → VM (frischer Ordner unter /tmp) → rsync in den Webroot
 # → PHP-FPM neu laden → Prüfsummen ALLER eingespielten Dateien gegen die
 # Git-Blobs dieses Stands vergleichen. Ausgabe am Ende:
 #     deployed <sha>: N files, 0 mismatches
+# Rückgabe: 0 = eingespielt und gesichert; 1 = Einspielen gescheitert;
+# 3 = eingespielt, aber die Sicherung ist gescheitert.
 #
 # Nie angefasst werden config.php (liegt nur auf der VM) und die Daten.
 # Nicht eingespielt werden SETUP.md, config.example.php und data/.
@@ -70,6 +73,16 @@ while IFS= read -r f; do
     printf '%s  %s\n' "$sum" "${f#nas_dashboard/}" >> "$tmp/want"
 done < "$tmp/files"
 
+# Vor jeder Änderung auf dem Server: Daten und config.php auf diesen PC
+# sichern (server/backup.sh). Scheitert das, wird trotzdem eingespielt - ein
+# Deploy kann eilig sein und fasst weder Daten noch config.php an -, der Lauf
+# endet dann aber mit einer Warnung und Rückgabe 3.
+backup_ok=1
+if ! FW_DEPLOY_HOST="$host" FW_DEPLOY_KEY="$key" bash server/backup.sh; then
+    backup_ok=0
+    echo "ACHTUNG: Sicherung vor dem Einspielen gescheitert - es wird trotzdem eingespielt." >&2
+fi
+
 # Archiv ohne Zeilenenden-Umwandlung (core.autocrlf des PCs darf nicht
 # mitreden): Auf dem Server liegen exakt die Bytes aus Git.
 # Zwischenablage auf der VM: frisch angelegter Ordner mit zufälligem Namen,
@@ -107,4 +120,9 @@ else
     echo "FEHLER: Server weicht von $sha ab ($bad Zeilen; < = erwartet, > = auf dem Server):" >&2
     sed 's/^\([<>]\) [0-9a-f]\{64\}  /\1 /' "$tmp/diff" | grep '^[<>]' | sort -u >&2
     exit 1
+fi
+
+if [ "$backup_ok" != 1 ]; then
+    echo "ACHTUNG: Eingespielt, aber die Sicherung ist gescheitert (Meldung weiter oben) - 'bash server/backup.sh' erneut versuchen." >&2
+    exit 3
 fi
