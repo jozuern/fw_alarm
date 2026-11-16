@@ -49,16 +49,14 @@
   // was das heißt (ohne mehr zu versprechen, als geprüft ist).
   const OK_SUB = 'Die Box meldet sich, es ist keine Störung bekannt.';
 
-  // Zeile unter dem Urteil: „Status vor N s“ bzw. bei einer NAS-Störung, was
-  // fehlt und wie alt der angezeigte Stand ist (läuft im Sekundentakt mit -
-  // deshalb eine eigene kleine Komponente).
+  // Zeile unter dem Urteil: „Status vor N s“ (läuft im Sekundentakt mit -
+  // deshalb eine eigene kleine Komponente). Bei einer NAS-Störung bzw. nach
+  // der Abmeldung keine: Was fehlt und von wann der Stand ist, sagt dann das
+  // Band oben auf jeder Seite (main.js, logic.unsureBand) - doppelt kostete
+  // es am kleinen iPhone den Platz über dem Alarm-Knopf.
   function statusLineOf(s) {
     const v = store.derive(s).verdict;
-    if (v.key === 'auth') return '';
-    if (v.key === 'nas') {
-      const age = s.lastOkAt ? L.fmtAgeShort((s.nowMs - s.lastOkAt) / 1000) : null;
-      return `${v.detail || 'Keine aktuelle Antwort vom NAS'} – angezeigte Werte können veraltet sein${age ? ` (letzter erfolgreicher Abruf ${age})` : ''}.`;
-    }
+    if (v.key === 'auth' || v.key === 'nas') return '';
     return ui.statusAgeText(s);
   }
   function StatusLine() {
@@ -66,8 +64,15 @@
     return text ? html`<p class="status-age">${text}</p>` : null;
   }
 
+  // Abgemeldet, die Seite bleibt aber für ein Alarm-Ergebnis stehen: ohne
+  // diesen Knopf gäbe es (Home-Bildschirm-App ohne Neu-laden) keinen Weg
+  // zurück. Erst, wenn der Versand fertig ist - sonst ginge sein Ergebnis
+  // verloren.
+  const reloginOf = (s) => s.authLost && !s.authReloading && !s.alarmInFlight;
+
   function StatusCard() {
     const v = useDerivedJson((d) => ({ key: d.verdict.key, tone: d.verdict.tone, title: d.verdict.title, sub: d.verdict.sub }));
+    const relogin = store.useStore(reloginOf);
     const titleId = ui.useId('status-title');
     const look = lookOf(v);
     const sub = v.sub || (v.key === 'ok' ? OK_SUB : '');
@@ -79,6 +84,7 @@
           ${sub ? html`<p class="status-sub">${sub}</p>` : null}
         </div>
         <${StatusLine}/>
+        ${relogin ? html`<a class="btn btn-tinted status-relogin" href="index.php">Neu anmelden</a>` : null}
       </div>
     </section>`;
   }
@@ -158,6 +164,7 @@
     const keys = store.useStore((s) => s.keys);
     const readOnly = store.useStore((s) => s.readOnly);
     const inFlight = store.useStore((s) => s.alarmInFlight);
+    const relogin = store.useStore(reloginOf);
     const retry = ui.useDerived((d) => (d.retry ? d.retry.label : ''));
     const titleId = ui.useId('result-title');
     const look = resultLook(r);
@@ -210,8 +217,11 @@
       ${r && r.phase === 'done' && r.reached.length ? html`<p class="result-reached"><span class="result-check" aria-hidden="true">✓ </span>${
         r.resend ? 'Jetzt erreicht' : 'Erreicht'}: ${r.reached.join(', ')}</p>` : null}
       ${sending ? null : html`<div class="result-foot">
-        ${look.tone === 'warn' && r && !r.offerRetry ? html`<a class="link-btn" href="#/verlauf?filter=alarm">Im Verlauf prüfen</a>` : null}
-        <button type="button" class="link-btn result-dismiss" onClick=${() => store.clearResult()}>Ausblenden</button>
+        ${relogin ? html`<a class="link-btn result-relogin" href="index.php">Neu anmelden</a>` : null}
+        ${!relogin && look.tone === 'warn' && r && !r.offerRetry
+          ? html`<a class="link-btn result-check-log" href="#/verlauf?filter=alarm" onClick=${() => store.verifyInLog()}>Im Verlauf prüfen</a>`
+          : null}
+        <button type="button" class="link-btn result-dismiss" onClick=${() => { store.dismissResult(); }}>Ausblenden</button>
       </div>`}
     </section>`;
   }
@@ -252,9 +262,9 @@
       </div>
       ${demoOn ? html`<button type="button" class="btn btn-tinted btn-block ov-box-alarm" disabled=${busy || inFlight}
         onClick=${boxAlarm}><${ui.Icon} name="demo"/><span>Demo-Alarm über die Box</span></button>` : null}
-      <${CommandLine} canCancel=${true} onResult=${show}/>
+      <${Part}><${CommandLine} canCancel=${true} onResult=${show}/></${Part}>
       <${ui.Msg} msg=${msg}/>
-      <${ResultCard}/>
+      <${Part} text="Das Ergebnis konnte nicht angezeigt werden – bitte im Verlauf prüfen, wer erreicht wurde."><${ResultCard}/></${Part}>
       <p class="group-foot">Alarm und Entwarnung gehen direkt vom NAS an die Empfänger – auch wenn die Box offline ist. Test läuft über die Box (leise Meldung an den Status-Empfänger).</p>
     </section>`;
   }
@@ -264,8 +274,8 @@
   function ReadonlyActions() {
     return html`<div class="group ov-actions">
       <p class="ov-readonly">Mit diesem Zugang lässt sich nichts auslösen. Muss manuell alarmiert werden, bitte einen Admin verständigen – er kann direkt über das NAS alarmieren.</p>
-      <${CommandLine} canCancel=${false}/>
-      <${ResultCard}/>
+      <${Part}><${CommandLine} canCancel=${false}/></${Part}>
+      <${Part}><${ResultCard}/></${Part}>
     </div>`;
   }
 
@@ -323,22 +333,32 @@
   }
 
   // ---- Seite --------------------------------------------------------------------
+  // Jeder Teil hat seine eigene Fehlergrenze: Stürzt eine Anzeige ab (Status,
+  // Hinweise, Prüfliste, rechte Spalte, Ergebnis), bleibt „Auslösen“ stehen;
+  // stürzt „Auslösen“ selbst ab, nennt der Ersatz die alte Ansicht.
   // Feste keys: Rückt „Auslösen“ nach oben, verschiebt Preact den Block
   // (eine Rückmeldung darin bleibt stehen), statt ihn neu aufzubauen.
+  function Part({ text, children }) {
+    return html`<${ui.Boundary} inline=${true} text=${text}>${children}</${ui.Boundary}>`;
+  }
+  const ACTIONS_BROKEN = '„Auslösen“ konnte nicht angezeigt werden. Manuell alarmieren geht über die alte Ansicht (classic.php, Knopf „REAL ALARM“).';
+
   FW.views.Overview = function Overview({ wide }) {
     const raise = ui.useDerived((d) => !!d.verdict.raiseActions);
+    const readOnly = store.useStore((s) => s.readOnly);
+    const actions = html`<${Part} key="actions" text=${readOnly ? undefined : ACTIONS_BROKEN}><${Actions}/></${Part}>`;
     return html`<${ui.Page} title="Übersicht" class="ov">
       <div class=${cx('ov-cols', wide && 'cols')}>
         <div class="ov-main">
           ${[
-            html`<${StatusCard} key="status"/>`,
-            raise ? html`<${Actions} key="actions"/>` : null,
-            html`<${Hints} key="hints"/>`,
-            html`<${Checklist} key="checks"/>`,
-            raise ? null : html`<${Actions} key="actions"/>`
+            html`<${Part} key="status"><${StatusCard}/></${Part}>`,
+            raise ? actions : null,
+            html`<${Part} key="hints"><${Hints}/></${Part}>`,
+            html`<${Part} key="checks"><${Checklist}/></${Part}>`,
+            raise ? null : actions
           ]}
         </div>
-        ${wide ? html`<div class="ov-side"><${Recent}/><${MutedList}/></div>` : null}
+        ${wide ? html`<div class="ov-side"><${Part}><${Recent}/></${Part}><${Part}><${MutedList}/></${Part}></div>` : null}
       </div>
     </${ui.Page}>`;
   };

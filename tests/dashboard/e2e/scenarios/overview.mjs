@@ -91,6 +91,33 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     if (p.request.method === 'POST' && p.request.url.includes('dashboard_api.php')) posts.set(p.requestId, true);
   });
   page.on('Network.responseReceived', (p) => { if (posts.has(p.requestId)) postStatus.push(p.response.status); });
+  // Laufende Abrufe der Empfängerliste (die Alarm-Frage holt sie beim Öffnen
+  // neu): Vor dem Einfrieren der Abfragen abwarten, sonst sähe ein später
+  // eintreffender Abruf den Moduswechsel und schlösse die Frage zu Recht.
+  const keysInFlight = new Set();
+  page.on('Network.requestWillBeSent', (p) => { if (p.request.url.includes('action=keys_list')) keysInFlight.add(p.requestId); });
+  page.on('Network.loadingFinished', (p) => keysInFlight.delete(p.requestId));
+  page.on('Network.loadingFailed', (p) => keysInFlight.delete(p.requestId));
+  const keysSettled = async () => {
+    for (let i = 0; i < 100 && keysInFlight.size; i++) await sleep(50);
+    assert(keysInFlight.size === 0, 'Abruf der Empfängerliste hängt');
+  };
+  // Eingriffe ins Netz (CDP Fetch): 'fail-post' = POSTs brechen ab, bevor sie
+  // das NAS erreichen; 'hold-post' = die Antwort eines POSTs wird
+  // zurückgehalten (heldResponses), bis das Szenario sie freigibt.
+  let fetchMode = null;
+  const heldResponses = [];
+  page.on('Fetch.requestPaused', (p) => {
+    const post = p.request.method === 'POST';
+    const atResponse = p.responseStatusCode !== undefined || p.responseErrorReason !== undefined;
+    if (fetchMode === 'fail-post' && post && !atResponse) {
+      page.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'ConnectionReset' }).catch(() => {});
+    } else if (fetchMode === 'hold-post' && post && atResponse) {
+      heldResponses.push(p.requestId);
+    } else {
+      page.send('Fetch.continueRequest', { requestId: p.requestId }).catch(() => {});
+    }
+  });
 
   try {
     // ---- Empfänger: genau Josh, Tom (Telefon, scheitert), Anna (stumm, 3) ---
@@ -166,6 +193,9 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     const question = await text(page, '.confirm-text');
     assert(question.includes('3 Empfänger'), 'Frage nennt 3 Empfänger: ' + question);
     assert(question.includes('Anna (stumm) mit Lautstärke 3'), 'Frage nennt Annas Lautstärke: ' + question);
+    // Der Halten-Knopf nennt die Aktion; die Beschreibung bleibt.
+    assert(await text(page, '.confirm .hold > .hold-label') === 'Halten: Alarm senden', 'Halten-Knopf: ' + await text(page, '.confirm .hold > .hold-label'));
+    assert(await page.eval(`document.getElementById(document.querySelector('.confirm .hold').getAttribute('aria-describedby'))?.textContent.trim() === 'Zum Senden gedrückt halten'`), 'Halten-Knopf beschrieben');
     await shot(page, 'confirm');
     await mouseHold(page, '.confirm .hold', 300);
     await sleep(700);
@@ -195,6 +225,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await openConfirmVia(page, '.result-retry');
     assert(await text(page, '.confirm-title') === 'Erneut senden?', 'Nachsende-Frage');
     assert((await text(page, '.confirm-text')).includes('NUR an: Tom'), 'Nachsende-Frage nennt Tom');
+    assert(await text(page, '.confirm .hold > .hold-label') === 'Halten: erneut senden', 'Halten-Knopf der Nachsendung');
     await mouseHold(page, '.confirm .hold', 1600);
     await page.waitFor(`(document.querySelector('.result-title')?.textContent || '').includes('0 von 1 erreicht')`, 40000);
     sent = barkLog(sandbox).slice(mark);
@@ -207,6 +238,28 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert((await text(page, '.result-list li')).includes('Tom'), 'Tom weiter in der Liste');
     await cardInView(page);
     await shot(page, 'resend');
+    // Niemand erreicht: „Ausblenden“ steht direkt unter „erneut senden“ - mind.
+    // 8 px Luft bis zu seiner Tippfläche (elementFromPoint: treffbare Pixel).
+    assert(await page.eval(`!document.querySelector('.result-reached')`), 'keine Zeile „Erreicht“ dazwischen');
+    const gap = await page.eval(`(() => {
+      const retry = document.querySelector('.result-retry').getBoundingClientRect();
+      const d = document.querySelector('.result-dismiss');
+      const x = d.getBoundingClientRect().left + d.getBoundingClientRect().width / 2;
+      for (let y = Math.ceil(retry.bottom); y < retry.bottom + 80; y++) {
+        const hit = document.elementFromPoint(x, y);
+        if (hit && (hit === d || d.contains(hit))) return y - retry.bottom;
+      }
+      return 999;
+    })()`);
+    assert(gap >= 8, `„Ausblenden“ beginnt ${gap} px unter „erneut senden“ (mind. 8)`);
+    // „Ausblenden“ mit gemerkten nicht Erreichten: erst nachfragen, Abbrechen
+    // lässt alles stehen.
+    await page.click('.result-dismiss');
+    await page.waitFor(`!!document.querySelector('.confirm') && (document.querySelector('.confirm-title')?.textContent || '').includes('ausblenden')`, 3000);
+    assert((await text(page, '.confirm-text')).includes('Tom'), 'Ausblenden-Frage nennt Tom');
+    await page.click('.confirm .btn-cancel');
+    await page.waitFor(`!document.querySelector('.confirm')`, 3000);
+    assert(await page.eval(`!!document.querySelector('.result-card') && localStorage.getItem('fwAlarm.lastUnreached') !== null`), 'Abbrechen: Liste bleibt');
 
     // Zurück auf die Übersicht: Das Ergebnis steht noch da, wird aber NICHT
     // erneut angesagt (nur echte Wechsel).
@@ -232,6 +285,42 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert(await text(page, '.result-retry') === 'Nur an Tom erneut senden', 'nach dem Neuladen: Nachsendung angeboten');
     await cardInView(page);
     await shot(page, 'reload');
+
+    // ---- Antwort unklar, dann Neuladen: KEINE Nachsendung, erst Verlauf ------
+    // Der Alarm-POST bricht ab, bevor er das NAS erreicht (Verbindung
+    // zurückgesetzt) - für die Seite heißt das „Antwort unklar“. Danach wie
+    // nach einem Wechsel in die Telefon-App: Seite neu geladen.
+    await page.waitFor(titleIs('Alles bereit'), 10000);
+    mark = barkLog(sandbox).length;
+    fetchMode = 'fail-post';
+    await page.send('Fetch.enable', { patterns: [{ urlPattern: '*dashboard_api.php*', requestStage: 'Request' }] });
+    await openConfirmVia(page, '.ov-alarm');
+    await mouseHold(page, '.confirm .hold', 1600);
+    await page.waitFor(cardHas('Antwort unklar'), 15000);
+    fetchMode = null;
+    await page.send('Fetch.disable');
+    assert(barkLog(sandbox).length === mark, 'abgebrochen: nichts gesendet');
+    assert(await page.eval(`!document.querySelector('.result-retry')`), 'unklar: keine Nachsendung');
+    assert(await page.eval(`localStorage.getItem('fwAlarm.sendPending') !== null`), 'Merker „ohne Ergebnis“ gesetzt');
+    await page.goto('about:blank');
+    await page.goto(`${base}/index.php`);
+    await page.waitFor(cardHas('Letzter Versand ohne Ergebnis'), 10000);
+    await page.waitFor(`(document.querySelector('.result-list li')?.textContent || '').includes('Tom')`, 10000);
+    assert(await page.eval(`!document.querySelector('.result-retry')`), 'nach dem Neuladen: KEINE Nachsendung');
+    assert(await page.eval(`!!document.querySelector('.result-check-log')`), 'nach dem Neuladen: „Im Verlauf prüfen“');
+    await cardInView(page);
+    await shot(page, 'restored-unclear');
+    // „Im Verlauf prüfen“: Alarme, ohne alte Suche, frisch geladen.
+    await page.eval(`FW.store.setLogQuery('gibtesnichtxyz')`);
+    await page.click('.result-check-log');
+    await page.waitFor(`location.hash === '#/verlauf?filter=alarm' && document.querySelectorAll('.log-row').length > 0`, 10000);
+    assert(await page.eval(`document.querySelector('.log-search').value === '' && FW.store.getState().log.query === ''`), 'Im Verlauf prüfen: Suche geleert');
+    assert(await text(page, '.log-filter .seg[aria-pressed=true]') === 'Alarme', 'Im Verlauf prüfen: Filter Alarme');
+    // Zurück wie vorher (sonst „Ausblenden“): Merker weg, Seite neu.
+    await page.eval(`localStorage.removeItem('fwAlarm.sendPending')`);
+    await page.goto('about:blank');
+    await page.goto(`${base}/index.php`);
+    await page.waitFor(cardHas('Auf diesem Gerät gemerkt'), 10000);
 
     // ---- Tab versteckt: offene Bestätigung schließt, nichts geht raus ---------
     await page.waitFor(titleIs('Alles bereit'), 10000);
@@ -269,15 +358,18 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.waitFor(`document.querySelector('.ov-alarm')?.textContent.trim() === 'Alarm an alle senden' && !document.querySelector('.demo-band')`, 10000);
     mark = barkLog(sandbox).length;
     await openConfirmVia(page, '.ov-alarm');
-    // Abfragen anhalten: Sonst könnte der nächste Status-Abruf den neuen Modus
-    // noch vor dem Halten abholen - dann schlösse die Bestätigung (Schritt
-    // oben), statt dass der Server mit 409 ablehnt.
-    await page.eval('FW.store.stop()');
+    // Status und Empfängerliste kommen bis zum Senden nicht durch: Sonst holte
+    // eine Abfrage den neuen Modus noch vor dem Halten ab - dann schlösse die
+    // Bestätigung (Schritt oben), statt dass der Server mit 409 ablehnt.
+    // (FW.store.stop() reicht dafür nicht mehr: Fokus/pageshow starten die
+    // Abfragen bei sichtbarer Seite von selbst wieder.)
+    await keysSettled();
+    await page.send('Network.setBlockedURLs', { urls: ['*action=status*', '*action=keys_list*'] });
     assert((await other.post({ action: 'demo_set', enabled: '1', id: String(ids.josh) })).ok, 'Demo ein (anderes Gerät)');
     postStatus.length = 0;
     await mouseHold(page, '.confirm .hold', 1600);
     await page.waitFor(cardHas('NICHT gesendet'), 15000);
-    await page.eval('FW.store.start()');
+    await page.send('Network.setBlockedURLs', { urls: [] });
     assert(postStatus.includes(409), 'Server antwortet 409: ' + JSON.stringify(postStatus));
     assert(barkLog(sandbox).length === mark, '409: nichts gesendet');
     await page.waitFor(`!!document.querySelector('.demo-band')`, 5000);
@@ -306,9 +398,10 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await shot(page, 'offline');
 
     // ---- NAS nicht erreichbar: rot nach „offline“, sonst orange --------------
-    // Ungünstigster Fall fürs kleine iPhone: Demo-Band oben UND das längste
-    // rote Urteil („NAS nicht erreichbar“, letzter Stand offline: Satz plus
-    // Problemzeile) - der Alarm-Knopf muss trotzdem über der Tab-Leiste stehen.
+    // Ungünstigster Fall fürs kleine iPhone: Band „NAS nicht erreichbar“ UND
+    // Demo-Band oben, dazu das längste rote Urteil („NAS nicht erreichbar“,
+    // letzter Stand offline) - der Alarm-Knopf muss trotzdem über der
+    // Tab-Leiste stehen.
     assert((await admin.post({ action: 'demo_set', enabled: '1', id: String(ids.josh) })).ok, 'Demo ein');
     await pushBox(base, admin);
     setStatusAge(sandbox, 600);
@@ -316,10 +409,15 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.viewport({ width: 320, height: 568, mobile: true, scale: 2 });
     await sandboxServer(sandbox, 'stop', 'site');
     serverDown = true;
-    await page.waitFor(`${titleIs('NAS nicht erreichbar')} && !!document.querySelector('.status-card.is-crit') && !!document.querySelector('.demo-band')`, 16000);
+    await page.waitFor(`${titleIs('NAS nicht erreichbar')} && !!document.querySelector('.status-card.is-crit') && !!document.querySelector('.demo-band')
+      && !!document.querySelector('.bands .unsure-band.is-crit')`, 16000);
     await page.eval('scrollTo(0, 0)');
     assert((await text(page, '.status-card')).includes('Box OFFLINE'), 'nennt den letzten Stand „Box OFFLINE“');
-    assert((await text(page, '.status-age')).includes('Keine Verbindung zum NAS'), 'Problemzeile statt „Status vor“');
+    // Was fehlt und von wann der Stand ist, sagt das Band (rot: zuletzt offline).
+    const redBand = await text(page, '.unsure-band');
+    assert(redBand.includes('Keine Verbindung zum NAS') && /letzter bekannter Stand \(\d\d:\d\d:\d\d\): Box OFFLINE/.test(redBand), 'Band rot: ' + redBand);
+    assert(await page.eval(`!document.querySelector('.status-age')`), 'keine doppelte Problemzeile in der Karte');
+    assert(await page.eval(`document.querySelector('.bands').firstElementChild.classList.contains('unsure-band')`), 'NAS-Band über dem Demo-Band');
     const fit = await page.eval(`(() => { const b = document.querySelector('.ov-alarm').getBoundingClientRect();
       const bar = document.querySelector('.tabbar').getBoundingClientRect();
       return { bottom: Math.round(b.bottom), bar: Math.round(bar.top), width: document.documentElement.scrollWidth }; })()`);
@@ -333,15 +431,35 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     serverDown = false;
     assert((await admin.post({ action: 'demo_set', enabled: '0' })).ok, 'Demo aus');
     await pushBox(base, admin);
-    await page.waitFor(titleIs('Alles bereit'), 15000);
+    await page.waitFor(titleIs('Alles bereit') + ` && !document.querySelector('.bands')`, 15000);
+    // Den Verlauf einmal laden (das Gerät merkt sich den Stand), zurück.
+    await page.eval(`location.hash = '#/verlauf'`);
+    await page.waitFor(`document.querySelectorAll('.log-row').length > 0 && !document.querySelector('.log-stale')`, 10000);
+    await page.eval(`location.hash = '#/uebersicht'`);
+    await page.waitFor(titleIs('Alles bereit'), 5000);
     await sandboxServer(sandbox, 'stop', 'site');
     serverDown = true;
-    await page.waitFor(`${titleIs('NAS nicht erreichbar')} && !!document.querySelector('.status-card.is-warn')`, 16000);
+    await page.waitFor(`${titleIs('NAS nicht erreichbar')} && !!document.querySelector('.status-card.is-warn') && !!document.querySelector('.unsure-band:not(.is-crit)')`, 16000);
+    const band = await text(page, '.unsure-band');
+    assert(band.includes('Keine Verbindung zum NAS') && /angezeigte Werte können veraltet sein \(Stand \d\d:\d\d:\d\d\)/.test(band), 'Band orange: ' + band);
+    for (const id of ['box', 'wifi', 'watch', 'keys', 'alarm']) {
+      assert(await page.eval(`!!document.querySelector('.chk-${id}.tone-unknown')`), `Prüfzeile ${id} grau, solange das NAS nicht antwortet`);
+    }
     await shot(page, 'nas-orange');
+    // Verlauf ohne NAS: der gemerkte Stand bleibt lesbar, aber mit Hinweis
+    // oben - und das Band steht auch hier.
+    await page.eval(`location.hash = '#/verlauf'`);
+    await page.waitFor(`!!document.querySelector('.log-stale') && document.querySelectorAll('.log-row').length > 0 && !!document.querySelector('.unsure-band')`, 15000);
+    assert(/^Verlauf konnte nicht aktualisiert werden – Stand von \d\d:\d\d$/.test(await text(page, '.log-stale')), 'Verlauf: ' + await text(page, '.log-stale'));
+    assert(await page.eval(`(() => { const s = document.querySelector('.log-stale'), r = document.querySelector('.log-row');
+      return !!(s.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING); })()`), 'Hinweis steht über den Einträgen');
+    await page.eval('scrollTo(0, 0)');
+    await shot(page, 'nas-log');
+    await page.eval(`location.hash = '#/uebersicht'`);
     await sandboxServer(sandbox, 'start', 'site');
     serverDown = false;
     await pushBox(base, admin);
-    await page.waitFor(titleIs('Alles bereit'), 15000);
+    await page.waitFor(titleIs('Alles bereit') + ` && !document.querySelector('.bands')`, 15000);
 
     // ---- Alarm-Zustände der Box ----------------------------------------------
     await pushBox(base, admin, { alarm_pending: '1', key_progress: '1/3' });
@@ -368,6 +486,36 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.click('.cmd-cancel');
     await page.waitFor(`(document.querySelector('.cmd-line')?.textContent || '').includes('abgebrochen') && !document.querySelector('.cmd-cancel')`, 10000);
 
+    // ---- Abgemeldet während eines Alarms: Ergebnis bleibt, „Neu anmelden“ ---
+    // Die Antwort auf den Alarm-POST wird zurückgehalten, bis die Sitzung
+    // abgelaufen ist (Cookie gelöscht -> nächste Status-Abfrage 401); dann
+    // kommt das Ergebnis. Ohne „Neu anmelden“ gäbe es in der Home-Bildschirm-
+    // App keinen Weg weiter.
+    await page.eval('scrollTo(0, 0)');
+    fetchMode = 'hold-post';
+    await page.send('Fetch.enable', { patterns: [{ urlPattern: '*dashboard_api.php*', requestStage: 'Response' }] });
+    await openConfirmVia(page, '.ov-alarm');
+    await mouseHold(page, '.confirm .hold', 1600);
+    for (let i = 0; i < 400 && !heldResponses.length; i++) await sleep(50);
+    assert(heldResponses.length === 1, 'Antwort des Alarms zurückgehalten: ' + heldResponses.length);
+    await page.send('Network.clearBrowserCookies');
+    await page.waitFor(`FW.store.getState().authLost === true`, 12000);
+    assert(await page.eval(`!document.querySelector('.status-relogin')`), 'während des Versands noch kein „Neu anmelden“');
+    fetchMode = null;
+    for (const id of heldResponses.splice(0)) await page.send('Fetch.continueRequest', { requestId: id });
+    await page.send('Fetch.disable');
+    await page.waitFor(`(document.querySelector('.result-title')?.textContent || '').includes('von 3 erreicht')
+      && !!document.querySelector('.status-relogin') && !!document.querySelector('.result-relogin')`, 15000);
+    assert(await text(page, '.status-title') === 'Abgemeldet', 'Urteil Abgemeldet');
+    assert(/^Abgemeldet – angezeigte Werte werden nicht mehr aktualisiert/.test(await text(page, '.unsure-band')), 'Band: abgemeldet');
+    assert(await page.eval(`document.querySelector('.status-relogin').getAttribute('href') === 'index.php'
+      && document.querySelector('.result-relogin').getAttribute('href') === 'index.php'`), '„Neu anmelden“ führt zur Anmeldung');
+    assert(await page.eval(`!document.querySelector('.result-check-log')`), 'abgemeldet: statt „Im Verlauf prüfen“ „Neu anmelden“');
+    await page.eval('scrollTo(0, 0)');
+    await shot(page, 'relogin');
+    await cardInView(page);
+    await shot(page, 'relogin-result');
+
     // ---- Lese-Rolle ------------------------------------------------------------
     // Mit allem, was dem Admin Knöpfe zeigen würde: Demo-Modus, wartender
     // TEST-Befehl, gemerkte nicht Erreichte (localStorage dieses Geräts).
@@ -390,8 +538,11 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert((await text(page, '.ov-readonly')).includes('Admin'), 'Satz: einen Admin verständigen');
     await shot(page, 'readonly');
 
-    // ---- Ausblenden: Ergebnis-Karte und gemerkte Liste weg -------------------
+    // ---- Ausblenden: erst nachfragen, dann Ergebnis-Karte und Liste weg -----
     await page.click('.result-dismiss');
+    await page.waitFor(`!!document.querySelector('.confirm .btn-danger')`, 3000);
+    assert(await page.eval(`!!document.querySelector('.result-card')`), 'erst nach dem Bestätigen ausgeblendet');
+    await page.click('.confirm .btn-danger');
     await page.waitFor(`!document.querySelector('.result-card')`, 3000);
     assert(await page.eval(`localStorage.getItem('fwAlarm.lastUnreached') === null`), 'gemerkte Liste gelöscht');
     assert((await admin.post({ action: 'cancel' })).ok, 'TEST abgebrochen (Admin)');

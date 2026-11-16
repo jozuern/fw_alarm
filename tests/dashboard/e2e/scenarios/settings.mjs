@@ -11,7 +11,7 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { apiSession } from '../cdp.mjs';
-import { pushBox, readData, setStatusAge, barkLog, winPath } from '../sandbox.mjs';
+import { pushBox, readData, editData, setStatusAge, barkLog, winPath } from '../sandbox.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const q = (s) => JSON.stringify(s);
@@ -318,8 +318,28 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert((await text(page, '.set-choice[aria-pressed="true"] .row-label')) === '12 Std', 'gewählt: 12 Std');
     assert((await text(page, '.set-mute-page')).includes('Gilt auch für laufende Stummschaltungen.'), 'Hinweis laufende Stummschaltungen');
     assert(await hitHeight(page, '.set-choice[data-value="14400"]') >= 44, 'Auswahl: Tippfläche >= 44 px');
+    // Verkürzen, während Anna schon 5 Std stumm ist: Sie würde sofort laut
+    // (und bekäme eine Nachricht) - erst nachfragen, mit Namen.
+    assert((await admin.post({ action: 'keys_mute', id: String(ids.anna), muted: '1' })).ok, 'Anna stumm');
+    editData(sandbox, 'alarm_keys', (d) => { d.keys.find((k) => k.id === ids.anna).muted_at = Math.floor(Date.now() / 1000) - 5 * 3600; });
+    await page.eval('FW.store.refreshKeys()');
+    await page.waitFor(`(FW.store.getState().keys?.keys || []).some((k) => k.id === ${ids.anna} && k.muted && Date.now() / 1000 - k.muted_at > 4 * 3600)`, 5000);
     await page.click('.set-choice[data-value="14400"]');
+    await waitConfirm(page);
+    assert((await text(page, '.confirm-title')).includes('4 Std'), 'Frage nennt den neuen Wert: ' + await text(page, '.confirm-title'));
+    const shortenQ = await text(page, '.confirm-text');
+    assert(shortenQ.includes('1 stumm geschalteter Empfänger wird sofort wieder laut') && shortenQ.includes('Anna') && !shortenQ.includes('Ben'), 'Frage nennt Anna: ' + shortenQ);
+    await shot(page, 'mobile-mute-shorten');
+    await page.click('.confirm .btn-cancel');
+    await page.waitFor(`!document.querySelector('.confirm')`, 3000);
+    await sleep(300);
+    assert((await list()).mute_max_seconds === 43200, 'Abbrechen: unverändert 12 Std');
+    assert((await text(page, '.set-choice[aria-pressed="true"] .row-label')) === '12 Std', 'Abbrechen: Auswahl bleibt 12 Std');
+    await page.click('.set-choice[data-value="14400"]');
+    await waitConfirm(page);
+    await page.click('.confirm .btn-danger');
     await until(async () => (await list()).mute_max_seconds === 14400, 6000, 'mute_max_seconds 14400');
+    await until(async () => !(await list()).keys.find((k) => k.id === ids.anna).muted, 6000, 'Anna wieder laut');
     await page.waitFor(`(document.querySelector('.set-mute-page .msg')?.textContent || '').includes('Gespeichert')`, 5000);
     const ben = (await list()).keys.find((k) => k.id === ids.ben);
     assert(ben.mute_until === ben.muted_at + 14400, 'Ben: mute_until = muted_at + 4 Std');

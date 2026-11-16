@@ -33,6 +33,8 @@
   const NAS_ALERT_AFTER_FAILS = 3;
   const RECENT_LIMIT = 5;
   const UNREACHED_STORE = 'fwAlarm.lastUnreached';
+  // Versand ohne (bisher) eindeutiges Ergebnis - siehe L.validateSendMarker.
+  const SEND_STORE = 'fwAlarm.sendPending';
   const BROWSER_ALERT_STORE = 'fwAlarm.browserAlert';
   const MODE_CHANGED_NOTE = 'Der Demo-/LIVE-Modus hat sich gerade geändert – Bestätigung zurückgesetzt. Bitte Lage prüfen und bei Bedarf neu auslösen.';
   const RESTORED_NOTE = 'Auf diesem Gerät gemerkt (vor dem Neuladen der Seite):';
@@ -78,7 +80,10 @@
       keysCorrupt: '',          // Meldung: Liste samt Sicherung unlesbar
       keysError: '',            // Liste konnte noch nie geladen werden
       alarmInfo: undefined,     // undefined = noch nicht geladen, null = nichts im Verlauf
-      log: { filter: 'all', limit: L.LOG_STEP, entries: null, more: false, error: '', query: '', serverTime: 0, loadingMore: false },
+      alarmInfoFailed: false,   // letzter Abruf von „Letzter Alarm“ gescheitert
+      // error: Text zum Verlauf; moreFailed: er gehört zu „Ältere laden“ (steht
+      // dann unten am Knopf), sonst oben über der Liste.
+      log: { filter: 'all', limit: L.LOG_STEP, entries: null, more: false, error: '', moreFailed: false, query: '', serverTime: 0, loadingMore: false },
       recent: { entries: null, serverTime: 0 },   // "Letzte Ereignisse" der breiten Übersicht
       notify: null,
       notifyError: '',
@@ -175,8 +180,11 @@
     const ctx = {
       status, offline, seenAge, watchdog,
       stale: s.stale, statusError: s.statusError,
+      // Server-Zeit (ms) der letzten erfolgreichen Status-Antwort (Band).
+      lastOkMs: s.lastOkAt ? s.lastOkAt + s.serverOffset * 1000 : 0,
       nasKeysVersion: s.nasKeysVersion,
-      keysSummary, keysCorrupt: !!s.keysCorrupt,
+      keysSummary, keysCorrupt: !!s.keysCorrupt, keysError: !!s.keysError,
+      alarmInfoFailed: !!s.alarmInfoFailed, alarmInfoKnown: s.alarmInfo !== undefined,
       demo: s.demo, demoOn, deviceHint: s.deviceHint, mismatchMs,
       readOnly: s.readOnly, authLost: s.authLost,
       // Abgemeldet, aber NICHT neu geladen (ein Alarm lief): dann bleibt der
@@ -192,6 +200,7 @@
       verdict: L.verdict(ctx),
       hints,
       overviewRows: L.overviewRows(ctx),
+      unsureBand: L.unsureBand(ctx),
       boxRows: L.boxRows(status, ctx),
       keysSummary,
       alarmFact,
@@ -249,10 +258,14 @@
   const wantsRecent = (s) => section(s) === 'uebersicht' && s.wide;
   const wantsSettings = (s) => section(s) === 'einstellungen' && !s.readOnly;
 
+  // Verlauf und „Letzte Ereignisse“ getrennt betrachten: Am PC braucht die
+  // Übersicht schon den Verlauf-Poller - der Wechsel in den Verlauf muss
+  // trotzdem sofort laden (sonst stünde bis zu 30 s der Stand vom letzten
+  // Besuch da, als wäre er frisch).
   function setRoute(route, wide) {
-    const before = { log: wantsLog(state) || wantsRecent(state), settings: wantsSettings(state) };
+    const before = { log: wantsLog(state), recent: wantsRecent(state), settings: wantsSettings(state) };
     set({ route: routePath(route) || 'uebersicht', wide: wide === undefined ? state.wide : !!wide });
-    if (!before.log && (wantsLog(state) || wantsRecent(state))) refreshLog();
+    if ((!before.log && wantsLog(state)) || (!before.recent && wantsRecent(state))) refreshLog();
     if (!before.settings && wantsSettings(state)) {
       refreshNotify();
       refreshSettings();
@@ -379,6 +392,18 @@
   });
 
   const LOG_MORE_ERROR = 'Ältere Einträge konnten nicht geladen werden – bitte noch einmal versuchen.';
+  const LOG_LOAD_ERROR = 'Verlauf konnte nicht geladen werden – neuer Versuch läuft automatisch.';
+
+  // Abruf gescheitert (Netz, HTTP-Fehler oder Antwort ohne ok). Stehen schon
+  // Einträge da, bleiben sie lesbar - aber NIE ohne Hinweis: Wer nach
+  // „Antwort unklar“ im Verlauf prüft, darf einen alten Stand nicht für
+  // „nichts gesendet“ halten.
+  function logFailed() {
+    const log = state.log;
+    if (log.entries === null) setLog({ error: LOG_LOAD_ERROR, moreFailed: false, loadingMore: false });
+    else if (log.loadingMore) setLog({ loadingMore: false, error: LOG_MORE_ERROR, moreFailed: true });
+    else setLog({ error: `Verlauf konnte nicht aktualisiert werden – Stand von ${L.fmtClock(log.serverTime)}`, moreFailed: false });
+  }
 
   async function loadLog() {
     const { filter, limit } = state.log;
@@ -388,7 +413,7 @@
       // Stand - die Abfrage für den neuen läuft schon hinterher (Poller).
       if (filter !== state.log.filter || limit !== state.log.limit) return;
       if (!data.ok) {
-        if (state.log.loadingMore) setLog({ loadingMore: false, error: LOG_MORE_ERROR });
+        logFailed();
         return;
       }
       const entries = Array.isArray(data.entries) ? data.entries : [];
@@ -398,13 +423,14 @@
         // Server-Deckel noch nicht erreicht ist.
         more: limit < L.LOG_MAX && entries.length >= limit,
         error: '',
+        moreFailed: false,
         loadingMore: false,
         serverTime: Number(data.server_time) || Math.floor(Date.now() / 1000)
       });
     } catch (err) {
       if (isAuth(err)) return;
-      if (state.log.entries === null) setLog({ error: 'Verlauf konnte nicht geladen werden – neuer Versuch läuft automatisch.' });
-      else if (state.log.loadingMore) setLog({ loadingMore: false, error: LOG_MORE_ERROR });
+      if (filter !== state.log.filter || limit !== state.log.limit) return;
+      logFailed();
     }
   }
 
@@ -433,10 +459,15 @@
     if (state.authLost) return;
     try {
       const data = await api.get('log_view', { limit: 12, filter: 'alarm_core' }, api.TIMEOUT.POLL);
-      if (!data.ok) return;
-      set({ alarmInfo: keep(state.alarmInfo, L.deriveAlarmInfo(data.entries || [])) });
+      if (!data.ok) {
+        set({ alarmInfoFailed: true });
+        return;
+      }
+      set({ alarmInfo: keep(state.alarmInfo, L.deriveAlarmInfo(data.entries || [])), alarmInfoFailed: false });
     } catch (err) {
-      // die Zeile behält den letzten bekannten Stand
+      // Die Zeile behält den letzten bekannten Stand - grau und mit Zusatz
+      // „nicht aktualisiert“ (overviewRows).
+      if (!isAuth(err)) set({ alarmInfoFailed: true });
     }
   });
 
@@ -533,6 +564,15 @@
     }
   }
 
+  // Selbstheilung: Die Erkennung „veraltet“ hängt am Sekundentakt, und den
+  // hält stop() mit an. Kommt die Seite zurück, ohne dass visibilitychange
+  // feuert (iOS-Seitencache, Home-Bildschirm-App), läuft sonst nichts mehr -
+  // der alte Stand sähe frisch aus. pageshow/focus bei sichtbarer Seite
+  // starten deshalb wieder (start() tut nichts, wenn schon alles läuft).
+  function heal() {
+    if (!env.hidden() && !timers.length && !state.authLost) start();
+  }
+
   // Sitzung serverseitig abgelaufen (HTTP 401): Abfragen aus, "Abgemeldet",
   // dann zur Anmeldung neu laden. Läuft gerade ein REAL ALARM/eine
   // ENTWARNUNG, wird NICHT neu geladen: Die Anfrage läuft auf dem NAS weiter -
@@ -621,7 +661,9 @@
       confirm: {
         id, deadline, text, expectDemo,
         title: String(o.title || ''),
-        confirmLabel: String(o.confirmLabel || 'Bestätigen'),
+        // Steht auf dem Knopf - beim Halten-Knopf ebenfalls (die Aktion, z.B.
+        // „Halten: Alarm senden“).
+        confirmLabel: String(o.confirmLabel || (o.hold ? 'Gedrückt halten zum Senden' : 'Bestätigen')),
         hold: !!o.hold,
         tag: o.tag ? String(o.tag) : null
       }
@@ -668,19 +710,24 @@
   // onResult (optional): bekommt das Ergebnis {ok, text, kind} der
   // bestätigten Aktion - z.B. für die Rückmeldung am Knopf, wenn das NAS den
   // Demo-Alarm über die Box ablehnt (die Bestätigung selbst verwirft es).
+  // Die Beschriftung des Halten-Knopfs nennt die Aktion.
+  // Beim Öffnen wird die Empfängerliste neu geholt (sie läuft sonst nur alle
+  // 30 s): Die OFFENE Frage bleibt dabei, wie sie ist (Momentaufnahme), die
+  // nächste kennt den neuen Stand.
   const CONFIRM_LABELS = {
-    alarm: 'Ja, Alarm auslösen',
-    false_alarm: 'Ja, Entwarnung senden',
-    box_alarm: 'Ja, Demo-Alarm auslösen'
+    alarm: 'Halten: Alarm senden',
+    false_alarm: 'Halten: Entwarnung senden',
+    box_alarm: 'Halten: Demo-Alarm senden'
   };
   function confirmAlarm(kind, onResult) {
     if (state.alarmInFlight || !CONFIRM_LABELS[kind]) return null;
     const demo = state.demo;
+    const demoOn = !!(demo && demo.enabled);
     // Der Alarm über die Box ist ein reines Demo-Werkzeug - im LIVE-Modus
     // wäre er ein echter Alarm an alle (der Server blockt das zusätzlich).
-    if (kind === 'box_alarm' && !(demo && demo.enabled)) return null;
+    if (kind === 'box_alarm' && !demoOn) return null;
     const expect = L.expectDemoOf(demo);
-    const q = L.alarmQuestion(kind, demo, keyList());
+    const q = L.alarmQuestion(kind, demo, keyList(), { keysCorrupt: !!state.keysCorrupt });
     const run = kind === 'box_alarm' ? () => enqueueBoxAlarm(expect) : () => sendNasAlarm(kind, expect);
     const send = () => run().then((res) => {
       if (typeof onResult === 'function') {
@@ -688,7 +735,10 @@
       }
       return res;
     });
-    return openConfirm({ title: q.title, text: q.text, confirmLabel: CONFIRM_LABELS[kind], hold: true, expectDemo: expect, onConfirm: send });
+    const label = kind === 'alarm' && demoOn ? 'Halten: Demo-Alarm senden' : CONFIRM_LABELS[kind];
+    const id = openConfirm({ title: q.title, text: q.text, confirmLabel: label, hold: true, expectDemo: expect, onConfirm: send });
+    if (id) refreshKeys();
+    return id;
   }
 
   // "Nur an die nicht Erreichten erneut senden" - immer aus dem gemerkten
@@ -704,10 +754,12 @@
     const demo = state.demo;
     const expect = L.expectDemoOf(demo);
     const q = L.alarmQuestion('resend', demo, keyList(), { names: retry.names, what: u.what, ids });
-    return openConfirm({
-      title: q.title, text: q.text, confirmLabel: 'Ja, erneut senden', hold: true, expectDemo: expect, tag: 'resend',
+    const id = openConfirm({
+      title: q.title, text: q.text, confirmLabel: 'Halten: erneut senden', hold: true, expectDemo: expect, tag: 'resend',
       onConfirm: () => sendNasAlarm(u.action, expect, ids, u.startedAt)
     });
+    if (id) refreshKeys();
+    return id;
   }
 
   // ---- Ergebnis nach Alarm/Entwarnung --------------------------------------
@@ -722,10 +774,14 @@
     }, fields);
   }
 
-  // Ein neues Ergebnis schließt eine offene Nachsende-Bestätigung (sie
-  // gehörte zum alten Ergebnis).
+  // Ein neues Ergebnis schließt eine offene Nachsende- bzw. Ausblenden-
+  // Bestätigung (sie gehörte zum alten Ergebnis).
+  const RESULT_TAGS = ['resend', 'dismiss'];
+  function closeResultConfirm() {
+    if (state.confirm && RESULT_TAGS.includes(state.confirm.tag)) closeConfirm();
+  }
   function setResult(result) {
-    if (state.confirm && state.confirm.tag === 'resend') closeConfirm();
+    closeResultConfirm();
     set({ result });
   }
 
@@ -749,16 +805,56 @@
     return value;
   }
 
+  // Merker „Versand ohne Ergebnis“ (siehe L.validateSendMarker).
+  function markSend(action, atMs) {
+    writeStored(SEND_STORE, JSON.stringify({ action, at: atMs }));
+  }
+  const clearSendMark = () => writeStored(SEND_STORE, null);
+
+  function restoreSendMark() {
+    const raw = readStored(SEND_STORE);
+    if (!raw) return null;
+    const value = L.validateSendMarker(raw, (Date.now() / 1000 + state.serverOffset) * 1000);
+    if (!value) clearSendMark();
+    return value;
+  }
+
+  // „Ausblenden“ = die Person hat das Ergebnis gelesen und erledigt: auch die
+  // gemerkte Liste und der Merker „ohne Ergebnis“ gehen.
   function clearResult() {
-    if (state.confirm && state.confirm.tag === 'resend') closeConfirm();
+    closeResultConfirm();
     setUnreached(null);
+    clearSendMark();
     set({ result: null });
+  }
+
+  // Ein Tipp auf „Ausblenden“ löscht sonst die Namen der nicht Erreichten
+  // (auch auf diesem Gerät) - solange welche gemerkt sind, erst nachfragen.
+  // Liefert die id der Bestätigung bzw. null (sofort ausgeblendet).
+  function dismissResult() {
+    const u = state.unreached;
+    if (!u || !Array.isArray(u.entries) || !u.entries.length) {
+      clearResult();
+      return null;
+    }
+    const n = u.entries.length;
+    const names = u.entries.map((e) => e.name).join(', ');
+    return openConfirm({
+      title: 'Liste der nicht Erreichten ausblenden?',
+      text: `${n === 1 ? 'Der Name verschwindet' : `Die ${n} Namen verschwinden`} auch auf diesem Gerät: ${names}. Erst ausblenden, wenn alle anders verständigt sind.`,
+      confirmLabel: 'Ja, ausblenden',
+      hold: false,
+      tag: 'dismiss',
+      onConfirm: clearResult
+    });
   }
 
   function showSendResult(action, what, data, resend) {
     // Uhrzeit nach der Uhr des NAS, nicht nach der evtl. falschen Geräte-Uhr.
     const nowMs = (Date.now() / 1000 + state.serverOffset) * 1000;
     const results = Array.isArray(data.results) ? data.results : [];
+    // Eindeutige Antwort: kein „ohne Ergebnis“ mehr.
+    clearSendMark();
     const r = L.buildUnreached(state.unreached, action, data, resend, nowMs);
     // Nur ein Ergebnis MIT Versand ändert die gemerkte Liste - "nichts
     // gesendet" lässt die Namen stehen.
@@ -783,6 +879,9 @@
     const what = L.whatOf(action);
     const resend = onlyIds !== null && onlyIds !== undefined;
     set({ alarmInFlight: true, busyCount: state.busyCount + 1 });
+    // Verwirft der Browser die Seite vor der Antwort (iOS beim Wechsel in die
+    // Telefon-App), weiß die neu geladene Seite so: Ergebnis unbekannt.
+    markSend(action, (Date.now() / 1000 + state.serverOffset) * 1000);
     showNote(`${what} wird gesendet… (kann bis zu einer Minute dauern – Seite nicht schließen)`, '');
     try {
       const fields = { action, expect_demo: expect === null || expect === undefined ? undefined : String(expect) };
@@ -819,7 +918,9 @@
         text = `Antwort unklar (${detail}) – ${what} wurde evtl. gesendet. Erst Verlauf prüfen, nicht sofort erneut auslösen!`;
       }
       // Eine sicher NICHT rausgegangene Nachsendung wird wieder angeboten
-      // (mit neuer Bestätigung) - nach "unklar" bewusst nicht.
+      // (mit neuer Bestätigung) - nach "unklar" bewusst nicht. Der Merker
+      // „ohne Ergebnis“ bleibt nur nach "unklar" stehen.
+      if (!unclear) clearSendMark();
       showNote(text, unclear ? 'warn' : 'fail', resend && !unclear);
       if (unclear) {
         UNCLEAR_RECHECK_MS.forEach((ms) => setTimeout(() => { refreshLog(); refreshAlarmInfo(); }, ms));
@@ -995,11 +1096,32 @@
   }
 
   // ---- Verlauf -------------------------------------------------------------
-  function setLogFilter(filter) {
+  // opts.clearQuery: die Suche leeren (Filter aus der Adresse, z.B. über
+  // „Letzter Alarm“ - eine alte Suche würde die Alarme sonst verstecken);
+  // auch beim gleichen Filter. Filterwechsel per Hand behält die Suche.
+  function setLogFilter(filter, opts) {
     const f = L.LOG_FILTERS.includes(filter) ? filter : 'all';
-    if (f === state.log.filter) return;
-    setLog({ filter: f, limit: L.LOG_STEP, entries: null, more: false, error: '', loadingMore: false });
+    const clear = opts && opts.clearQuery ? { query: '' } : {};
+    if (f === state.log.filter) {
+      if (clear.query === '' && state.log.query) setLog(clear);
+      return;
+    }
+    setLog(Object.assign({ filter: f, limit: L.LOG_STEP, entries: null, more: false, error: '', moreFailed: false, loadingMore: false }, clear));
     refreshLog();
+  }
+
+  // „Im Verlauf prüfen“ (nach „Antwort unklar“ bzw. „ohne Ergebnis“): Alarme,
+  // ohne Suche, und IMMER frisch geladen - der gemerkte Stand vom letzten
+  // Besuch enthielte den neuen Versand evtl. noch nicht und läse sich wie
+  // „nichts gesendet“. Den Abruf stößt der Seitenwechsel an (setRoute);
+  // steht der Verlauf schon da, sofort.
+  function verifyInLog() {
+    setLog({ filter: 'alarm', limit: L.LOG_STEP, entries: null, more: false, error: '', moreFailed: false, loadingMore: false, query: '' });
+    if (state.authLost) {
+      setLog({ error: 'Abgemeldet – zum Prüfen des Verlaufs bitte neu anmelden.' });
+      return;
+    }
+    if (wantsLog(state)) refreshLog();
   }
 
   // Suche: filtert clientseitig die geladenen Einträge (L.logMatches).
@@ -1030,10 +1152,14 @@
     watchKey = null;
     api.setCsrf(String(o.csrf || ''));
     const restored = restoreUnreached();
+    const pending = restoreSendMark();
     set({ unreached: restored, browserAlert: readStored(BROWSER_ALERT_STORE) === '1' });
     // Gemerkte nicht Erreichte (z.B. vor einem Neuladen nach Ablauf der
-    // Anmeldung) wieder anzeigen - samt Nachsende-Angebot.
-    if (restored) showNote(RESTORED_NOTE, 'warn', true);
+    // Anmeldung) wieder anzeigen - samt Nachsende-Angebot. Ging der letzte
+    // Versand ohne eindeutiges Ergebnis zu Ende (unklar oder Seite vorher
+    // verworfen), gibt es KEIN Angebot: erst Verlauf prüfen (Spec §7.4).
+    if (pending) showNote(L.sendMarkerNote(pending), 'warn', false);
+    else if (restored) showNote(RESTORED_NOTE, 'warn', true);
     if (!wired) {
       wired = true;
       api.onAuthLoss(handleAuthLoss);
@@ -1042,6 +1168,10 @@
       api.onCsrfError(() => { refreshStatus(); });
       const doc = root.document;
       if (doc && typeof doc.addEventListener === 'function') doc.addEventListener('visibilitychange', handleVisibility);
+      if (typeof root.addEventListener === 'function') {
+        root.addEventListener('pageshow', heal);
+        root.addEventListener('focus', heal);
+      }
     }
   }
 
@@ -1050,10 +1180,10 @@
     init, start, stop, tick, getState, subscribe, useStore, derive, setRoute,
     refreshAll, refreshStatus, refreshKeys, refreshLog, refreshAlarmInfo, refreshNotify, refreshSettings,
     openConfirm, closeConfirm, confirmNow, confirmAlarm, confirmResend,
-    enqueueTest, enqueueBoxAlarm, cancelCommand, sendNasAlarm, clearResult,
+    enqueueTest, enqueueBoxAlarm, cancelCommand, sendNasAlarm, clearResult, dismissResult,
     demoSet, keyAdd, keyDelete, keyMute, keyPermanent, keyVolume, keyTest, keyRename, keyReplace, keyPhone,
     notifySet, notifyTest, settingsSet,
-    setLogFilter, setLogQuery, loadMoreLog,
+    setLogFilter, setLogQuery, loadMoreLog, verifyInLog,
     setBrowserAlert, onTransition
   };
 })(typeof window !== 'undefined' ? window : globalThis);

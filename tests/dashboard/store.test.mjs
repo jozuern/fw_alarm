@@ -152,6 +152,8 @@ function harness(opts = {}) {
       resolve(handler ? handler(fields) : reply(400, { ok: false, message: 'Unbekannte Aktion.' }));
     });
   };
+  // Fenster-Ereignisse (pageshow, focus) - wie document.fire().
+  const winListeners = {};
   const ctx = loadScripts(FILES, Object.assign({
     fetch,
     AbortSignal: { timeout: () => ({}) },
@@ -160,12 +162,14 @@ function harness(opts = {}) {
     document: doc,
     location: { reload() { reloads.count += 1; } },
     htmPreact: { useState() {}, useEffect() {}, useRef() {} },
+    addEventListener(type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); },
     __clock: clock
   }, timers));
   vm.runInContext('Date.now = function () { return __clock.now; };', ctx);
   const store = ctx.FW.store;
   return {
     ctx, store, clock, timers, storage, doc, reloads, requests, routes, logic: ctx.FW.logic,
+    fireWin: (type) => (winListeners[type] || []).forEach((fn) => fn({ type })),
     s: () => store.getState(),
     d: () => store.derive(),
     posts: (action) => requests.filter((r) => r.method === 'POST' && (!action || r.action === action)),
@@ -1251,5 +1255,356 @@ test('Verlauf: „Ältere laden“ ist während des Ladens gesperrt (Doppeltipp 
   await settle();
   assert.equal(h.s().log.loadingMore, false);
   assert.match(h.s().log.error, /Ältere Einträge/);
+  assert.equal(h.s().log.moreFailed, true);         // gehört zum Knopf unten
   assert.equal(h.s().log.entries.length, 50);
+});
+
+// ==== Abschluss-Prüfung des Neubaus (I1–I3, M1–M7) ==========================
+
+test('I1a: Verlauf-Abruf scheitert bei geladenen Einträgen → Fehler mit Stand, Einträge bleiben', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  const one = [{ event: 'key_added', at: T0 - 5, label: 'A', key: 'k' }];
+  h.routes.log_view = (f) => reply(200, { ok: true, entries: f.filter === 'alarm_core' ? [] : one, server_time: T0 });
+  h.store.setRoute('verlauf');
+  await settle();
+  assert.equal(h.s().log.entries.length, 1);
+  assert.equal(h.s().log.error, '');
+  const stale = `Verlauf konnte nicht aktualisiert werden – Stand von ${h.logic.fmtClock(T0)}`;
+  h.routes.log_view = () => { throw new TypeError('Failed to fetch'); };
+  await h.store.refreshLog();
+  assert.equal(h.s().log.entries.length, 1);       // alter Stand bleibt lesbar …
+  assert.equal(h.s().log.error, stale);            // … sieht aber nicht frisch aus
+  assert.equal(h.s().log.moreFailed, false);       // gehört nach oben, nicht zu „Ältere laden“
+  // Eine Antwort ohne ok zählt genauso.
+  h.routes.log_view = (f) => reply(200, { ok: true, entries: f.filter === 'alarm_core' ? [] : one, server_time: T0 });
+  await h.store.refreshLog();
+  assert.equal(h.s().log.error, '');
+  h.routes.log_view = () => reply(200, { ok: false, message: 'kaputt' });
+  await h.store.refreshLog();
+  assert.equal(h.s().log.error, stale);
+  // Wieder erreichbar: Fehler weg.
+  h.routes.log_view = (f) => reply(200, { ok: true, entries: f.filter === 'alarm_core' ? [] : one, server_time: T0 + 60 });
+  await h.store.refreshLog();
+  assert.equal(h.s().log.error, '');
+});
+
+test('I1a: „Letzter Alarm“ sieht nicht frisch aus, wenn sein Abruf scheitert', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  await h.store.refreshStatus();
+  h.routes.log_view = () => reply(200, { ok: true, entries: [{ event: 'nas_alarm', at: T0 - 600, ok: true, demo: false }], server_time: T0 });
+  await h.store.refreshAlarmInfo();
+  const row = () => h.d().overviewRows.find((r) => r.id === 'alarm');
+  assert.equal(row().tone, 'crit');                // Alarm der letzten Stunde: rot
+  assert.equal(h.s().alarmInfoFailed, false);
+  h.routes.log_view = () => { throw new TypeError('Failed to fetch'); };
+  await h.store.refreshAlarmInfo();
+  assert.equal(h.s().alarmInfoFailed, true);
+  assert.equal(row().tone, 'unknown');
+  assert.match(row().value, /nicht aktualisiert/);
+  h.routes.log_view = () => reply(200, { ok: true, entries: [], server_time: T0 });
+  await h.store.refreshAlarmInfo();
+  assert.equal(h.s().alarmInfoFailed, false);
+  assert.equal(row().tone, '');
+  // Noch nie geladen und gescheitert: kein „…“ (sähe nach „lädt gleich“ aus).
+  const g = harness();
+  g.store.init(ADMIN);
+  await g.store.refreshStatus();
+  g.routes.log_view = () => reply(500, 'kaputt');
+  await g.store.refreshAlarmInfo();
+  const r = g.d().overviewRows.find((x) => x.id === 'alarm');
+  assert.equal(r.tone, 'unknown');
+  assert.equal(r.value, 'nicht abrufbar');
+});
+
+test('I1b: „Im Verlauf prüfen“ lädt frisch und leert die Suche; Filter aus der Adresse leert die Suche', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  h.routes.log_view = (f) => reply(200, { ok: true, entries: f.filter === 'alarm_core' ? [] : [{ event: 'nas_alarm', at: T0 - 9, ok: true, demo: false }], server_time: T0 });
+  h.store.setRoute('verlauf');
+  h.store.setLogFilter('alarm');
+  await settle();
+  h.store.setLogQuery('Tom');
+  const before = h.gets('log_view', 'alarm').length;
+  // Zurück auf der Übersicht: „Im Verlauf prüfen“ (gleicher Filter wie zuletzt).
+  h.store.setRoute('uebersicht');
+  h.store.verifyInLog();
+  assert.equal(h.s().log.filter, 'alarm');
+  assert.equal(h.s().log.query, '');
+  assert.equal(h.s().log.entries, null);           // kein gemerkter Stand, der „frisch“ aussieht
+  h.store.setRoute('#/verlauf?filter=alarm');
+  await settle();
+  assert.equal(h.gets('log_view', 'alarm').length, before + 1);
+  assert.equal(h.s().log.entries.length, 1);
+  // Filter in der Adresse: Suche leeren - auch beim gleichen Filter.
+  h.store.setLogQuery('Tom');
+  h.store.setLogFilter('alarm', { clearQuery: true });
+  assert.equal(h.s().log.query, '');
+  // Filterwechsel per Hand behält die Suche.
+  h.store.setLogQuery('Tom');
+  h.store.setLogFilter('keys');
+  assert.equal(h.s().log.query, 'Tom');
+  // Abgemeldet: kein endloses „Wird geladen…“.
+  h.routes.status = () => reply(401, { ok: false });
+  await h.store.refreshStatus();
+  h.store.verifyInLog();
+  assert.equal(h.s().log.entries, null);
+  assert.match(h.s().log.error, /neu anmelden/);
+});
+
+test('I1b: PC – von der Übersicht (Letzte Ereignisse) in den Verlauf lädt den Verlauf sofort', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  h.store.setRoute('verlauf', true);
+  await settle();
+  const full = () => h.gets('log_view', 'all').filter((r) => r.fields.limit === '25').length;
+  const n = full();
+  h.store.setRoute('uebersicht', true);
+  await settle();
+  h.store.setRoute('verlauf', true);
+  await settle();
+  assert.equal(full(), n + 1);
+});
+
+test('I1c: Band „keine aktuelle Antwort“ aus derive – orange, rot nach „offline“, nicht bei frischen Daten', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  assert.equal(h.d().unsureBand, null);            // noch keine Antwort: lädt, kein Band
+  await h.store.refreshStatus();
+  await h.store.refreshKeys();
+  assert.equal(h.d().unsureBand, null);
+  const at = h.logic.fmtClockMs(T0 * 1000);
+  h.routes.status = () => { throw new TypeError('Failed to fetch'); };
+  await h.store.refreshStatus();
+  assert.deepEqual(plain(h.d().unsureBand), { tone: 'warn', text: `Keine Verbindung zum NAS – angezeigte Werte können veraltet sein (Stand ${at})` });
+  // Spec §5.3: auch Empfänger und Letzter Alarm grau, solange unsicher.
+  for (const id of ['box', 'wifi', 'watch', 'keys', 'alarm']) {
+    assert.equal(h.d().overviewRows.find((r) => r.id === id).tone, 'unknown', id);
+  }
+  // Nur veraltet (15 s ohne Antwort): Wortlaut wie im Urteil.
+  const g = harness();
+  g.store.init(ADMIN);
+  await g.store.refreshStatus();
+  g.clock.now += 20000;
+  g.store.tick();
+  assert.equal(g.d().unsureBand.text, `Keine aktuelle Antwort vom NAS – angezeigte Werte können veraltet sein (Stand ${at})`);
+  // Letzter bekannter Stand „Box offline“: rot.
+  const o = harness();
+  o.store.init(ADMIN);
+  o.routes.status = () => reply(200, statusBody({ offline: true, seen_age_seconds: 900 }));
+  await o.store.refreshStatus();
+  assert.equal(o.d().unsureBand, null);            // Box offline, NAS frisch: die Status-Karte reicht
+  o.routes.status = () => { const e = new Error('t'); e.name = 'TimeoutError'; throw e; };
+  await o.store.refreshStatus();
+  assert.deepEqual(plain(o.d().unsureBand), { tone: 'crit', text: `Keine Antwort vom NAS (Zeitüberschreitung) – letzter bekannter Stand (${at}): Box OFFLINE` });
+  // Abgemeldet mit gehaltenem Alarm-Ergebnis: Werte werden nicht mehr frisch.
+  const a = harness();
+  a.store.init(ADMIN);
+  a.routes.false_alarm = () => reply(401, { ok: false });
+  await a.store.sendNasAlarm('false_alarm', '0');
+  assert.equal(a.d().unsureBand.tone, 'warn');
+  assert.match(a.d().unsureBand.text, /^Abgemeldet/);
+});
+
+test('I3: nach eindeutigem Ergebnis wieder angeboten; nach „unklar“ bzw. abgebrochenem Versand nicht', async () => {
+  const PENDING = 'fwAlarm.sendPending';
+  // (a) eindeutiges Ergebnis
+  const storage = memoryStorage();
+  const h = harness({ storage });
+  h.store.init(ADMIN);
+  h.routes.alarm = () => reply(200, partialResult);
+  await h.store.sendNasAlarm('alarm', '0');
+  assert.equal(storage.has(PENDING), false);
+  const a = harness({ storage });
+  a.store.init(ADMIN);
+  assert.equal(a.s().result.offerRetry, true);
+  assert.equal(a.s().result.head, 'Auf diesem Gerät gemerkt (vor dem Neuladen der Seite):');
+  assert.equal(a.d().retry.label, 'Nur an Tom erneut senden');
+  // (b) Antwort unklar: Neuladen bietet KEINE Nachsendung an.
+  h.routes.alarm = () => { throw new TypeError('Failed to fetch'); };
+  await h.store.sendNasAlarm('alarm', '0', [2], T0);
+  assert.equal(storage.has(PENDING), true);
+  const b = harness({ storage });
+  b.store.init(ADMIN);
+  assert.equal(b.s().result.offerRetry, false);
+  assert.equal(b.s().result.tone, 'warn');
+  assert.equal(b.d().retry, null);
+  assert.equal(b.store.confirmResend(), null);
+  assert.match(b.s().result.head, /^Letzter Versand ohne Ergebnis \(REAL ALARM, \d\d:\d\d:\d\d Uhr\) – erst Verlauf prüfen/);
+  assert.equal(b.s().unreached.entries[0].name, 'Tom');   // die Namen bleiben sichtbar
+  // (c) Versand begonnen, Seite vor der Antwort verworfen (iOS, Anruf).
+  const storage2 = memoryStorage();
+  const c = harness({ storage: storage2 });
+  c.store.init(ADMIN);
+  c.routes.false_alarm = () => new Promise(() => {});
+  c.store.sendNasAlarm('false_alarm', '0');
+  await settle();
+  assert.equal(storage2.has(PENDING), true);
+  const c2 = harness({ storage: storage2 });
+  c2.store.init(ADMIN);
+  assert.equal(c2.s().unreached, null);
+  assert.equal(c2.s().result.offerRetry, false);
+  assert.match(c2.s().result.head, /^Letzter Versand ohne Ergebnis \(ENTWARNUNG/);
+  // … auch mit einer älteren gemerkten Liste.
+  const storage3 = memoryStorage();
+  const d = harness({ storage: storage3 });
+  d.store.init(ADMIN);
+  d.routes.alarm = () => reply(200, partialResult);
+  await d.store.sendNasAlarm('alarm', '0');
+  d.routes.alarm = () => new Promise(() => {});
+  d.store.sendNasAlarm('alarm', '0', [2], T0);
+  await settle();
+  const d2 = harness({ storage: storage3 });
+  d2.store.init(ADMIN);
+  assert.equal(d2.s().unreached.entries[0].name, 'Tom');
+  assert.equal(d2.s().result.offerRetry, false);
+  assert.equal(d2.d().retry, null);
+  // Sicher NICHT gesendet (4xx) ist eindeutig: Merker weg.
+  d2.routes.alarm = () => reply(400, { ok: false, message: 'Ungültige Empfänger-Auswahl – es wurde NICHTS gesendet.' });
+  await d2.store.sendNasAlarm('alarm', '0', [2], T0);
+  assert.equal(storage3.has(PENDING), false);
+  // Ausblenden löscht den Merker ebenfalls; ein zu alter oder kaputter gilt nicht.
+  b.store.clearResult();
+  assert.equal(storage.has(PENDING), false);
+  const old = memoryStorage({ [PENDING]: JSON.stringify({ action: 'alarm', at: T0 * 1000 - 13 * 3600 * 1000 }) });
+  const e = harness({ storage: old });
+  e.store.init(ADMIN);
+  assert.equal(e.s().result, null);
+  assert.equal(old.has(PENDING), false);
+  const broken = memoryStorage({ [PENDING]: '{kaputt' });
+  const f = harness({ storage: broken });
+  f.store.init(ADMIN);
+  assert.equal(f.s().result, null);
+});
+
+test('M1: „Ausblenden“ fragt nach, solange nicht Erreichte gemerkt sind', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  h.routes.alarm = () => reply(200, partialResult);
+  await h.store.sendNasAlarm('alarm', '0');
+  const id = h.store.dismissResult();
+  assert.ok(id);
+  const c = h.s().confirm;
+  assert.equal(c.tag, 'dismiss');
+  assert.equal(c.hold, false);
+  assert.match(c.title, /ausblenden/i);
+  assert.match(c.text, /Tom/);
+  assert.ok(h.s().unreached);                       // noch nichts gelöscht
+  await h.store.confirmNow(id);
+  assert.equal(h.s().unreached, null);
+  assert.equal(h.s().result, null);
+  assert.equal(h.storage.has('fwAlarm.lastUnreached'), false);
+  // Ein neues Ergebnis schließt eine offene Frage (sie gehörte zum alten).
+  await h.store.sendNasAlarm('alarm', '0');
+  assert.ok(h.store.dismissResult());
+  await h.store.sendNasAlarm('alarm', '0');
+  assert.equal(h.s().confirm, null);
+  assert.ok(h.s().unreached);
+  // Ohne nicht Erreichte: sofort weg.
+  h.routes.alarm = () => reply(200, { ok: true, message: 'Gesendet.', results: [{ id: 1, label: 'Josh', ok: true, http: 200 }, { id: 2, label: 'Tom', ok: true, http: 200 }], started_at: T0 });
+  await h.store.sendNasAlarm('alarm', '0');
+  assert.equal(h.s().unreached, null);
+  assert.equal(h.store.dismissResult(), null);
+  assert.equal(h.s().result, null);
+  assert.equal(h.s().confirm, null);
+});
+
+test('M3: angehalten, obwohl sichtbar → pageshow/focus startet die Abfragen wieder', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  h.store.start();
+  await settle();
+  const all = [1000, 5000, 30000, 30000, 60000, 60000, 60000];
+  h.store.stop();                                   // z.B. Rückkehr aus dem iOS-Seitencache ohne visibilitychange
+  assert.deepEqual(h.timers.intervals(), []);
+  const n = h.gets('status').length;
+  h.clock.now += 20000;
+  h.fireWin('pageshow');
+  assert.deepEqual(h.timers.intervals(), all);
+  assert.equal(h.gets('status').length, n + 1);
+  assert.equal(h.s().nowMs, h.clock.now);           // gleich getaktet
+  h.store.stop();
+  h.fireWin('focus');
+  assert.deepEqual(h.timers.intervals(), all);
+  h.fireWin('focus');                               // läuft schon: nichts doppelt
+  assert.deepEqual(h.timers.intervals(), all);
+  // Versteckt: nicht starten.
+  h.doc.hidden = true;
+  h.doc.fire('visibilitychange');
+  h.fireWin('focus');
+  h.fireWin('pageshow');
+  assert.deepEqual(h.timers.intervals(), []);
+  h.doc.hidden = false;
+  h.doc.fire('visibilitychange');
+  h.store.stop();
+});
+
+test('M4: Halten-Knopf nennt die Aktion', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  await h.store.refreshStatus();
+  await h.store.refreshKeys();
+  const label = (kind) => {
+    h.store.confirmAlarm(kind);
+    const l = h.s().confirm && h.s().confirm.confirmLabel;
+    h.store.closeConfirm();
+    return l;
+  };
+  assert.equal(label('alarm'), 'Halten: Alarm senden');
+  assert.equal(label('false_alarm'), 'Halten: Entwarnung senden');
+  h.routes.alarm = () => reply(200, partialResult);
+  await h.store.sendNasAlarm('alarm', '0');
+  h.store.confirmResend();
+  assert.equal(h.s().confirm.confirmLabel, 'Halten: erneut senden');
+  h.store.closeConfirm();
+  h.routes.status = () => reply(200, statusBody({ demo: { enabled: true, key_id: 2, label: 'Tom' } }));
+  await h.store.refreshStatus();
+  assert.equal(label('alarm'), 'Halten: Demo-Alarm senden');
+  assert.equal(label('box_alarm'), 'Halten: Demo-Alarm senden');
+  // Ohne eigenen Text: Standard fürs Halten bzw. „Bestätigen“.
+  h.store.openConfirm({ title: 'x', text: 'y', hold: true, onConfirm: () => {} });
+  assert.equal(h.s().confirm.confirmLabel, 'Gedrückt halten zum Senden');
+  h.store.openConfirm({ title: 'x', text: 'y', hold: false, onConfirm: () => {} });
+  assert.equal(h.s().confirm.confirmLabel, 'Bestätigen');
+});
+
+test('M5: beschädigte Empfängerliste – die Alarm-Frage nennt die Not-Liste', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  await h.store.refreshStatus();
+  h.routes.keys_list = () => reply(200, { ok: false, code: 'keys_corrupt', message: 'Liste beschädigt.' });
+  await h.store.refreshKeys();
+  h.store.confirmAlarm('alarm');
+  const t = h.s().confirm.text;
+  assert.match(t, /Empfängerliste auf dem NAS ist beschädigt/);
+  assert.match(t, /Not-Liste aus der NAS-Konfiguration/);
+  assert.doesNotMatch(t, /noch nicht geladen/);
+});
+
+test('M6: Alarm-Frage holt die Empfängerliste neu – die offene Frage bleibt, wie sie ist', async () => {
+  const h = harness();
+  h.store.init(ADMIN);
+  await h.store.refreshStatus();
+  await h.store.refreshKeys();
+  const n = h.gets('keys_list').length;
+  h.routes.keys_list = () => reply(200, keysBody({ version: 6, keys: [...keysBody().keys, { id: 3, label: 'Anna', key_masked: 'an…01', muted: true, mute_volume: 3 }] }));
+  h.store.confirmAlarm('alarm');
+  const text = h.s().confirm.text;
+  assert.match(text, /an 2 Empfänger/);
+  await settle();
+  assert.equal(h.gets('keys_list').length, n + 1);
+  assert.equal(h.s().keys.keys.length, 3);
+  assert.equal(h.s().confirm.text, text);           // Momentaufnahme bleibt
+  h.store.closeConfirm();
+  h.store.confirmAlarm('alarm');
+  assert.match(h.s().confirm.text, /an 3 Empfänger/);
+  // Nachsendung ebenso.
+  h.store.closeConfirm();
+  h.routes.alarm = () => reply(200, partialResult);
+  await h.store.sendNasAlarm('alarm', '0');
+  const m = h.gets('keys_list').length;
+  h.store.confirmResend();
+  await settle();
+  assert.ok(h.gets('keys_list').length > m);
 });

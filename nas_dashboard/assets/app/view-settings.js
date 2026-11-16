@@ -609,7 +609,7 @@
           const on = v === String(shown);
           return html`<div class="row" key=${v}>
             <button type="button" class="row-main set-choice" data-value=${v} aria-pressed=${on ? 'true' : 'false'}
-              onClick=${() => { if (!on) run(v, onSave(v)); }}>
+              onClick=${() => { if (!on) run(v, onSave(v, shortText(c.text))); }}>
               <span class="row-text"><span class="row-label">${shortText(c.text)}</span></span>
               ${/\(Standard\)\s*$/.test(c.text) ? html`<span class="row-value">Standard</span>` : null}
               <span class="set-check" aria-hidden="true">${on ? html`<${ui.Icon} name="check"/>` : null}</span>
@@ -628,9 +628,23 @@
     const [msg, setMsg] = useState(null);
     const show = useShow(setMsg);
     const m = settings && settings.mute_max_seconds;
-    const save = (v) => {
+    const ask = useOwnConfirm(m ? m.value : null);
+    // Verkürzen wirkt sofort auf laufende Stummschaltungen: Wer schon länger
+    // stumm ist, wird gleich laut (und bekommt eine Nachricht) - dann erst
+    // fragen und die Zahl nennen. Rückgabe null = Bestätigung offen (die
+    // Auswahl springt erst nach dem Speichern um).
+    const save = (v, label) => {
       setMsg(null);
-      return store.settingsSet('mute_max_seconds', v).then(show);
+      const s = store.getState();
+      const keys = s.keys && Array.isArray(s.keys.keys) ? s.keys.keys : null;
+      const impact = L.muteShortenImpact(keys, Number(v), Number(m.value), store.derive(s).serverTime);
+      const put = () => store.settingsSet('mute_max_seconds', v).then(show);
+      if (impact && (impact.count === null || impact.count > 0)) {
+        const q = L.muteShortenQuestion(impact, label);
+        ask({ title: q.title, text: q.text, confirmLabel: 'Ja, verkürzen', hold: false, onConfirm: put });
+        return null;
+      }
+      return put();
     };
     return html`<${ui.Page} title="Automatisch wieder laut nach" back=${BACK_MAIN} class="set set-mute-page page-narrow">
       <p class="set-intro">Sicherheitsnetz: Wer stumm geschaltet ist, wird nach dieser Zeit automatisch wieder laut – falls das

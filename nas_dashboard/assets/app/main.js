@@ -1,6 +1,51 @@
 (function (root) {
   'use strict';
   const FW = root.FW = root.FW || {};
+
+  // ==== Notbremse beim Start ================================================
+  // Fehlt ein Baustein (Datei nicht geladen, Skriptfehler beim Laden), bliebe
+  // sonst eine leere schwarze Seite - ohne Alarm-Knopf und ohne Ausweg (die
+  // Home-Bildschirm-App hat keinen Neu-laden-Knopf). Dann statt der App eine
+  // schlichte Meldung mit „Neu laden“ und der alten Ansicht (classic.php),
+  // gebaut ohne Preact. Dieselbe Meldung bei einem Fehler in boot() (unten).
+  // Aufbau wie die Ersatzanzeige in lib/shell.php (Klassen .boot*).
+  function showBootError(reason) {
+    if (root.console && root.console.error) root.console.error('Alarm-Wächter: Start abgebrochen –', reason);
+    const doc = root.document;
+    const el = doc && doc.getElementById('app');
+    if (!el) return;
+    const make = (tag, cls, text) => {
+      const node = doc.createElement(tag);
+      if (cls) node.className = cls;
+      if (text) node.textContent = text;
+      return node;
+    };
+    const link = (href, text) => {
+      const a = make('a', 'btn btn-tinted btn-block', text);
+      a.setAttribute('href', href);
+      return a;
+    };
+    const box = make('div', 'boot is-error');
+    box.setAttribute('role', 'alert');
+    box.appendChild(make('p', 'boot-title', 'Die Oberfläche konnte nicht starten.'));
+    box.appendChild(make('p', 'boot-help', 'Bitte neu laden. Klappt es weiter nicht: die alte Ansicht öffnen – auch dort lässt sich alarmieren.'));
+    const links = make('div', 'boot-links');
+    links.appendChild(link('index.php', 'Neu laden'));
+    links.appendChild(link('classic.php', 'Alte Ansicht (classic.php)'));
+    box.appendChild(links);
+    el.textContent = '';
+    el.appendChild(box);
+  }
+
+  const missing = [
+    [root.htmPreact, 'Preact (assets/vendor)'], [FW.logic, 'logic.js'], [FW.api, 'api.js'], [FW.store, 'store.js'],
+    [FW.ui, 'ui.js'], [FW.views && FW.views.Overview, 'view-overview.js']
+  ].filter(([part]) => !part).map(([, name]) => name);
+  if (missing.length) {
+    showBootError(`fehlt: ${missing.join(', ')}`);
+    return;
+  }
+
   const P = root.htmPreact;
   const { html, render, useState, useEffect, useRef } = P;
   const store = FW.store;
@@ -214,6 +259,24 @@
       : html`<a class="band-inner" href="#/einstellungen/demo">${body}<${ui.Icon} name="chevron" class="band-chev"/></a>`}</div>`;
   }
 
+  // Schmales Band auf jeder Seite, solange der Stand unsicher ist: keine
+  // frische Antwort vom NAS (veraltet/Störung) bzw. abgemeldet mit stehen
+  // gebliebenem Alarm-Ergebnis. Orange, rot wenn der letzte bekannte Stand
+  // „Box offline“ war; Text aus FW.logic.unsureBand (Wortlaut wie das Urteil).
+  // Auf der Übersicht ersetzt es die Problemzeile der Status-Karte.
+  function UnsureBand() {
+    const sig = store.useStore((s) => {
+      const b = store.derive(s).unsureBand;
+      return b ? `${b.tone}|${b.text}` : '';
+    });
+    if (!sig) return null;
+    const cut = sig.indexOf('|');
+    const tone = sig.slice(0, cut);
+    return html`<div class=${cx('unsure-band', tone === 'crit' && 'is-crit')} role="status">
+      <div class="band-inner"><${ui.Icon} name="alert" class="band-icon"/><span class="band-text">${sig.slice(cut + 1)}</span></div>
+    </div>`;
+  }
+
   // Props für alle Ansichten: wide, query, sub (Pfad nach dem Bereich),
   // id (= sub[0], z.B. Empfänger-id) und path (= sub, für die Einstellungen).
   const VIEW_OF = { uebersicht: 'Overview', empfaenger: 'Recipients', verlauf: 'Log', einstellungen: 'Settings' };
@@ -224,6 +287,7 @@
     const route = useRoute();
     const verdict = useVerdictSignature();
     const demoOn = store.useStore((s) => !!(s.demo && s.demo.enabled));
+    const unsure = store.useStore((s) => !!store.derive(s).unsureBand);
     const mainRef = useRef(null);
     const section = route.path[0];
     const sub = route.path.slice(1);
@@ -250,15 +314,19 @@
       if (h1) h1.focus({ preventScroll: true });
     }, [pageKey]);
 
+    // Fehlt eine Ansicht (Datei nicht geladen), nicht nur den Titel zeigen,
+    // sondern sagen, was los ist - mit Ausweg.
     const View = (FW.views && FW.views[VIEW_OF[section]]) || null;
     const props = { wide, query: route.query, sub, id: sub.length ? sub[0] : null, path: sub };
-    return html`<div class=${cx('shell', wide ? 'is-wide' : 'is-narrow', demoOn && 'has-band')}>
+    const bands = unsure || demoOn;
+    return html`<div class=${cx('shell', wide ? 'is-wide' : 'is-narrow', bands && 'has-band')}>
       ${wide ? html`<${Sidebar} section=${section} badge=${badge} verdict=${verdict}/>` : null}
       <div class="main-col">
-        ${demoOn ? html`<${DemoBand}/>` : null}
+        ${bands ? html`<div class="bands">${unsure ? html`<${UnsureBand}/>` : null}${demoOn ? html`<${DemoBand}/>` : null}</div>` : null}
         <main class="content" id="main" ref=${mainRef}>
           <${ui.Boundary} key=${section} title=${VIEW_TITLE[section]}>
-            ${View ? html`<${View} ...${props}/>` : html`<${ui.Page} title=${VIEW_TITLE[section]}/>`}
+            ${View ? html`<${View} ...${props}/>`
+              : html`<${ui.Fallback} title=${VIEW_TITLE[section]} text="Diese Ansicht konnte nicht geladen werden. Die anderen Bereiche funktionieren weiter."/>`}
           </${ui.Boundary}>
         </main>
       </div>
@@ -292,7 +360,12 @@
     // Im Hintergrund geöffnet (z.B. neuer Tab am PC): wie beim Verstecken
     // gleich wieder anhalten - die Regeln dafür stehen im Store.
     if (doc.hidden) doc.dispatchEvent(new Event('visibilitychange'));
-    render(html`<${App}/>`, doc.getElementById('app'));
+    // Die Ersatzanzeige aus lib/shell.php („Wird geladen…“) erst jetzt
+    // entfernen; die äußerste Fehlergrenze fängt Fehler im Rahmen selbst
+    // (Bänder, Tab-Leiste, Seitenleiste) - auch dann bleibt ein Ausweg.
+    const el = doc.getElementById('app');
+    el.textContent = '';
+    render(html`<${ui.Boundary} title=${TITLE} text="Die Oberfläche konnte nicht angezeigt werden."><${App}/></${ui.Boundary}>`, el);
   }
 
   FW.main = { SECTIONS, THEMES, parseRoute, navigate, getTheme, setTheme, App };
@@ -300,11 +373,6 @@
   try {
     boot();
   } catch (err) {
-    if (root.console && root.console.error) root.console.error(err);
-    const el = root.document.getElementById('app');
-    if (el) {
-      el.className = 'boot-error';
-      el.textContent = 'Die Oberfläche konnte nicht starten – bitte die Seite neu laden.';
-    }
+    showBootError(err);
   }
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -85,13 +85,17 @@
     const entries = store.useStore((s) => s.log.entries);
     const more = store.useStore((s) => s.log.more);
     const error = store.useStore((s) => s.log.error);
+    const moreFailed = store.useStore((s) => s.log.moreFailed);
     const query = store.useStore((s) => s.log.query);
     const serverTime = store.useStore((s) => s.log.serverTime);
     const busy = store.useStore((s) => s.log.loadingMore);
 
     // Vorwahl aus der Adresse (nur wenn sie sich ändert; unbekannt = „Alle“).
+    // Kommt die Adresse MIT Filter (z.B. „Letzter Alarm“ → Alarme), gilt eine
+    // alte Suche nicht mehr - sie würde den gesuchten Alarm verstecken.
     const wanted = L.LOG_FILTERS.includes(routeQuery && routeQuery.filter) ? routeQuery.filter : 'all';
-    useEffect(() => { store.setLogFilter(wanted); }, [wanted]);
+    const fromRoute = !!(routeQuery && routeQuery.filter);
+    useEffect(() => { store.setLogFilter(wanted, { clearQuery: fromRoute }); }, [wanted, fromRoute]);
 
     // Filterwechsel per Hand: Adresse nachführen (ohne neuen Verlaufseintrag und
     // ohne Seitenwechsel), damit Neu-Laden und Zurück den Filter behalten.
@@ -114,11 +118,12 @@
       <div class="log-filter"><${ui.Segmented} options=${FILTER_OPTIONS} value=${filter} onChange=${pick} label="Verlauf filtern"/></div>
       <${Search} query=${query}/>
       <p class="log-hint">durchsucht die geladenen Einträge</p>
+      ${entries && error && !moreFailed ? html`<p class="log-empty is-error log-stale" role="alert">${error}</p>` : null}
       ${empty ? html`<p class=${cx('log-empty', error && !entries && 'is-error')} role=${error && !entries ? 'alert' : 'status'}>${empty}</p>` : null}
       ${view ? view.sections.map((sec) => html`<${ui.Group} key=${sec.day} header=${sec.label} class="log-day">
         ${sec.rows.map((r) => html`<${LogRow} key=${r.key} e=${r.e} d=${r.d}/>`)}
       </${ui.Group}>`) : null}
-      ${entries && error ? html`<p class="log-empty is-error" role="alert">${error}</p>` : null}
+      ${entries && error && moreFailed ? html`<p class="log-empty is-error" role="alert">${error}</p>` : null}
       ${entries && more ? html`<button type="button" class="btn btn-block log-more" disabled=${busy}
         onClick=${() => store.loadMoreLog()}>${busy ? 'Wird geladen…' : 'Ältere laden'}</button>` : null}
     </${ui.Page}>`;

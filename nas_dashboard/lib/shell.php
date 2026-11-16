@@ -6,7 +6,8 @@ declare(strict_types=1);
 //   ohne JavaScript);
 // - render_app_page(): <head> mit den Werten, die das Frontend beim Start
 //   braucht (meta-Tags statt Inline-Skript - die CSP verbietet Skript-Inhalte
-//   im HTML), ein leeres <div id="app"> und die Skripte in fester Reihenfolge.
+//   im HTML), <div id="app"> mit einer Ersatzanzeige und die Skripte in
+//   fester Reihenfolge.
 // Beide teilen sich den Kopf (render_head_tags()): Home-Bildschirm-App,
 // Symbole, Design-Start, Stylesheet.
 
@@ -144,7 +145,22 @@ function render_app_page(array $config, string $csrf, string $role, string $user
 </head>
 <body class="app">
 <noscript><p class="noscript">Dieses Dashboard braucht JavaScript – ohne läuft die Live-Anzeige nicht.</p></noscript>
-<div id="app"></div>
+<?php // Ersatzanzeige, bis main.js die App zeichnet (meist nur einen Augenblick).
+      // Lädt ein Skript nicht (oder bricht ab), bleibt sie stehen - statt
+      // einer leeren schwarzen Seite ohne Alarm-Knopf: Hinweis und Links
+      // erscheinen nach kurzer Zeit (app.css, .boot), „Neu laden“ und die
+      // alte Ansicht gehen auch ohne JavaScript. Gleiche Ziele wie
+      // showBootError() in main.js und ui.Fallback. ?>
+<div id="app">
+  <div class="boot">
+    <p class="boot-title">Alarm-Wächter wird geladen…</p>
+    <p class="boot-help">Bleibt diese Seite so stehen, bitte neu laden. Klappt es weiter nicht: die alte Ansicht öffnen – auch dort lässt sich alarmieren.</p>
+    <div class="boot-links">
+      <a class="btn btn-tinted btn-block" href="index.php">Neu laden</a>
+      <a class="btn btn-tinted btn-block" href="classic.php">Alte Ansicht (classic.php)</a>
+    </div>
+  </div>
+</div>
 <?php // Abmelden nur per POST + CSRF; das Frontend schickt dieses Formular ab.
       // Das Token hält FW.api.setCsrf() aktuell (es kommt mit jedem Status). ?>
 <form id="logout-form" method="post" action="index.php" hidden>

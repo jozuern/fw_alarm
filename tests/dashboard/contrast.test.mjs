@@ -143,6 +143,14 @@ function pairs() {
     add(theme, 'page', 'Seitenleiste Fuß/Anzahl', '--text-2', ['--side-bg']);
     add(theme, 'page', 'Seitenleiste gewählt', '--text', ['--side-bg', '--side-on']);
     add(theme, 'page', 'Demo-Band', '#000000', ['--bg', '--warn']);
+    // Band „keine aktuelle Antwort vom NAS“ (getönt, orange bzw. rot).
+    add(theme, 'page', 'Band NAS-Störung orange', '--warn-text', ['--bg', '--surface']);
+    add(theme, 'page', 'Band NAS-Störung rot', '--crit-text', ['--bg', '--status-crit-bg']);
+    // Ersatzanzeige beim Start (shell.php/main.js) und Fehlergrenzen (ui.Fallback).
+    add(theme, 'page', 'Start-Ersatz: Titel/Hinweis', '--text-2', ['--bg']);
+    add(theme, 'page', 'Start-Ersatz/Fehlergrenze: Meldung', '--text', ['--bg']);
+    add(theme, 'page', 'Start-Ersatz/Fehlergrenze: Knöpfe', '--accent-text', CARD('page'));
+    add(theme, 'page', 'Status-Karte: Neu anmelden', '--accent-text', ['--bg', '--surface']);
     add(theme, 'page', 'Badge rot', '#ffffff', ['--bg', '--badge-crit']);
     add(theme, 'page', 'Badge orange', '#000000', ['--bg', '--warn']);
     add(theme, 'page', 'Alarm-Knopf (19 px fett)', '#ffffff', ['--bg', '--alarm'], LARGE);
@@ -259,6 +267,17 @@ test('Kontrast: die helleren Schriftfarben gelten für Gruppen UND Knöpfe in Sh
   assert.ok(Object.keys(RAISED.sheet).length >= 4, 'hellere Werte gesetzt');
   // Die gewählte Empfänger-Zeile setzt dieselben helleren Werte.
   for (const [k, v] of Object.entries(RAISED.sheet)) assert.equal(SELECTED[k], v, `gewählte Zeile: ${k}`);
+});
+
+// Weiß auf Rot (Füllung des Halten-Knopfs) erreicht nur 3 : 1 - das genügt
+// nur für große Schrift: mind. 19 px fett. Das Etikett nennt die Aktion
+// („Halten: Alarm senden“), es muss also so groß bleiben.
+test('Kontrast: Etikett des Halten-Knopfs bleibt große Schrift (≥ 19 px fett)', () => {
+  const body = ALL.filter((r) => r.media === '' && r.sels.includes('.hold-label')).map((r) => r.body).join(';');
+  const size = Number((body.match(/font-size:\s*(\d+)px/) || [])[1]);
+  const weight = Number((body.match(/font-weight:\s*(\d+)/) || [])[1]);
+  assert.ok(size >= 19, `.hold-label font-size ${size}`);
+  assert.ok(weight >= 700, `.hold-label font-weight ${weight}`);
 });
 
 test('Kontrast: „System“ bei hellem Gerät hat genau die Hell-Werte', () => {

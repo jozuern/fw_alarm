@@ -541,7 +541,7 @@
           <h2 class="confirm-title" id=${titleId}>${c.title || 'Bitte bestätigen'}</h2>
           ${c.text ? html`<p class="confirm-text" id=${textId}>${c.text}</p>` : null}
           ${c.hold
-            ? html`<${HoldButton} onComplete=${fire}/>`
+            ? html`<${HoldButton} label=${c.confirmLabel} onComplete=${fire}/>`
             : html`<button type="button" class="btn btn-danger btn-block" onClick=${fire}>${c.confirmLabel}</button>`}
           <p class="confirm-count" aria-hidden="true">Schließt sich in ${left} s</p>
         </div>
@@ -593,9 +593,34 @@
     if (text) liveTimer = setTimeout(() => { liveEl.textContent = String(text); }, 60);
   }
 
-  // ---- Fehlergrenze für eine Ansicht ---------------------------------------
-  // Ein Fehler in EINER Ansicht darf nicht die ganze Oberfläche leeren - die
-  // Navigation (und damit der Alarm-Knopf auf der Übersicht) bleibt erreichbar.
+  // ---- Fehlergrenzen -------------------------------------------------------
+  // Ein Fehler in EINEM Teil darf nicht die ganze Oberfläche leeren: um jede
+  // Ansicht eine Grenze (main.js), auf der Übersicht zusätzlich um jeden Teil
+  // - so bleibt „Auslösen“ stehen, wenn z.B. die Prüfliste abstürzt. Jede
+  // Ersatzanzeige bietet einen Ausweg: „Neu laden“ (zur Übersicht) und die
+  // alte Ansicht (classic.php), über die sich ebenfalls alarmieren lässt.
+  // Gleiche Ziele wie die Ersatzanzeige in lib/shell.php und main.js.
+  // inline: kleiner Kasten in der Seite statt einer ganzen Seite.
+  function FallbackLinks() {
+    return html`<div class="fallback-links">
+      <a class="btn btn-tinted btn-block" href="index.php">Neu laden</a>
+      <a class="btn btn-tinted btn-block" href="classic.php">Alte Ansicht (classic.php)</a>
+    </div>`;
+  }
+
+  function Fallback({ title, text, inline }) {
+    const msg = text || (inline
+      ? 'Dieser Teil konnte nicht angezeigt werden.'
+      : 'Diese Ansicht konnte nicht angezeigt werden. Die anderen Bereiche funktionieren weiter.');
+    if (inline) {
+      return html`<section class="boundary-card" role="alert"><p class="boundary">${msg}</p><${FallbackLinks}/></section>`;
+    }
+    return html`<${Page} title=${title || 'Fehler'}>
+      <p class="boundary" role="alert">${msg}</p>
+      <${FallbackLinks}/>
+    </${Page}>`;
+  }
+
   class Boundary extends Component {
     constructor() {
       super();
@@ -607,10 +632,7 @@
     }
     render() {
       if (!this.state.err) return this.props.children;
-      return html`<${Page} title=${this.props.title || 'Fehler'}>
-        <p class="boundary">Diese Ansicht konnte nicht angezeigt werden. Die anderen Bereiche funktionieren weiter – bitte die Seite neu laden.</p>
-        <button type="button" class="btn btn-tinted" onClick=${() => root.location.reload()}>Seite neu laden</button>
-      </${Page}>`;
+      return h(Fallback, { title: this.props.title, text: this.props.text, inline: !!this.props.inline });
     }
   }
 
@@ -637,7 +659,7 @@
   FW.ui = {
     cx, useId, toneClass, ICONS,
     Icon, Page, IconButton, Group, Item, Row, Pill, Badge,
-    Switch, Segmented, Slider, Sheet, HoldButton, ConfirmHost, Msg, Boundary,
+    Switch, Segmented, Slider, Sheet, HoldButton, ConfirmHost, Msg, Boundary, Fallback,
     announce, lingerMs, useDerived, statusAge, statusAgeText
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -408,10 +408,11 @@
   function boxRows(s, ctx) {
     s = s || {};
     ctx = ctx || {};
-    // Unsicher = das NAS liefert gerade keine aktuellen Daten (Fehler oder
-    // veraltet): Dann ist ALLES nur der letzte bekannte Stand - auch Laufzeit
-    // und Wächter. Live bleiben die NAS-seitigen Zeilen nur bei "Box offline".
-    const unsure = !!ctx.stale || !!ctx.statusError;
+    // Unsicher = das NAS liefert gerade keine aktuellen Daten (Fehler,
+    // veraltet oder abgemeldet - dann ruht jede Abfrage): Dann ist ALLES nur
+    // der letzte bekannte Stand - auch Laufzeit und Wächter. Live bleiben die
+    // NAS-seitigen Zeilen nur bei "Box offline".
+    const unsure = !!ctx.stale || !!ctx.statusError || !!ctx.authLost;
     const dim = !!ctx.offline;
     return ROW_DEFS.map((def) => {
       const cls = def.cls ? (def.cls(s, ctx) || '') : '';
@@ -603,7 +604,8 @@
   function overviewRows(ctx) {
     const s = ctx.status || {};
     const offline = !!ctx.offline;
-    const unsure = !!(ctx.stale || ctx.statusError);
+    // Abgemeldet: Abfragen ruhen, alles ist nur noch der letzte Stand.
+    const unsure = !!(ctx.stale || ctx.statusError || ctx.authLost);
     const noStatus = !ctx.status;
     const dim = offline || unsure || noStatus;
     const rows = [];
@@ -655,14 +657,50 @@
     }
     rows.push({ id: 'watch', label: 'Wächter', value: watchValue, tone: watchTone, href: '#/einstellungen/box' });
 
-    // Empfänger
-    const rf = recipientsFact(ctx.keysSummary, ctx.demo, ctx.keysCorrupt);
-    rows.push({ id: 'keys', label: 'Empfänger', value: rf.text, tone: rf.tone, href: '#/empfaenger' });
+    // Empfänger und Letzter Alarm kommen vom NAS, nicht von der Box: Bei
+    // offline Box bleiben sie aktuell - ohne frische NAS-Antwort sind sie
+    // aber genauso unsicher wie der Rest (grau, Spec §5.3).
+    const rf = ctx.keysError && !ctx.keysCorrupt && !ctx.keysSummary
+      ? { text: 'nicht abrufbar', tone: 'unknown' }
+      : recipientsFact(ctx.keysSummary, ctx.demo, ctx.keysCorrupt);
+    rows.push({ id: 'keys', label: 'Empfänger', value: rf.text, tone: unsure ? 'unknown' : rf.tone, href: '#/empfaenger' });
 
-    // Letzter Alarm
+    // Letzter Alarm: Scheitert sein eigener Abruf (Verlauf, filter=alarm_core),
+    // steht der alte Stand grau und mit Zusatz da - er darf nicht frisch
+    // aussehen (z.B. beim Prüfen nach „Antwort unklar“).
     const af = ctx.alarmFact || { text: '…', tone: '' };
-    rows.push({ id: 'alarm', label: 'Letzter Alarm', value: af.text, tone: af.tone, href: '#/verlauf?filter=alarm' });
+    let alarmValue = af.text;
+    let alarmTone = af.tone;
+    if (ctx.alarmInfoFailed) {
+      alarmValue = ctx.alarmInfoKnown === false ? 'nicht abrufbar' : `${af.text} (nicht aktualisiert)`;
+      alarmTone = 'unknown';
+    } else if (unsure) {
+      alarmTone = 'unknown';
+    }
+    rows.push({ id: 'alarm', label: 'Letzter Alarm', value: alarmValue, tone: alarmTone, href: '#/verlauf?filter=alarm' });
     return rows;
+  }
+
+  // ---- Band „keine aktuelle Antwort“ (jede Seite) --------------------------
+  // Solange der Stand unsicher ist (Status-Abfrage gescheitert oder seit 15 s
+  // keine Antwort), steht das oben auf JEDER Seite - Wortlaut wie im Urteil
+  // (nasProblemTexts), dazu die Uhrzeit des letzten erfolgreichen Abrufs.
+  // Rot, wenn der letzte bekannte Stand „Box offline“ war (Rot bleibt rot).
+  // Abgemeldet: nur, solange die Seite für ein Alarm-Ergebnis stehen bleibt
+  // (sonst lädt sie gleich die Anmeldung). ctx.lastOkMs = Server-Zeit (ms)
+  // der letzten erfolgreichen Status-Antwort, 0 = noch keine. null = kein Band.
+  function unsureBand(ctx) {
+    if (ctx.authLost) {
+      return ctx.alarmInFlight
+        ? { tone: 'warn', text: 'Abgemeldet – angezeigte Werte werden nicht mehr aktualisiert. Nach dem Lesen des Alarm-Ergebnisses bitte neu anmelden.' }
+        : null;
+    }
+    if (!ctx.stale && !ctx.statusError) return null;
+    const { detail } = nasProblemTexts(ctx.statusError, ctx.alarmInFlight);
+    const at = ctx.lastOkMs > 0 ? fmtClockMs(ctx.lastOkMs) : '';
+    if (!at) return { tone: 'warn', text: `${detail} – es liegen noch keine Werte vom NAS vor` };
+    if (ctx.offline) return { tone: 'crit', text: `${detail} – letzter bekannter Stand (${at}): Box OFFLINE` };
+    return { tone: 'warn', text: `${detail} – angezeigte Werte können veraltet sein (Stand ${at})` };
   }
 
   // ==== Teil 2: Alarm-Info, Befehlszeile, Verlauf, Nicht-Erreichte, Empfänger,
@@ -987,6 +1025,28 @@
     return null;
   }
 
+  // Merker „Versand ohne Ergebnis“ (localStorage): gesetzt beim Start von
+  // REAL ALARM/ENTWARNUNG, bleibt bei „Antwort unklar“ stehen, gelöscht bei
+  // einem eindeutigen Ergebnis. Steht er nach dem Neuladen noch da (iOS
+  // verwirft die Home-Bildschirm-App z.B. beim Wechsel in die Telefon-App),
+  // gibt es KEIN Nachsende-Angebot - erst Verlauf prüfen. Gleiche Prüfung und
+  // Höchstalter wie bei den nicht Erreichten.
+  function validateSendMarker(raw, nowMs) {
+    if (!raw) return null;
+    try {
+      const v = JSON.parse(raw);
+      if (v && (v.action === 'alarm' || v.action === 'false_alarm') && Number.isFinite(v.at)
+          && nowMs - v.at < UNREACHED_MAX_AGE_MS) {
+        return { action: v.action, what: whatOf(v.action), at: v.at };
+      }
+    } catch (err) {
+      // kaputter Eintrag -> verwerfen
+    }
+    return null;
+  }
+
+  const sendMarkerNote = (m) => `Letzter Versand ohne Ergebnis (${m.what}, ${fmtClockMs(m.at)} Uhr) – erst Verlauf prüfen, nicht sofort erneut auslösen! Er kann trotzdem rausgegangen sein.`;
+
   // Rein: liefert die neue Liste der nicht Erreichten (das Speichern macht der
   // Store). prev = bisheriger Stand, resend = { ids, origAt } bei einer
   // Nachsendung, sonst null. Nur ein Ergebnis MIT Versand (results) ändert die
@@ -1100,10 +1160,14 @@
   }
 
   // keys = keys_list.keys (null/undefined = noch nicht geladen).
-  // extra = { names, ids, what } für 'resend'.
+  // extra = { names, ids, what } für 'resend'; keysCorrupt: Liste samt
+  // Sicherung auf dem NAS unlesbar - dann sendet das NAS an die Not-Liste aus
+  // config.php (bark_keys_alarm). Im Demo-Modus nicht: Der Demo-Key steht im
+  // Demo-Zustand selbst.
   function alarmQuestion(action, demo, keys, extra) {
     extra = extra || {};
     const demoOn = !!(demo && demo.enabled);
+    const corrupt = !!extra.keysCorrupt && !demoOn;
     const loaded = Array.isArray(keys);
     const targets = targetKeys(demo, keys);
     const n = targets.length;
@@ -1117,8 +1181,10 @@
     const mutedAlarm = muted.length ? ` Stumm geschaltet (Alarm kommt mit Stumm-Lautstärke): ${mutedList}.` : '';
     const mutedClear = muted.length ? ` Stumm geschaltet (kommt mit Stumm-Lautstärke): ${mutedList}.` : '';
     // Eigener, vollständiger Satz zur Empfängerzahl.
-    const sendTo = !loaded ? 'an alle Empfänger der Liste. Die Empfängerliste ist noch nicht geladen.'
-      : (n === 0 ? 'an die Not-Liste der NAS-Konfiguration. Die Empfängerliste ist leer.' : `an ${n} Empfänger.`);
+    let sendTo;
+    if (corrupt) sendTo = 'an die Not-Liste aus der NAS-Konfiguration. Die Empfängerliste auf dem NAS ist beschädigt.';
+    else if (!loaded) sendTo = 'an alle Empfänger der Liste. Die Empfängerliste ist noch nicht geladen.';
+    else sendTo = n === 0 ? 'an die Not-Liste der NAS-Konfiguration. Die Empfängerliste ist leer.' : `an ${n} Empfänger.`;
 
     if (action === 'box_alarm') {
       return {
@@ -1147,6 +1213,31 @@
         ? `${mode}. Der Alarm geht nur an diesen Empfänger (1 Empfänger), alle anderen pausieren.${mutedAlarm}`
         : `${mode}. ECHTEN FEUERWEHR-ALARM direkt vom NAS senden ${sendTo}${mutedAlarm}`
     };
+  }
+
+  // „Automatisch wieder laut nach“ verkürzen: Wer schon länger stumm ist als
+  // der neue Wert, wird beim nächsten Abgleich sofort laut geschaltet (und
+  // bekommt eine Nachricht) - Regel wie mute_is_stale() in common.php
+  // (ohne Zeitpunkt = fällig; dauerhaft Stumme nie). Seconds: 0 = nie.
+  // null = nicht kürzer (keine Frage); count null = Liste unbekannt.
+  function muteShortenImpact(keys, next, current, now) {
+    const n = Number(next) || 0;
+    const c = Number(current) || 0;
+    if (n <= 0 || (c > 0 && n >= c)) return null;
+    if (!Array.isArray(keys)) return { count: null, names: [] };
+    const hit = keys.filter((k) => k && k.muted && !k.mute_permanent
+      && (!(Number(k.muted_at) > 0) || now - Number(k.muted_at) > n));
+    return { count: hit.length, names: hit.map((k) => String(k.label || '?')) };
+  }
+
+  function muteShortenQuestion(impact, label) {
+    const title = `„Automatisch wieder laut nach“ auf ${label} verkürzen?`;
+    if (!impact || impact.count === null) {
+      return { title, text: `Wer schon länger stumm ist (mehr als ${label}), wird dann sofort wieder laut – und bekommt eine Nachricht. „Dauerhaft stumm“ bleibt stumm.` };
+    }
+    const one = impact.count === 1;
+    const who = one ? '1 stumm geschalteter Empfänger wird' : `${impact.count} stumm geschaltete Empfänger werden`;
+    return { title, text: `${who} sofort wieder laut und ${one ? 'bekommt' : 'bekommen'} eine Nachricht: ${impact.names.join(', ')}. „Dauerhaft stumm“ bleibt stumm.` };
   }
 
   // Frist: mindestens 10 s, bei langen Fragen mehr (bis 25 s) - sonst lief die
@@ -1194,12 +1285,12 @@
     keyProgressParts, deliveryIncomplete, heartbeatFailed, weakWifi, lowMemory, resetWarnFresh,
     isStuck, alarmStanding,
     watchdogState, outsideState,
-    boxRows, collectHints, verdict, overviewRows, keysSummary, recipientsFact,
+    boxRows, collectHints, verdict, overviewRows, unsureBand, keysSummary, recipientsFact,
     ALARM_KINDS, deriveAlarmInfo, alarmFact,
     STATE_LABELS, ACK_RESULTS, ACK_MESSAGES, fmtAckResult, fmtAckMessage, COMMAND_LINGER_S, COMMAND_ACK_GIVEUP_S, commandLine,
     describeLogEntry, LOG_FILTERS, LOG_STEP, LOG_MAX, LOG_EMPTY, logMatches,
-    failReason, whatOf, UNREACHED_MAX_AGE_MS, validateUnreached, buildUnreached,
-    volWords, recipientView, muteQuestion, alarmQuestion, armTimeoutFor, expectDemoOf,
+    failReason, whatOf, UNREACHED_MAX_AGE_MS, validateUnreached, validateSendMarker, sendMarkerNote, buildUnreached,
+    volWords, recipientView, muteQuestion, alarmQuestion, muteShortenImpact, muteShortenQuestion, armTimeoutFor, expectDemoOf,
     browserAlertFor
   };
 })(typeof window !== 'undefined' ? window : globalThis);

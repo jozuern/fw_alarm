@@ -182,3 +182,58 @@ test('fix round: clearedOk and demo counting', () => {
   assert.equal(demo.clearedAt, 20);
   assert.equal(L.deriveAlarmInfo([{ event: 'false_alarm', at: 20, ok: true, demo: true }, { event: 'nas_alarm', at: 10, ok: true, demo: false }]).clearedAt, undefined);
 });
+
+// ==== Abschluss-Prüfung des Neubaus ==========================================
+
+test('M5: beschädigte Liste – die Frage nennt die Not-Liste, nicht „noch nicht geladen“', () => {
+  for (const kind of ['alarm', 'false_alarm']) {
+    const t = L.alarmQuestion(kind, { enabled: false }, null, { keysCorrupt: true }).text;
+    assert.match(t, /an die Not-Liste aus der NAS-Konfiguration/, kind);
+    assert.match(t, /Die Empfängerliste auf dem NAS ist beschädigt/, kind);
+    assert.doesNotMatch(t, /noch nicht geladen/, kind);
+  }
+  // Demo-Modus: Der Demo-Key steht im Demo-Zustand selbst - die Frage bleibt.
+  const d = L.alarmQuestion('alarm', { enabled: true, label: 'Josh', key_id: 1 }, null, { keysCorrupt: true }).text;
+  assert.match(d, /DEMO-MODUS: nur/); assert.doesNotMatch(d, /Not-Liste/);
+  assert.match(L.alarmQuestion('alarm', { enabled: false }, null).text, /noch nicht geladen/);
+});
+
+test('I3: Merker für einen Versand ohne Ergebnis', () => {
+  const now = 1800000000000;
+  assert.deepEqual(plain(L.validateSendMarker(JSON.stringify({ action: 'alarm', at: now - 1000 }), now)), { action: 'alarm', what: 'REAL ALARM', at: now - 1000 });
+  assert.equal(L.validateSendMarker(JSON.stringify({ action: 'false_alarm', at: now - 1000, unclear: true }), now).what, 'ENTWARNUNG');
+  assert.equal(L.validateSendMarker(JSON.stringify({ action: 'alarm', at: now - 13 * 3600 * 1000 }), now), null);
+  assert.equal(L.validateSendMarker(JSON.stringify({ action: 'x', at: now }), now), null);
+  assert.equal(L.validateSendMarker('{kaputt', now), null);
+  assert.equal(L.validateSendMarker(null, now), null);
+  const t = L.sendMarkerNote({ action: 'alarm', what: 'REAL ALARM', at: now });
+  assert.match(t, /^Letzter Versand ohne Ergebnis \(REAL ALARM, \d\d:\d\d:\d\d Uhr\) – erst Verlauf prüfen, nicht sofort erneut auslösen!/);
+});
+
+test('M7: Verkürzen von „Automatisch wieder laut nach“ – wer sofort laut würde', () => {
+  const now = 1800000000;
+  const keys = [
+    { id: 1, label: 'Anna', muted: true, mute_permanent: false, muted_at: now - 3 * 3600 },
+    { id: 2, label: 'Ben', muted: true, mute_permanent: true, muted_at: now - 30 * 3600 },
+    { id: 3, label: 'Cem', muted: false, muted_at: 0 },
+    { id: 4, label: 'Dora', muted: true, muted_at: now - 1800 },
+    { id: 5, label: 'Eva', muted: true, muted_at: 0 }
+  ];
+  // 12 Std -> 2 Std: Anna (3 Std) und Eva (ohne Zeitpunkt = schon fällig).
+  assert.deepEqual(plain(L.muteShortenImpact(keys, 7200, 43200, now)), { count: 2, names: ['Anna', 'Eva'] });
+  // Länger oder „nie“: keine Frage.
+  assert.equal(L.muteShortenImpact(keys, 43200, 7200, now), null);
+  assert.equal(L.muteShortenImpact(keys, 0, 7200, now), null);
+  // Von „nie“ auf 2 Std ist kürzer.
+  assert.equal(L.muteShortenImpact(keys, 7200, 0, now).count, 2);
+  // Kürzer, aber niemand wäre fällig: count 0 (die Ansicht fragt dann nicht).
+  assert.deepEqual(plain(L.muteShortenImpact([keys[3]], 7200, 43200, now)), { count: 0, names: [] });
+  // Liste unbekannt: count null (die Ansicht fragt vorsichtshalber).
+  assert.deepEqual(plain(L.muteShortenImpact(null, 7200, 43200, now)), { count: null, names: [] });
+  const q = L.muteShortenQuestion({ count: 2, names: ['Anna', 'Eva'] }, '2 Std');
+  assert.match(q.title, /2 Std/);
+  assert.match(q.text, /2 stumm geschaltete Empfänger werden sofort wieder laut/);
+  assert.match(q.text, /Anna, Eva/);
+  assert.match(L.muteShortenQuestion({ count: 1, names: ['Anna'] }, '2 Std').text, /1 stumm geschalteter Empfänger wird sofort wieder laut/);
+  assert.match(L.muteShortenQuestion({ count: null, names: [] }, '2 Std').text, /länger stumm/);
+});

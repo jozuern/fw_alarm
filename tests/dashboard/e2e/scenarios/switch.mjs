@@ -173,6 +173,10 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert(assets.css.length === 1 && /^assets\/classic\/style\.css\?v=\d{6,}$/.test(assets.css[0]), 'classic: Stylesheet ' + assets.css);
     assert(assets.js.length === 1 && /^assets\/classic\/app\.js\?v=\d{6,}$/.test(assets.js[0]), 'classic: Skript ' + assets.js);
     assert(assets.logout === 'index.php', 'classic: Abmelden postet an index.php, war ' + assets.logout);
+    // Zurück zur neuen Oberfläche: Knopf „Neue Ansicht“ in der Kopfzeile.
+    assert(await page.eval(`(() => { const b = Array.from(document.querySelectorAll('.topbar form[method="get"] button.ghost-button'))
+      .find((x) => x.textContent.trim() === 'Neue Ansicht');
+      return !!b && b.form.getAttribute('action') === 'index.php'; })()`), 'classic: Knopf „Neue Ansicht“ -> index.php');
     // Erst wenn die Liste (samt Demo-Stand) da ist, kennt die Frage den Modus.
     await page.waitFor(`(document.querySelector('[data-keys-list]')?.textContent || '').includes('Umstellung')`, 10000);
     const barkBefore = barkLog(sandbox).length;

@@ -281,4 +281,53 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
   assert(await page.eval(`document.documentElement.dataset.theme`) === 'dark', 'Standard ist Dunkel');
 
   assert(problems.length === 0, 'keine Konsolenfehler:\n' + problems.join('\n'));
+
+  // ---- Notfälle beim Start: nie eine leere Seite ohne Ausweg ----------------
+  // Absichtliche Fehler: Ihre Konsolenmeldungen zählen hier nicht.
+  const exits = `(() => { const hrefs = Array.from(document.querySelectorAll('#app a')).map((a) => a.getAttribute('href'));
+    return hrefs.includes('index.php') && hrefs.includes('classic.php'); })()`;
+  const broken = await browser.newPage();
+  await broken.send('Network.enable');
+  await broken.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
+  // Preact (vendor) bzw. die Übersicht lädt nicht: Meldung von main.js.
+  for (const file of ['*htm-preact-*', '*app/view-overview.js*']) {
+    await broken.send('Network.setBlockedURLs', { urls: [file] });
+    await broken.goto('about:blank');
+    await broken.goto(`${base}/index.php`);
+    await broken.waitFor(`!!document.querySelector('#app .boot.is-error') && ${exits}`, 8000);
+    assert((await broken.eval(`document.querySelector('.boot-title').textContent`)) === 'Die Oberfläche konnte nicht starten.', `${file} fehlt: Meldung`);
+    assert(await broken.eval(`!document.querySelector('.tabbar')`), `${file} fehlt: keine halbe App`);
+  }
+  await shot(broken, 'boot-error');
+  // main.js lädt nicht: Die Ersatzanzeige aus shell.php bleibt - erst „wird
+  // geladen…“, nach 2 s mit Hinweis und Ausweg.
+  await broken.send('Network.setBlockedURLs', { urls: ['*app/main.js*'] });
+  await broken.goto('about:blank');
+  await broken.goto(`${base}/index.php`);
+  await broken.waitFor(`!!document.querySelector('#app .boot:not(.is-error)') && ${exits}`, 5000);
+  assert((await broken.eval(`document.querySelector('.boot-title').textContent`)).includes('wird geladen'), 'Ersatz: „wird geladen…“');
+  const linksShown = `getComputedStyle(document.querySelector('.boot-links')).visibility === 'visible' && getComputedStyle(document.querySelector('.boot-links')).opacity === '1'`;
+  assert(await broken.eval(`getComputedStyle(document.querySelector('.boot-links')).animationDelay === '2s'`), 'Ausweg erscheint erst nach 2 s (kein Flackern beim normalen Start)');
+  await broken.waitFor(linksShown, 5000);
+  assert(await broken.eval(`(() => { const r = document.querySelector('.boot-links a').getBoundingClientRect(); return r.height >= 44; })()`), 'Ausweg: Tippfläche >= 44 px');
+  assert(await broken.eval(`document.documentElement.scrollWidth <= innerWidth`), 'Ersatz: kein waagrechtes Scrollen');
+  await shot(broken, 'boot-fallback');
+  await broken.send('Network.setBlockedURLs', { urls: [] });
+
+  // Ein Anzeige-Teil der Übersicht stürzt ab (hier jede Listenzeile,
+  // ui.Row): „Auslösen“ bleibt bedienbar, der Teil zeigt Ersatz mit Ausweg.
+  await broken.goto('about:blank');
+  await broken.goto(`${base}/index.php`);
+  await broken.waitFor(`!!document.querySelector('.ov-checks .row') && !!document.querySelector('.ov-alarm')`, 10000);
+  await broken.eval(`(() => { window.__Row = FW.ui.Row; FW.ui.Row = () => { throw new Error('Testfehler (absichtlich)'); }; location.hash = '#/verlauf'; })()`);
+  await broken.waitFor(`document.querySelector('main h1')?.textContent.trim() === 'Verlauf'`);
+  await broken.eval(`location.hash = '#/uebersicht'`);
+  await broken.waitFor(`!!document.querySelector('.boundary-card') && !document.querySelector('.ov-checks')`, 5000);
+  assert(await broken.eval(`!!document.querySelector('.ov-alarm') && !document.querySelector('.ov-alarm').disabled && !!document.querySelector('.status-card')`), 'Alarm-Knopf und Status-Karte bleiben');
+  assert(await broken.eval(`(() => { const c = document.querySelector('.boundary-card');
+    const hrefs = Array.from(c.querySelectorAll('a')).map((a) => a.getAttribute('href'));
+    return hrefs.includes('index.php') && hrefs.includes('classic.php'); })()`), 'Ersatz mit Neu laden und alter Ansicht');
+  await broken.eval(`document.querySelector('.boundary-card').scrollIntoView({ block: 'center' })`);
+  await shot(broken, 'part-error');
+  await broken.eval('FW.ui.Row = window.__Row');
 }

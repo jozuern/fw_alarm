@@ -1,8 +1,9 @@
 <?php
 // VORÜBERGEHENDER RÜCKFALL: die bisherige Oberfläche des Dashboards,
 // eingefroren (assets/classic/app.js + style.css, Stand vor der Umstellung).
-// Erreichbar über Einstellungen → Konto → „Alte Ansicht öffnen“, falls in der
-// neuen Oberfläche (index.php) etwas klemmt. Bleibt nur einige Wochen und
+// Erreichbar über Einstellungen → Konto → „Alte Ansicht öffnen“ (bzw. die
+// Ersatzanzeigen der neuen Oberfläche), falls in der neuen (index.php) etwas
+// klemmt; zurück über „Neue Ansicht“ oben rechts. Bleibt nur einige Wochen und
 // wird dann in einer eigenen Aufgabe entfernt - hier nichts mehr ausbauen.
 // Anmelden und Abmelden laufen über index.php.
 require __DIR__ . '/lib/common.php';
@@ -72,6 +73,12 @@ session_write_close();
         <input type="hidden" name="action" value="logout">
         <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
         <button type="submit" class="ghost-button">Abmelden</button>
+      </form>
+      <?php // Zurück zur neuen Oberfläche. Als GET-Formular, damit der Knopf
+            // genau wie „Abmelden“ aussieht (ghost-button gilt nur für
+            // <button>) - ohne neue Styles in der eingefrorenen Kopie. ?>
+      <form method="get" action="index.php">
+        <button type="submit" class="ghost-button">Neue Ansicht</button>
       </form>
     </div>
   </header>

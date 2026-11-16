@@ -229,3 +229,43 @@ test('Hinweis im Browser: Text je Übergang, „wieder in Ordnung“ nur nach ei
     assert.equal(L.browserAlertFor(to, false), null, to);
   }
 });
+
+// ==== Abschluss-Prüfung des Neubaus ==========================================
+test('I1c: Band bei unsicherem Stand – Wortlaut wie im Urteil, rot nach „offline“', () => {
+  const at = 1800000000000;
+  const clock = L.fmtClockMs(at);
+  const band = (o) => L.unsureBand({ authLost: false, alarmInFlight: false, stale: false, statusError: null, offline: false, lastOkMs: at, ...o });
+  assert.equal(band({}), null);
+  assert.deepEqual(plain(band({ stale: true })), { tone: 'warn', text: `Keine aktuelle Antwort vom NAS – angezeigte Werte können veraltet sein (Stand ${clock})` });
+  assert.equal(band({ statusError: { kind: 'network' } }).text, `Keine Verbindung zum NAS – angezeigte Werte können veraltet sein (Stand ${clock})`);
+  assert.equal(band({ statusError: { kind: 'http', status: 500, message: 'x' } }).text, `Das NAS meldet einen Fehler (HTTP 500): x – angezeigte Werte können veraltet sein (Stand ${clock})`);
+  assert.equal(band({ statusError: { kind: 'timeout' }, alarmInFlight: true }).text, `Keine Status-Antwort, solange der Alarm-Versand läuft – angezeigte Werte können veraltet sein (Stand ${clock})`);
+  assert.deepEqual(plain(band({ statusError: { kind: 'network' }, offline: true })), { tone: 'crit', text: `Keine Verbindung zum NAS – letzter bekannter Stand (${clock}): Box OFFLINE` });
+  // Noch nie eine Antwort: nichts, was veralten könnte.
+  assert.equal(band({ statusError: { kind: 'network' }, lastOkMs: 0 }).text, 'Keine Verbindung zum NAS – es liegen noch keine Werte vom NAS vor');
+  // Abgemeldet: nur, solange das Ergebnis eines Alarms stehen bleibt.
+  assert.equal(band({ authLost: true }), null);
+  assert.match(band({ authLost: true, alarmInFlight: true }).text, /^Abgemeldet – angezeigte Werte werden nicht mehr aktualisiert/);
+});
+
+test('I1: Prüfzeilen Empfänger und Letzter Alarm grau, solange unsicher bzw. ihr Abruf scheitert', () => {
+  const ctx = { status: base, offline: false, stale: false, statusError: null, demo: null, seenAge: 5,
+    watchdog: { warn: false, text: 'ok' }, keysSummary: { total: 6, muted: 0, permanent: 0, overdue: 0 }, keysCorrupt: false,
+    alarmFact: { text: 'vor 5 min (14:00 Uhr), Relaisalarm (Melder)', tone: 'crit' }, alarmInfoFailed: false, alarmInfoKnown: true };
+  const row = (o, id) => L.overviewRows({ ...ctx, ...o }).find((r) => r.id === id);
+  assert.equal(row({}, 'alarm').tone, 'crit');
+  assert.equal(row({}, 'keys').tone, '');
+  assert.equal(row({ stale: true }, 'alarm').tone, 'unknown');
+  assert.equal(row({ stale: true }, 'alarm').value, ctx.alarmFact.text);
+  assert.equal(row({ statusError: { kind: 'network' } }, 'keys').tone, 'unknown');
+  assert.equal(row({ statusError: { kind: 'network' }, keysCorrupt: true }, 'keys').tone, 'unknown');
+  // Nur der Abruf von „Letzter Alarm“ scheitert: grau und gesagt.
+  const f = row({ alarmInfoFailed: true }, 'alarm');
+  assert.equal(f.tone, 'unknown');
+  assert.equal(f.value, `${ctx.alarmFact.text} (nicht aktualisiert)`);
+  assert.equal(row({ alarmInfoFailed: true, alarmInfoKnown: false, alarmFact: { text: '…', tone: '' } }, 'alarm').value, 'nicht abrufbar');
+  assert.equal(row({ alarmInfoFailed: true }, 'keys').tone, '');
+  // Abgemeldet (Ergebnis bleibt stehen): Abfragen ruhen - alles grau.
+  for (const id of ['box', 'wifi', 'watch', 'keys', 'alarm']) assert.equal(row({ authLost: true }, id).tone, 'unknown', id);
+  assert.ok(L.boxRows(base, { authLost: true }).every((r) => r.tone === 'unknown'));
+});

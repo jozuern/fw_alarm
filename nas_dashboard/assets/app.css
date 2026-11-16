@@ -314,12 +314,69 @@ button {
   font-family: var(--mono);
 }
 
-.noscript,
-.boot-error {
+.noscript {
   margin: 0;
-  padding: calc(env(safe-area-inset-top) + 24px) 24px 24px;
+  padding: calc(env(safe-area-inset-top) + 24px) 24px 0;
   color: var(--text-2);
   font-size: 16px;
+}
+
+/* Ersatzanzeige in #app (lib/shell.php): steht da, bis main.js die App
+   zeichnet - meist nur einen Augenblick, dann nur „wird geladen…“ in Grau.
+   Lädt ein Skript nicht, erscheinen nach 2 s Hinweis und Ausweg (Neu laden,
+   alte Ansicht); bei reduzierter Bewegung ebenso (nur die Dauer schrumpft).
+   .is-error: die Meldung von main.js, wenn der Start scheitert - sofort. */
+.boot {
+  max-width: 420px;
+  margin: 0 auto;
+  padding:
+    calc(env(safe-area-inset-top) + 56px)
+    calc(env(safe-area-inset-right) + var(--gutter))
+    calc(env(safe-area-inset-bottom) + 24px)
+    calc(env(safe-area-inset-left) + var(--gutter));
+  text-align: center;
+}
+
+.boot-title {
+  color: var(--text-2);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.boot.is-error .boot-title {
+  color: var(--text);
+}
+
+.boot-help {
+  margin-top: 8px;
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.boot-links {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.boot-help,
+.boot-links {
+  animation: boot-reveal 0.2s ease-out 2s both;
+}
+
+.boot.is-error .boot-help,
+.boot.is-error .boot-links {
+  animation: none;
+}
+
+@keyframes boot-reveal {
+  from {
+    opacity: 0;
+    visibility: hidden;
+  }
 }
 
 /* ---- 3. Symbole --------------------------------------------------------- */
@@ -1346,16 +1403,19 @@ button.row-main:active {
   touch-action: none;
 }
 
+/* Nennt die Aktion („Halten: Alarm senden“). 19 px fett: auf der roten
+   Füllung gilt die Schwelle für große Schrift (3 : 1, contrast.test.mjs). */
 .hold-label {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 54px;
-  padding: 0 16px;
+  padding: 4px 16px;
   font-size: 19px;
   font-weight: 700;
   line-height: 1.2;
+  text-align: center;
 }
 
 .hold-fill {
@@ -1528,13 +1588,44 @@ button.row-main:active {
   text-decoration: underline;
 }
 
-/* ---- 18. Demo-Band (jede Seite, solange der Demo-Modus aktiv ist) ------- */
-.demo-band {
+/* ---- 18. Bänder oben auf jeder Seite ------------------------------------ */
+/* Bis zu zwei Bänder übereinander, gemeinsam angeheftet: „keine aktuelle
+   Antwort vom NAS“ (unsicherer Stand) und darunter der Demo-Modus. Nur das
+   oberste nimmt den Rand unter der Statusleiste (safe-area) mit. */
+.bands {
   position: sticky;
   top: 0;
   z-index: 15;
+}
+
+.bands > :not(:first-child) .band-inner {
+  padding-top: 8px;
+}
+
+/* Demo-Band (solange der Demo-Modus aktiv ist). */
+.demo-band {
   background: var(--warn);
   color: #000000;
+}
+
+/* Unsicherer Stand: getönt mit farbiger Schrift - bewusst anders als das
+   volle Orange des Demo-Bands. Rot, wenn zuletzt „Box offline“ galt. */
+.unsure-band {
+  background: var(--surface);
+  box-shadow: inset 0 -1px 0 var(--status-warn-line);
+  color: var(--warn-text);
+}
+
+.unsure-band.is-crit {
+  background: var(--status-crit-bg);
+  box-shadow: inset 0 -1px 0 var(--status-crit-line);
+  color: var(--crit-text);
+}
+
+.unsure-band .band-inner {
+  min-height: 40px;
+  padding-bottom: 7px;
+  font-size: 13px;
 }
 
 .band-inner {
@@ -1611,9 +1702,33 @@ a.band-inner:focus-visible {
   color: var(--text-2);
 }
 
+/* Ersatz einer Ansicht bzw. eines Teils der Übersicht (ui.Fallback): Satz
+   und Ausweg (Neu laden, alte Ansicht). */
 .boundary {
   margin: 0 4px 16px;
   color: var(--text-2);
+}
+
+.fallback-links {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Nur ein Rahmen (keine Fläche): Die Knöpfe darin behalten ihre Fläche
+   und damit die geprüften Kontraste. */
+.boundary-card {
+  margin: 0 0 16px;
+  padding: 14px;
+  border-radius: var(--radius-group);
+  box-shadow: inset 0 0 0 1px var(--status-warn-line);
+}
+
+.boundary-card .boundary {
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.4;
 }
 
 /* ---- 20. Übersicht ------------------------------------------------------ */
@@ -1713,6 +1828,13 @@ a.band-inner:focus-visible {
   font-size: 13px;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+/* „Neu anmelden“ (abgemeldet, Alarm-Ergebnis steht noch): Knopf auf der
+   Fläche der Karte - mit Rahmen, damit er als Knopf erkennbar ist. */
+.status-relogin {
+  margin-top: 12px;
+  box-shadow: inset 0 0 0 1px var(--separator);
 }
 
 /* Sehr schmal (iPhone SE, 320 px): Die Texte bekommen die volle Breite -
@@ -1986,7 +2108,8 @@ a.band-inner:focus-visible {
 }
 
 /* Eigene 44-px-Zeile: Die Tippflächen der Text-Knöpfe reichen nicht in den
-   Nachsende-Knopf darüber; nebeneinander mit Abstand. */
+   Nachsende-Knopf darüber (mind. 8 px Luft dazwischen, damit „Ausblenden“
+   nicht statt „erneut senden“ getroffen wird); nebeneinander mit Abstand. */
 .result-foot {
   display: flex;
   flex-wrap: wrap;
@@ -1994,7 +2117,7 @@ a.band-inner:focus-visible {
   justify-content: flex-end;
   column-gap: 24px;
   min-height: 44px;
-  margin-top: 4px;
+  margin-top: 12px;
 }
 
 .result-foot .link-btn {
