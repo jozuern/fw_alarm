@@ -1,0 +1,11 @@
+# Cloudflare Tunnel "fw-alarm" (lokal verwaltet).
+# Vorlage für /etc/cloudflared/config.yml auf der VM - <UUID> durch die
+# Tunnel-ID ersetzen (Ausgabe von "cloudflared tunnel create fw-alarm").
+# Die Zugangsdatei <UUID>.json gehört NICHT ins Repo (root, 0600).
+tunnel: <UUID>
+credentials-file: /etc/cloudflared/<UUID>.json
+
+ingress:
+  - hostname: alarm.tunero.dev
+    service: http://127.0.0.1:8080
+  - service: http_status:404

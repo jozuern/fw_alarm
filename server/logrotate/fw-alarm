@@ -1,0 +1,15 @@
+# PHP-Fehlerlog des FW-Alarm-Dashboards.
+# Installiert von server/setup.sh nach /etc/logrotate.d/fw-alarm.
+# (Das Nginx-Zugriffsprotokoll liegt unter /var/log/nginx/ und wird von der
+# dortigen Standard-Regel rotiert.)
+/var/log/fw-alarm/*.log {
+    su fwalarm fwalarm
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    # PHP öffnet die Datei für jede Meldung neu - kein Signal nötig.
+    create 0640 fwalarm fwalarm
+}

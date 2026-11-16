@@ -10,3 +10,9 @@ tests/dashboard/sandbox/*.sh text eol=lf
 
 # Vendor-Bibliotheken: Bytes unverändert lassen (Prüfsumme der Bundle-Datei).
 nas_dashboard/assets/vendor/* -text
+
+
+# Dateien für die Oracle-VM (server/) und die Brücke auf dem NAS (nas_bridge/):
+# immer LF - sie laufen unter Linux/DSM (Bash, systemd, Nginx, PHP).
+server/** text eol=lf
+nas_bridge/** text eol=lf

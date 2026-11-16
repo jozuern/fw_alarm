@@ -1,0 +1,14 @@
+[Unit]
+Description=FW-Alarm Wächter (cron/check_offline.php): Box, Server, Außen-Wächter prüfen
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=fwalarm
+Group=fwalarm
+ExecStart=/usr/bin/php /srv/fw-alarm/app/cron/check_offline.php
+Nice=10
+# Ein Lauf sendet höchstens einige Bark-Meldungen (je bis ca. 30 s);
+# großzügig darüber, damit systemd keinen Lauf mitten im Versand abbricht.
+TimeoutStartSec=300
