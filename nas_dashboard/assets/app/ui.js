@@ -651,7 +651,7 @@
   }
   function statusAgeText(s) {
     if (s.authLost) return 'Abgemeldet';
-    if (!s.statusData) return s.statusError ? 'Kein Status vom NAS' : 'Status wird geladen…';
+    if (!s.statusData) return s.statusError ? 'Kein Status vom Server' : 'Status wird geladen…';
     const age = L.fmtAgeShort(statusAge(s));
     return age ? `Status ${age}` : 'Box hat sich noch nie gemeldet';
   }

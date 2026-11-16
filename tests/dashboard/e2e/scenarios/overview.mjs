@@ -397,9 +397,9 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.eval('scrollTo(0, 0)');
     await shot(page, 'offline');
 
-    // ---- NAS nicht erreichbar: rot nach „offline“, sonst orange --------------
-    // Ungünstigster Fall fürs kleine iPhone: Band „NAS nicht erreichbar“ UND
-    // Demo-Band oben, dazu das längste rote Urteil („NAS nicht erreichbar“,
+    // ---- Server nicht erreichbar: rot nach „offline“, sonst orange --------------
+    // Ungünstigster Fall fürs kleine iPhone: Band „Server nicht erreichbar“ UND
+    // Demo-Band oben, dazu das längste rote Urteil („Server nicht erreichbar“,
     // letzter Stand offline) - der Alarm-Knopf muss trotzdem über der
     // Tab-Leiste stehen.
     assert((await admin.post({ action: 'demo_set', enabled: '1', id: String(ids.josh) })).ok, 'Demo ein');
@@ -409,19 +409,19 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.viewport({ width: 320, height: 568, mobile: true, scale: 2 });
     await sandboxServer(sandbox, 'stop', 'site');
     serverDown = true;
-    await page.waitFor(`${titleIs('NAS nicht erreichbar')} && !!document.querySelector('.status-card.is-crit') && !!document.querySelector('.demo-band')
+    await page.waitFor(`${titleIs('Server nicht erreichbar')} && !!document.querySelector('.status-card.is-crit') && !!document.querySelector('.demo-band')
       && !!document.querySelector('.bands .unsure-band.is-crit')`, 16000);
     await page.eval('scrollTo(0, 0)');
     assert((await text(page, '.status-card')).includes('Box OFFLINE'), 'nennt den letzten Stand „Box OFFLINE“');
     // Was fehlt und von wann der Stand ist, sagt das Band (rot: zuletzt offline).
     const redBand = await text(page, '.unsure-band');
-    assert(redBand.includes('Keine Verbindung zum NAS') && /letzter bekannter Stand \(\d\d:\d\d:\d\d\): Box OFFLINE/.test(redBand), 'Band rot: ' + redBand);
+    assert(redBand.includes('Keine Verbindung zum Server') && /letzter bekannter Stand \(\d\d:\d\d:\d\d\): Box OFFLINE/.test(redBand), 'Band rot: ' + redBand);
     assert(await page.eval(`!document.querySelector('.status-age')`), 'keine doppelte Problemzeile in der Karte');
     assert(await page.eval(`document.querySelector('.bands').firstElementChild.classList.contains('unsure-band')`), 'NAS-Band über dem Demo-Band');
     const fit = await page.eval(`(() => { const b = document.querySelector('.ov-alarm').getBoundingClientRect();
       const bar = document.querySelector('.tabbar').getBoundingClientRect();
       return { bottom: Math.round(b.bottom), bar: Math.round(bar.top), width: document.documentElement.scrollWidth }; })()`);
-    assert(fit.bottom <= fit.bar, `320×568 mit Demo-Band und NAS-Störung: Alarm-Knopf endet bei ${fit.bottom} px, Tab-Leiste beginnt bei ${fit.bar} px`);
+    assert(fit.bottom <= fit.bar, `320×568 mit Demo-Band und Server-Störung: Alarm-Knopf endet bei ${fit.bottom} px, Tab-Leiste beginnt bei ${fit.bar} px`);
     assert(fit.width <= 320, '320 px: kein waagrechtes Scrollen (' + fit.width + ')');
     await shot(page, 'nas-red-small-demo');
     await page.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
@@ -439,9 +439,9 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.waitFor(titleIs('Alles bereit'), 5000);
     await sandboxServer(sandbox, 'stop', 'site');
     serverDown = true;
-    await page.waitFor(`${titleIs('NAS nicht erreichbar')} && !!document.querySelector('.status-card.is-warn') && !!document.querySelector('.unsure-band:not(.is-crit)')`, 16000);
+    await page.waitFor(`${titleIs('Server nicht erreichbar')} && !!document.querySelector('.status-card.is-warn') && !!document.querySelector('.unsure-band:not(.is-crit)')`, 16000);
     const band = await text(page, '.unsure-band');
-    assert(band.includes('Keine Verbindung zum NAS') && /angezeigte Werte können veraltet sein \(Stand \d\d:\d\d:\d\d\)/.test(band), 'Band orange: ' + band);
+    assert(band.includes('Keine Verbindung zum Server') && /angezeigte Werte können veraltet sein \(Stand \d\d:\d\d:\d\d\)/.test(band), 'Band orange: ' + band);
     for (const id of ['box', 'wifi', 'watch', 'keys', 'alarm']) {
       assert(await page.eval(`!!document.querySelector('.chk-${id}.tone-unknown')`), `Prüfzeile ${id} grau, solange das NAS nicht antwortet`);
     }

@@ -249,7 +249,7 @@
     synced: 'Box hat übernommen',
     pending: 'Box hat NOCH NICHT übernommen – ein Relaisalarm ginge noch an alle!',
     offline: 'Box offline – sie würde noch mit der alten Liste alarmieren!',
-    unknown: 'Abgleich unbekannt – keine aktuelle Antwort vom NAS'
+    unknown: 'Abgleich unbekannt – keine aktuelle Antwort vom Server'
   };
   function DemoBand() {
     const label = store.useStore((s) => (s.demo && s.demo.label) || 'den Test-Empfänger');

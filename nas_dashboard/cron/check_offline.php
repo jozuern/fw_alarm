@@ -66,7 +66,7 @@ if ($statusKey === '') {
 if (!function_exists('curl_init')) {
     // Ohne cURL kann der Wächter weder melden noch den Selbsttest machen -
     // das CLI-PHP der DSM-Aufgabe ist oft ein anderes als das der Web Station.
-    text_response("NO_CURL (PHP-CLI ohne curl-Erweiterung - in der DSM-Aufgabe /usr/local/bin/php83 verwenden)\n");
+    text_response("NO_CURL (PHP-CLI ohne curl-Erweiterung - auf dem Server das Paket php8.3-curl installieren)\n");
 }
 
 $latest = read_json_file(data_path($config, 'latest_status.json'), []);
@@ -161,7 +161,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
             // Dann wird nur der Zustand zurückgesetzt und der Verlaufseintrag
             // geschrieben.
             $skipPush = empty($types['nas_web']['recovery']) || !empty($state['web_push_pending']);
-            $ok = $skipPush ? true : $notify('nas_web', 'NAS-Dashboard wieder OK',
+            $ok = $skipPush ? true : $notify('nas_web', 'Dashboard wieder OK',
                 date('[d.m.Y H:i] ') . 'Der Datenordner ist wieder beschreibbar (Stoerung ca. ' . outage_duration_text($downMins) . ').');
             if ($ok) {
                 append_command_log($config, ['event' => 'nas_web_recovered', 'minutes' => $downMins]);
@@ -197,17 +197,17 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
             // (blocks_pushes=false ohne step) blockiert gar nichts.
             if (!empty($web['blocks_pushes'])) {
                 $impact = '. Login und Status-Pushs der Box scheitern! '
-                    . 'Meist fehlt der Gruppe http das Schreibrecht: DSM > File Station > Freigabe mit '
-                    . 'fw_alarm_data > Eigenschaften > Berechtigung > http Lesen+Schreiben. ';
+                    . 'Meist gehoert der Datenordner nicht dem Web-Benutzer - auf dem Server: '
+                    . 'sudo chown -R fwalarm: /srv/fw-alarm/data ';
             } elseif (($web['step'] ?? '') === 'perm') {
                 $impact = '. Verlauf, Empfaenger-Aenderungen oder Stummschalten koennen dadurch scheitern. '
-                    . 'Die Datei(en) im Datenordner (fw_alarm_data) dem Web-Benutzer http zuordnen '
-                    . 'bzw. ihm Lesen+Schreiben geben. ';
+                    . 'Die Datei(en) im Datenordner dem Web-Benutzer zuordnen - auf dem Server: '
+                    . 'sudo chown -R fwalarm: /srv/fw-alarm/data ';
             } else {
                 $impact = '. Der Selbsttest selbst kommt nicht durch - Status-Pushs der Box sind davon '
                     . 'vermutlich nicht betroffen. ';
             }
-            $ok = $notify('nas_web', 'NAS-Dashboard DEFEKT',
+            $ok = $notify('nas_web', 'Dashboard DEFEKT',
                 date('[d.m.Y H:i] ') . $web['detail'] . $impact
                 . 'Bark-Alarme der Box laufen davon unabhaengig weiter.');
             if ($ok) {
@@ -250,7 +250,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
             ? "Kein Status vom ESP32 seit {$duration}. "
                 . 'Strom/WLAN/Box pruefen! Der Relaisalarm wuerde gerade NICHT ausgeloest. '
                 . '(Manueller REAL ALARM ueber das Dashboard geht weiterhin.)'
-            : "Kein Status vom ESP32 seit {$duration} - Ursache ist aber vermutlich das NAS, "
+            : "Kein Status vom ESP32 seit {$duration} - Ursache ist aber vermutlich der Server, "
                 . 'nicht die Box: ' . $web['detail'] . '. '
                 . 'Kommen die taeglichen Bark-Heartbeats der Box noch an, laeuft sie normal.';
         $offlineRepeat = (int)$types['box_offline']['repeat_hours'] * 3600;
@@ -498,7 +498,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
         // ersten Lauf danach ein falsches "meldet sich nicht" (watcher_seen
         // ist ja noch alt, die VM klopft nur alle 5 min an).
         $state['watcher_unknown_at'] = time();
-        $out[] = 'WATCHER_UNKNOWN (Datenordner gestoert - Aufrufe der VM werden nicht gespeichert)';
+        $out[] = 'WATCHER_UNKNOWN (Datenordner gestoert - Aufrufe des Aussen-Waechters werden nicht gespeichert)';
     } elseif (isset($types['outside_watcher'])) {
         $wt = $types['outside_watcher'];
         $watcherSeen = (int)(read_json_file(data_path($config, 'watcher_seen.json'), [])['seen_at'] ?? 0);
@@ -524,10 +524,10 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
                 // Bark-Texte bewusst ASCII (keine Umlaute).
                 $ok = $notify('outside_watcher',
                     ($watcherNotifiedAt > 0 && !$watcherCatchUp) ? 'Aussen-Waechter weiterhin stumm' : 'Aussen-Waechter meldet sich nicht',
-                    date('[d.m.Y H:i] ') . "Die Cloud-VM hat sich {$since} beim NAS gemeldet. "
-                    . 'Ein Ausfall des NAS selbst (Strom/Internet am Standort) wuerde so NICHT gemeldet. '
-                    . 'Oracle stoppt kostenlose VMs, die laenger idle sind: Oracle-Konsole > Compute > '
-                    . 'Instances > fw-alarm-watch pruefen und ggf. starten.');
+                    date('[d.m.Y H:i] ') . "Der Aussen-Waechter (NAS) hat sich {$since} gemeldet. "
+                    . 'Ein Ausfall des Servers selbst wuerde so NICHT gemeldet. '
+                    . 'NAS zu Hause pruefen: Strom und Internet da? Laeuft dort die '
+                    . 'DSM-Aufgabe fw-alarm-watch?');
                 if ($ok) {
                     if ($watcherNotifiedAt === 0) {
                         append_command_log($config, ['event' => 'watcher_silent', 'minutes' => $watcherMins]);
@@ -549,7 +549,7 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
             $silentFrom = (int)($state['watcher_silent_seen_at'] ?? 0) ?: (int)($state['watcher_watch_since'] ?? time());
             $downMins = max(1, (int)round((time() - $silentFrom) / 60));
             $ok = $skipPush ? true : $notify('outside_watcher', 'Aussen-Waechter wieder da',
-                date('[d.m.Y H:i] ') . 'Die Cloud-VM meldet sich wieder beim NAS (Pause ca. ' . outage_duration_text($downMins) . ').');
+                date('[d.m.Y H:i] ') . 'Der Aussen-Waechter (NAS) meldet sich wieder (Pause ca. ' . outage_duration_text($downMins) . ').');
             if ($ok) {
                 append_command_log($config, ['event' => 'watcher_recovered', 'minutes' => $downMins]);
                 $state['watcher_notified_at'] = 0;

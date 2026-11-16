@@ -143,9 +143,9 @@ function pairs() {
     add(theme, 'page', 'Seitenleiste Fuß/Anzahl', '--text-2', ['--side-bg']);
     add(theme, 'page', 'Seitenleiste gewählt', '--text', ['--side-bg', '--side-on']);
     add(theme, 'page', 'Demo-Band', '#000000', ['--bg', '--warn']);
-    // Band „keine aktuelle Antwort vom NAS“ (getönt, orange bzw. rot).
-    add(theme, 'page', 'Band NAS-Störung orange', '--warn-text', ['--bg', '--surface']);
-    add(theme, 'page', 'Band NAS-Störung rot', '--crit-text', ['--bg', '--status-crit-bg']);
+    // Band „keine aktuelle Antwort vom Server“ (getönt, orange bzw. rot).
+    add(theme, 'page', 'Band Server-Störung orange', '--warn-text', ['--bg', '--surface']);
+    add(theme, 'page', 'Band Server-Störung rot', '--crit-text', ['--bg', '--status-crit-bg']);
     // Ersatzanzeige beim Start (shell.php/main.js) und Fehlergrenzen (ui.Fallback).
     add(theme, 'page', 'Start-Ersatz: Titel/Hinweis', '--text-2', ['--bg']);
     add(theme, 'page', 'Start-Ersatz/Fehlergrenze: Meldung', '--text', ['--bg']);

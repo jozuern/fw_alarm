@@ -140,7 +140,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login
                 admin_notify_send($config, 'login_lockout', 'Dashboard: Login gesperrt', $lockoutText);
             });
         }
-        sleep(1);   // einfache Brute-Force-Bremse (DSM Auto-Block greift hier nicht)
+        sleep(1);   // einfache Brute-Force-Bremse (zusätzlich zur Sperre pro Absender)
         $error = 'Login fehlgeschlagen.';
     }
 }

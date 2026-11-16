@@ -305,7 +305,7 @@
     if (state.authLost) return;
     try {
       const data = await api.get('status', {}, api.TIMEOUT.POLL);
-      if (!data.ok) throw new api.ApiError('http', data.message || 'Unerwartete Antwort vom NAS.', 200, data);
+      if (!data.ok) throw new api.ApiError('http', data.message || 'Unerwartete Antwort vom Server.', 200, data);
       adoptStatus(data);
     } catch (err) {
       if (isAuth(err)) return;   // handleAuthLoss() übernimmt
@@ -359,7 +359,7 @@
   function showKeysCorrupt(data) {
     set({
       keysCorrupt: (data && typeof data.message === 'string' && data.message)
-        || 'Empfängerliste auf dem NAS beschädigt (Liste und Sicherung unlesbar) – bitte die Dateien im Datenordner prüfen.',
+        || 'Empfängerliste auf dem Server beschädigt (Liste und Sicherung unlesbar) – bitte die Dateien im Datenordner prüfen.',
       keys: null,
       keysError: ''
     });

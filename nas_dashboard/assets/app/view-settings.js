@@ -30,7 +30,7 @@
     { value: 'light', label: 'Hell' },
     { value: 'system', label: 'System' }
   ];
-  const UNCONFIGURED = 'In config.php ist kein Status-Empfänger eingetragen (bark_key_status) – das NAS verschickt deshalb gerade gar keine Meldungen. Die Einstellungen hier greifen, sobald der Key gesetzt ist.';
+  const UNCONFIGURED = 'In config.php ist kein Status-Empfänger eingetragen (bark_key_status) – der Server verschickt deshalb gerade gar keine Meldungen. Die Einstellungen hier greifen, sobald der Key gesetzt ist.';
 
   // ---- Kleine Helfer -----------------------------------------------------------
   // Rückmeldungen erst setzen, wenn die Komponente noch steht.
@@ -227,7 +227,7 @@
           <span class="row-label" id=${labelId}>Hinweis im Browser bei Störung</span>
           <span class=${cx('row-sub', blocked && 'set-sub-warn')}>${blocked
             ? html`<span aria-hidden="true">! </span>Der Browser blockiert Benachrichtigungen für diese Seite – so kommt kein Hinweis an.`
-            : 'Meldet Box offline, Alarm und NAS-Ausfall – auch bei verstecktem Tab, solange er offen ist.'}</span>
+            : 'Meldet Box offline, Alarm und Server-Ausfall – auch bei verstecktem Tab, solange er offen ist.'}</span>
         </span>
         <${ui.Switch} checked=${on} onChange=${change} labelledBy=${labelId}/>
       </div>
@@ -370,7 +370,7 @@
     const secure = n.types.filter((t) => t.important);
     const info = n.types.filter((t) => !t.important);
     return html`<${ui.Page} title="Meldungen an mich" back=${BACK_MAIN} class="set set-notify-page page-narrow">
-      <p class="set-intro">Statusmeldungen, die das NAS an deinen Status-Empfänger schickt. Die Alarmierung selbst ist davon unabhängig.</p>
+      <p class="set-intro">Statusmeldungen, die der Server an deinen Status-Empfänger schickt. Die Alarmierung selbst ist davon unabhängig.</p>
       ${n.configured ? null : html`<${Unconfigured}/>`}
       ${secure.length ? html`<${ui.Group} header="Sicherheit" class="set-g-security"
         footer="Abschalten nur mit Rückfrage – fiele dann etwas aus, käme keine Meldung.">${rows(secure)}</${ui.Group}>` : null}
@@ -514,7 +514,7 @@
   // Zustand, Abgleich mit der Box (Regeln wie bisher renderDemo), Auswahl des
   // Test-Empfängers (nur zum Einschalten) und der Schalter mit Rückfrage.
   const DEMO_SYNC = {
-    unknown: { tone: 'warn', text: 'Sync-Status unbekannt – keine aktuelle Antwort vom NAS. Nicht davon ausgehen, dass gefahrlos getestet werden kann!' },
+    unknown: { tone: 'warn', text: 'Sync-Status unbekannt – keine aktuelle Antwort vom Server. Nicht davon ausgehen, dass gefahrlos getestet werden kann!' },
     offline: { tone: 'crit', text: 'Achtung: Die Box ist OFFLINE – ein Relaisalarm würde noch mit der ALTEN Liste senden!' },
     synced: { tone: 'ok', text: 'Die Box hat die Demo-Liste übernommen – du kannst jetzt gefahrlos testen.' },
     pending: { tone: 'warn', text: 'Achtung: Die Box hat die Demo-Liste NOCH NICHT übernommen (das dauert einige Sekunden) – ein Relaisalarm würde noch an ALLE gehen!' }
@@ -668,7 +668,7 @@
     if (!Number.isFinite(age)) return 'Die Box hat sich noch nie gemeldet – es gibt noch keine Werte.';
     const when = L.fmtDayTime(Math.round(d.serverTime - age), d.serverTime);
     return d.unsure
-      ? `Keine aktuelle Antwort vom NAS – letzter bekannter Stand von ${when}.`
+      ? `Keine aktuelle Antwort vom Server – letzter bekannter Stand von ${when}.`
       : `Box offline – letzter bekannter Stand von ${when}.`;
   }
 

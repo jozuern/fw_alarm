@@ -104,9 +104,9 @@ test('Fehler-JSON und kaputtes JSON', async () => {
   await assert.rejects(a.api.get('status'), (e) => e.kind === 'http' && e.message === 'Datenordner gesperrt' && e.data.ok === false);
   const b = setup(() => reply(200, 'Warning: blah'));
   await assert.rejects(b.api.get('status'), (e) => e.kind === 'http' && e.status === 200
-    && e.message === 'Antwort des NAS ist kein gültiges JSON: Warning: blah');
+    && e.message === 'Antwort des Servers ist kein gültiges JSON: Warning: blah');
   const c = setup(() => reply(200, ''));
-  await assert.rejects(c.api.get('status'), (e) => e.kind === 'http' && e.message === 'Antwort des NAS ist kein gültiges JSON.');
+  await assert.rejects(c.api.get('status'), (e) => e.kind === 'http' && e.message === 'Antwort des Servers ist kein gültiges JSON.');
   const d = setup(() => reply(200, { ok: true, x: 1 }));
   assert.equal((await d.api.get('status')).x, 1);
 });
@@ -250,8 +250,8 @@ test('errorText and errorKind', async () => {
   assert.equal(api.errorText(new E('readonly', '', 403)), 'Nur Lesezugriff – Aktion wurde NICHT ausgeführt.');
   assert.equal(api.errorText(new E('readonly', 'Nur Admin.', 403)), 'Nur Admin.');
   assert.equal(api.errorText(new E('mode_changed', '', 409)), 'Der Demo-/LIVE-Modus hat sich geändert – Aktion wurde NICHT ausgeführt.');
-  assert.match(api.errorText(new E('timeout', '', 0)), /^Keine Antwort vom NAS \(Zeitüberschreitung\) – ob die Aktion ausgeführt wurde, ist unklar/);
-  assert.equal(api.errorText(new E('network', '', 0)), 'NAS nicht erreichbar – Verbindung prüfen.');
+  assert.match(api.errorText(new E('timeout', '', 0)), /^Keine Antwort vom Server \(Zeitüberschreitung\) – ob die Aktion ausgeführt wurde, ist unklar/);
+  assert.equal(api.errorText(new E('network', '', 0)), 'Server nicht erreichbar – Verbindung prüfen.');
   assert.equal(api.errorText(new E('http', 'kaputt', 500)), 'Fehler (HTTP 500): kaputt');
   assert.equal(api.errorText(new E('http', '', 0)), 'Fehler.');
   assert.equal(api.errorKind(new E('timeout', '', 0)), 'warn');

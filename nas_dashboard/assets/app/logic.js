@@ -217,13 +217,13 @@
       return { warn: true, text: 'nicht konfiguriert (bark_key_status in config.php setzen)' };
     }
     if (!info.last_run) {
-      return { warn: true, text: 'noch nie gelaufen – DSM-Aufgabe im Aufgabenplaner eingerichtet?' };
+      return { warn: true, text: 'noch nie gelaufen – Wächter-Timer auf dem Server eingerichtet?' };
     }
     const age = Math.max(0, serverTime - info.last_run);
-    // Die DSM-Aufgabe läuft alle 15 min - erst warnen, wenn mehr als zwei
+    // Der Wächter-Timer läuft alle 15 min - erst warnen, wenn mehr als zwei
     // Läufe ausgefallen sind (35 min).
     if (age > 2100) {
-      return { warn: true, text: `seit ${fmtUptime(age)} nicht gelaufen – DSM-Aufgabe prüfen!` };
+      return { warn: true, text: `seit ${fmtUptime(age)} nicht gelaufen – Wächter-Timer prüfen!` };
     }
     // Läuft, aber sein letzter Bark-Versand ist gescheitert (und seitdem kam
     // kein erfolgreicher): Dann würde er eine Offline-Box gar nicht melden.
@@ -239,12 +239,12 @@
       return { warn: true, text: 'läuft, aber die Meldung „Box offline“ ist abgeschaltet – ein Ausfall der Box würde nicht gemeldet' };
     }
     if (info.web_alert === false) {
-      return { warn: true, text: 'läuft, aber die Meldung „NAS-Dashboard defekt“ ist abgeschaltet' };
+      return { warn: true, text: 'läuft, aber die Meldung „Dashboard defekt“ ist abgeschaltet' };
     }
     return { warn: false, text: `läuft (zuletzt ${age < 60 ? 'gerade eben' : 'vor ' + fmtUptime(age)})` };
   }
 
-  // Außen-Wächter (Cloud-VM): Sie klopft alle 5 min über api/alive.php an.
+  // Außen-Wächter (seit dem Umzug: das NAS): klopft alle 5 min über api/alive.php an.
   // Ab wann sie als stumm gilt, meldet der Server (outside_silent_after_s);
   // ältere Stände ohne das Feld: eine Stunde.
   // null = nicht eingerichtet.
@@ -252,24 +252,24 @@
   function outsideState(info, serverTime) {
     if (!info || info.outside_seen_at === undefined) return null;
     const seen = Number(info.outside_seen_at) || 0;
-    if (!seen) return { warn: true, text: 'eingerichtet, hat sich aber noch nie gemeldet – läuft die VM?' };
+    if (!seen) return { warn: true, text: 'eingerichtet, hat sich aber noch nie gemeldet – läuft die DSM-Aufgabe fw-alarm-watch auf dem NAS?' };
     const age = Math.max(0, serverTime - seen);
     const silentAfter = Number(info.outside_silent_after_s) > 0
       ? Number(info.outside_silent_after_s) : OUTSIDE_SILENT_FALLBACK_S;
     if (age > silentAfter) {
-      return { warn: true, text: `meldet sich seit ${fmtUptime(age)} nicht – VM in der Oracle-Konsole prüfen (gestoppt?)` };
+      return { warn: true, text: `meldet sich seit ${fmtUptime(age)} nicht – NAS zu Hause prüfen (Strom/Internet, DSM-Aufgabe fw-alarm-watch)` };
     }
     const last = age < 60 ? 'gerade eben' : 'vor ' + fmtUptime(age);
-    // Die VM klopft zwar an, kann aber ihre eigenen Bark-Meldungen nicht
-    // zustellen - fiele das NAS aus, käme keine Warnung.
+    // Der Außen-Wächter klopft zwar an, kann aber seine eigenen Bark-Meldungen
+    // nicht zustellen - fiele der Server aus, käme keine Warnung.
     const barkFailedAt = Number(info.outside_bark_failed_at) || 0;
     if (barkFailedAt > 0) {
-      return { warn: true, text: `meldet sich (zuletzt ${last}), kann aber nicht melden (Bark-Versand fehlgeschlagen seit ${fmtDayTime(barkFailedAt, serverTime)}) – BARK_KEY in /etc/fw-alarm-watch.conf auf der VM prüfen` };
+      return { warn: true, text: `meldet sich (zuletzt ${last}), kann aber nicht melden (Bark-Versand fehlgeschlagen seit ${fmtDayTime(barkFailedAt, serverTime)}) – BARK_KEY in fw-alarm-watch.conf auf dem NAS prüfen` };
     }
     // Hat der Admin "Außen-Wächter meldet sich nicht" abgeschaltet, darf das
     // nicht in Vergessenheit geraten (outside_alert kommt nur für den Admin).
     if (info.outside_alert === false) {
-      return { warn: true, text: `meldet sich (zuletzt ${last}), aber die Meldung „Außen-Wächter meldet sich nicht“ ist abgeschaltet – fiele die VM aus, käme keine Warnung` };
+      return { warn: true, text: `meldet sich (zuletzt ${last}), aber die Meldung „Außen-Wächter meldet sich nicht“ ist abgeschaltet – fiele das NAS aus, käme keine Warnung` };
     }
     return { warn: false, text: `meldet sich (zuletzt ${last})` };
   }
@@ -315,14 +315,14 @@
         return deliveryIncomplete(s) ? 'crit' : '';
       } },
     { id: 'lastAlarm', group: 'Alarmkette', label: 'Letzter Alarm',
-      tip: 'Zeitpunkt und Text des letzten ausgelösten Alarms aus Sicht der Box (seit ihrem letzten Neustart) und – falls die Firmware es meldet – woher er kam: Melder-Relais oder DEMO-Alarm per Dashboard-Befehl. "nie" heißt: kein Alarm seit dem letzten Einschalten. Den dauerhaften Verlauf führt das NAS („Verlauf“).',
+      tip: 'Zeitpunkt und Text des letzten ausgelösten Alarms aus Sicht der Box (seit ihrem letzten Neustart) und – falls die Firmware es meldet – woher er kam: Melder-Relais oder DEMO-Alarm per Dashboard-Befehl. "nie" heißt: kein Alarm seit dem letzten Einschalten. Den dauerhaften Verlauf führt der Server („Verlauf“).',
       value: (s) => {
         const text = show(s.last_alarm);
         if (na(s.alarm_source) || na(s.last_alarm) || s.last_alarm === 'nie') return text;
         return `${text} · ${ALARM_SOURCES[s.alarm_source] || String(s.alarm_source)}`;
       } },
     { id: 'wifi', group: 'Verbindung', label: 'WLAN',
-      tip: 'Empfangsstärke der Box im WLAN des Magazins und ihre aktuelle Adresse. Näher an 0 dBm ist besser: ab ca. -67 gut, unter ca. -80 unzuverlässig – dann Box oder Router umstellen. Ohne WLAN kann die Box weder Bark-Alarme senden noch das NAS erreichen.',
+      tip: 'Empfangsstärke der Box im WLAN des Magazins und ihre aktuelle Adresse. Näher an 0 dBm ist besser: ab ca. -67 gut, unter ca. -80 unzuverlässig – dann Box oder Router umstellen. Ohne WLAN kann die Box weder Bark-Alarme senden noch den Server erreichen.',
       value: (s) => {
         if (s.wifi === 'down') return 'GETRENNT';
         if (na(s.rssi)) return 'n/a';
@@ -333,7 +333,7 @@
         return weakWifi(s) ? 'warn' : '';
       } },
     { id: 'keys', group: 'Verbindung', label: 'Empfängerliste (Box)',
-      tip: 'Empfängerliste, wie sie die Box gespeichert hat: Anzahl, davon stumm (Arbeitsmodus) und die Listen-Version. Stimmt die Version mit dem NAS überein, ist die Liste (auch ein Demo-Wechsel) angekommen. Im Demo-Modus steht hier genau 1 Empfänger.',
+      tip: 'Empfängerliste, wie sie die Box gespeichert hat: Anzahl, davon stumm (Arbeitsmodus) und die Listen-Version. Stimmt die Version mit dem Server überein, ist die Liste (auch ein Demo-Wechsel) angekommen. Im Demo-Modus steht hier genau 1 Empfänger.',
       value: (s, ctx) => {
         if (na(s.keys_count)) return 'n/a';
         let text = `${s.keys_count} Empfänger`;
@@ -343,8 +343,8 @@
           text += ` · v${s.keys_version}`;
           if (!na(ctx.nasKeysVersion)) {
             text += String(s.keys_version) === String(ctx.nasKeysVersion)
-              ? ' (= NAS)'
-              : ` (NAS: v${ctx.nasKeysVersion} – Übernahme steht aus)`;
+              ? ' (= Server)'
+              : ` (Server: v${ctx.nasKeysVersion} – Übernahme steht aus)`;
           }
         }
         return text;
@@ -359,7 +359,7 @@
       },
       cls: (s) => (heartbeatFailed(s) ? 'warn' : '') },
     { id: 'ack', group: 'Verbindung', label: 'Befehls-Quittung',
-      tip: 'Hat die Box einen Befehl aus dem Dashboard ausgeführt, dessen Bestätigung noch nicht beim NAS angekommen ist? Normalerweise "keine offen" – ein Rückstand wird automatisch nachgereicht.',
+      tip: 'Hat die Box einen Befehl aus dem Dashboard ausgeführt, dessen Bestätigung noch nicht beim Server angekommen ist? Normalerweise "keine offen" – ein Rückstand wird automatisch nachgereicht.',
       value: (s) => (na(s.ack_pending) ? 'n/a'
         : (flagged(s.ack_pending) ? 'offen – wird nachgereicht' : 'keine offen')),
       cls: (s) => (flagged(s.ack_pending) ? 'warn' : '') },
@@ -370,7 +370,7 @@
     { id: 'uptime', group: 'Wartung', live: true,
       label: (ctx) => (ctx.offline ? 'Offline seit' : 'Läuft seit'),
       tip: (ctx) => (ctx.offline
-        ? 'Zeit seit dem letzten Lebenszeichen der Box beim NAS. Mögliche Ursachen: Stromausfall, WLAN weg oder NAS nicht erreichbar.'
+        ? 'Zeit seit dem letzten Lebenszeichen der Box beim Server. Mögliche Ursachen: Stromausfall, WLAN weg oder Server nicht erreichbar.'
         : 'Zeit seit dem letzten Neustart der Box. Ein unerwarteter Sprung auf wenige Minuten bedeutet: Die Box hat neu gestartet (z.B. Stromausfall oder Watchdog).'),
       value: (s, ctx) => (ctx.offline
         ? (Number.isFinite(ctx.seenAge) ? fmtUptime(ctx.seenAge) : 'unbekannt (noch nie gemeldet)')
@@ -388,16 +388,16 @@
         return fmtHeap(s.free_heap) + (isNaN(maxAlloc) ? '' : ` · größter Block ${Math.round(maxAlloc / 1024)} kB`);
       },
       cls: (s) => (lowMemory(s) ? 'warn' : '') },
-    // NAS-seitig, nicht Box-seitig: Der Wächter (DSM-Aufgabe) muss auch dann
+    // Server-seitig, nicht Box-seitig: Der Wächter (Timer) muss auch dann
     // laufen, wenn die Box offline ist - deshalb live.
-    { id: 'watchdog', group: 'Wartung', label: 'Offline-Wächter (NAS)', live: true,
-      tip: 'Die DSM-Aufgabe auf dem NAS prüft alle 15 Minuten, ob die Box sich noch meldet, und schickt sonst eine Bark-Warnung. Hier steht, ob diese Aufgabe selbst noch läuft – der Wächter darf nicht unbemerkt ausfallen. Welche Meldungen er schickt, stellt der Admin unter „Einstellungen → Meldungen“ ein.',
+    { id: 'watchdog', group: 'Wartung', label: 'Offline-Wächter (Server)', live: true,
+      tip: 'Der Wächter-Timer auf dem Server prüft alle 15 Minuten, ob die Box sich noch meldet, und schickt sonst eine Bark-Warnung. Hier steht, ob dieser Timer selbst noch läuft – der Wächter darf nicht unbemerkt ausfallen. Welche Meldungen er schickt, stellt der Admin unter „Einstellungen → Meldungen“ ein.',
       value: (s, ctx) => (ctx.watchdog ? ctx.watchdog.text : 'n/a'),
       cls: (s, ctx) => (ctx.watchdog && ctx.watchdog.warn ? 'warn' : '') },
-    // Der Gegenpart von außen: eine Cloud-VM prüft alle 5 min, ob das NAS
+    // Der Gegenpart von außen: das NAS prüft alle 5 min, ob der Server
     // erreichbar ist. Bewertet in outsideState(), hängt an ctx.watchdog.
-    { id: 'outside', group: 'Wartung', label: 'Außen-Wächter (Cloud)', live: true,
-      tip: 'Eine kleine Cloud-VM ruft das NAS alle 5 Minuten von außen auf und meldet per Bark, wenn es nicht erreichbar ist (Strom oder Internet am Standort weg, Router, Zertifikat) oder wenn die DSM-Aufgabe nicht mehr läuft. Das NAS selbst kann seinen eigenen Ausfall nicht melden. Hier steht, wann sich die VM zuletzt gemeldet hat.',
+    { id: 'outside', group: 'Wartung', label: 'Außen-Wächter (NAS)', live: true,
+      tip: 'Das NAS zu Hause ruft den Server alle 5 Minuten von außen auf und meldet per Bark, wenn er nicht erreichbar ist (Server gestoppt, Tunnel oder Internet gestört, Zertifikat) oder wenn der Wächter-Timer dort nicht mehr läuft. Der Server selbst kann seinen eigenen Ausfall nicht melden. Hier steht, wann sich das NAS zuletzt gemeldet hat.',
       value: (s, ctx) => (ctx.watchdog && ctx.watchdog.outside ? ctx.watchdog.outside.text : 'nicht eingerichtet'),
       cls: (s, ctx) => (ctx.watchdog && ctx.watchdog.outside && ctx.watchdog.outside.warn ? 'warn' : '') }
   ];
@@ -442,7 +442,7 @@
 
     // Liste samt Sicherung auf dem NAS unlesbar: NICHT "keine eingetragen".
     if (ctx.keysCorrupt) {
-      add('crit', 'Die Empfängerliste auf dem NAS ist beschädigt – siehe „Empfänger“.');
+      add('crit', 'Die Empfängerliste auf dem Server ist beschädigt – siehe „Empfänger“.');
     }
     const sum = ctx.keysSummary;
     if (!ctx.demoOn && sum && sum.total > 0 && sum.muted === sum.total) {
@@ -457,8 +457,8 @@
     // ignoriertes fremdes Board (dann stimmen die Statuswerte evtl. nicht).
     if (ctx.deviceHint) add('warn', ctx.deviceHint);
     const wd = ctx.watchdog;
-    if (wd && wd.warn) add('warn', `Offline-Wächter (NAS): ${wd.text}`);
-    if (wd && wd.outside && wd.outside.warn) add('warn', `Außen-Wächter (Cloud): ${wd.outside.text}`);
+    if (wd && wd.warn) add('warn', `Offline-Wächter (Server): ${wd.text}`);
+    if (wd && wd.outside && wd.outside.warn) add('warn', `Außen-Wächter (NAS): ${wd.outside.text}`);
     if (!ctx.offline) {
       if (deliveryIncomplete(s)) {
         add('crit', `Nicht alle Empfänger erreicht (letzter Alarm der Box: ${show(s.key_progress)}) – ${ctx.readOnly
@@ -516,17 +516,17 @@
   // Kontakt klemmt, Alarm ausgelöst, Demo-Modus, Hinweise, alles bereit.
   function nasProblemTexts(err, alarmInFlight) {
     if (!err) {
-      return { title: 'Status veraltet', detail: 'Keine aktuelle Antwort vom NAS' };
+      return { title: 'Status veraltet', detail: 'Keine aktuelle Antwort vom Server' };
     }
     if (err.kind === 'timeout' && alarmInFlight) {
       // Während ein Alarm-Versand läuft, kann das NAS Status-Abfragen
       // derselben Sitzung zurückstellen - das ist kein Ausfall.
-      return { title: 'NAS beschäftigt', detail: 'Keine Status-Antwort, solange der Alarm-Versand läuft' };
+      return { title: 'Server beschäftigt', detail: 'Keine Status-Antwort, solange der Alarm-Versand läuft' };
     }
     if (err.kind === 'network' || err.kind === 'timeout') {
       return {
-        title: 'NAS nicht erreichbar',
-        detail: err.kind === 'timeout' ? 'Keine Antwort vom NAS (Zeitüberschreitung)' : 'Keine Verbindung zum NAS'
+        title: 'Server nicht erreichbar',
+        detail: err.kind === 'timeout' ? 'Keine Antwort vom Server (Zeitüberschreitung)' : 'Keine Verbindung zum Server'
       };
     }
     // Jede andere Fehlerart mit Art-Kennung (http, csrf, readonly, mode_changed
@@ -534,11 +534,11 @@
     // Art-Kennung (kein ApiError) heißt "nicht auswertbar".
     if (typeof err.kind === 'string' && err.kind) {
       return {
-        title: 'NAS-Störung',
-        detail: `Das NAS meldet einen Fehler${err.status ? ` (HTTP ${err.status})` : ''}${err.message ? `: ${err.message}` : ''}`
+        title: 'Server-Störung',
+        detail: `Der Server meldet einen Fehler${err.status ? ` (HTTP ${err.status})` : ''}${err.message ? `: ${err.message}` : ''}`
       };
     }
-    return { title: 'NAS-Störung', detail: 'Die Antwort des NAS konnte nicht ausgewertet werden' };
+    return { title: 'Server-Störung', detail: 'Die Antwort des Servers konnte nicht ausgewertet werden' };
   }
 
   function verdict(ctx) {
@@ -560,9 +560,9 @@
       if (offline) {
         sub = ctx.readOnly
           ? 'Letzter bekannter Stand: Box OFFLINE – Relaisalarme kamen da NICHT an. Bitte einen Admin verständigen – er kann manuell alarmieren.'
-          : 'Letzter bekannter Stand: Box OFFLINE – Relaisalarme kamen da NICHT an. Manuell alarmieren: „Alarm an alle senden“ direkt hier darunter (läuft über das NAS – kommt keine Antwort, die Mannschaft anders verständigen).';
+          : 'Letzter bekannter Stand: Box OFFLINE – Relaisalarme kamen da NICHT an. Manuell alarmieren: „Alarm an alle senden“ direkt hier darunter (läuft über den Server – kommt keine Antwort, die Mannschaft anders verständigen).';
       } else {
-        sub = 'Das Dashboard bekommt gerade keine frischen Daten. Die Box alarmiert über Bark auch ohne das NAS – ob sie gerade läuft, lässt sich von hier aus aber nicht prüfen.';
+        sub = 'Das Dashboard bekommt gerade keine frischen Daten. Die Box alarmiert über Bark auch ohne den Server – ob sie gerade läuft, lässt sich von hier aus aber nicht prüfen.';
       }
       return make('nas', offline ? 'crit' : 'warn', title, sub, { detail });
     }
@@ -572,7 +572,7 @@
     if (offline) {
       return make('offline', 'crit', 'Box offline', ctx.readOnly
         ? 'Relaisalarme kommen gerade NICHT an. Bitte einen Admin verständigen – er kann manuell alarmieren.'
-        : 'Relaisalarme kommen gerade NICHT an. Manuell alarmieren geht weiterhin: „Alarm an alle senden“ direkt hier darunter (läuft direkt über das NAS).');
+        : 'Relaisalarme kommen gerade NICHT an. Manuell alarmieren geht weiterhin: „Alarm an alle senden“ direkt hier darunter (läuft direkt über den Server).');
     }
     if (alarmRunning(s, offline)) {
       return make('alarm', 'alarm', 'Alarm läuft', `Die Box stellt gerade zu – bisher ${show(s.key_progress)} erreicht.`);
@@ -645,13 +645,13 @@
     let watchTone = 'unknown';
     if (wd) {
       const parts = [];
-      if (wd.warn) parts.push(`NAS: ${wd.text}`);
-      if (wd.outside && wd.outside.warn) parts.push(`Cloud: ${wd.outside.text}`);
+      if (wd.warn) parts.push(`Server: ${wd.text}`);
+      if (wd.outside && wd.outside.warn) parts.push(`NAS: ${wd.outside.text}`);
       if (parts.length) {
         watchValue = parts.join(' · ');
         watchTone = unsure ? 'unknown' : 'warn';
       } else {
-        watchValue = wd.outside ? 'NAS + Cloud aktiv' : 'NAS aktiv';
+        watchValue = wd.outside ? 'Server + NAS aktiv' : 'Server aktiv';
         watchTone = unsure ? 'unknown' : '';
       }
     }
@@ -698,7 +698,7 @@
     if (!ctx.stale && !ctx.statusError) return null;
     const { detail } = nasProblemTexts(ctx.statusError, ctx.alarmInFlight);
     const at = ctx.lastOkMs > 0 ? fmtClockMs(ctx.lastOkMs) : '';
-    if (!at) return { tone: 'warn', text: `${detail} – es liegen noch keine Werte vom NAS vor` };
+    if (!at) return { tone: 'warn', text: `${detail} – es liegen noch keine Werte vom Server vor` };
     if (ctx.offline) return { tone: 'crit', text: `${detail} – letzter bekannter Stand (${at}): Box OFFLINE` };
     return { tone: 'warn', text: `${detail} – angezeigte Werte können veraltet sein (Stand ${at})` };
   }
@@ -948,7 +948,7 @@
           ? `ENTWARNUNG: Nachsendung an ${entry.resend} Empfänger gestartet`
           : 'ENTWARNUNG gestartet') + (entry.demo === true ? ' (DEMO-MODUS)' : '') + who, 'warn', 'clear');
       case 'nas_alarm':
-        return mk(`REAL ALARM direkt vom NAS: ${entry.message || ''}${who}`, 'alarm', 'alarm');
+        return mk(`REAL ALARM direkt vom Server: ${entry.message || ''}${who}`, 'alarm', 'alarm');
       case 'false_alarm':
         return mk(`ENTWARNUNG (Fehlalarm) gesendet: ${entry.message || ''}${who}`, 'warn', 'clear');
       case 'relay_alarm':
@@ -963,13 +963,13 @@
       case 'box_restart':
         return mk(`Box neu gestartet – Grund: ${RESET_REASONS[entry.reason] || entry.reason || 'unbekannt'}`, 'warn', 'box');
       case 'nas_web_failed':
-        return mk(`NAS-Dashboard gestört: ${entry.detail || 'Selbsttest fehlgeschlagen'}`, 'alarm', 'box');
+        return mk(`Dashboard gestört: ${entry.detail || 'Selbsttest fehlgeschlagen'}`, 'alarm', 'box');
       case 'nas_web_recovered':
-        return mk(`NAS-Dashboard wieder in Ordnung (Störung ca. ${entry.minutes} min)`, 'ok', 'box');
+        return mk(`Dashboard wieder in Ordnung (Störung ca. ${entry.minutes} min)`, 'ok', 'box');
       case 'watcher_silent':
-        return mk(`Außen-Wächter (Cloud) meldet sich nicht (seit ${entry.minutes} min)`, 'warn', 'watch');
+        return mk(`Außen-Wächter (NAS) meldet sich nicht (seit ${entry.minutes} min)`, 'warn', 'watch');
       case 'watcher_recovered':
-        return mk(`Außen-Wächter (Cloud) wieder da (Pause ca. ${entry.minutes} min)`, 'ok', 'watch');
+        return mk(`Außen-Wächter (NAS) wieder da (Pause ca. ${entry.minutes} min)`, 'ok', 'watch');
       default:
         return mk(String(entry.event || '?'), '', 'settings');
     }
@@ -1121,7 +1121,7 @@
     let sub = '';
     let subTone = '';
     if (overdue) {
-      sub = `Die automatische Laut-Rückschaltung ist fällig, konnte auf dem NAS aber nicht gespeichert werden (Datenordner nicht beschreibbar?). „Alarm an alle senden“ vom NAS kommt laut an – die Box alarmiert evtl. noch ${volWords(vol)}.`;
+      sub = `Die automatische Laut-Rückschaltung ist fällig, konnte auf dem Server aber nicht gespeichert werden (Datenordner nicht beschreibbar?). „Alarm an alle senden“ vom Server kommt laut an – die Box alarmiert evtl. noch ${volWords(vol)}.`;
       subTone = 'warn';
     } else if (state !== 'loud') {
       const since = entry.muted_at ? ` Stumm seit ${fmtDayClock(entry.muted_at)} Uhr` : '';
@@ -1184,9 +1184,9 @@
     const mutedClear = muted.length ? ` Stumm geschaltet (kommt mit Stumm-Lautstärke): ${mutedList}.` : '';
     // Eigener, vollständiger Satz zur Empfängerzahl.
     let sendTo;
-    if (corrupt) sendTo = 'an die Not-Liste aus der NAS-Konfiguration. Die Empfängerliste auf dem NAS ist beschädigt.';
+    if (corrupt) sendTo = 'an die Not-Liste aus der Server-Konfiguration. Die Empfängerliste auf dem Server ist beschädigt.';
     else if (!loaded) sendTo = 'an alle Empfänger der Liste. Die Empfängerliste ist noch nicht geladen.';
-    else sendTo = n === 0 ? 'an die Not-Liste der NAS-Konfiguration. Die Empfängerliste ist leer.' : `an ${n} Empfänger.`;
+    else sendTo = n === 0 ? 'an die Not-Liste der Server-Konfiguration. Die Empfängerliste ist leer.' : `an ${n} Empfänger.`;
 
     if (action === 'box_alarm') {
       return {
@@ -1213,7 +1213,7 @@
       title: demoOn ? `Demo-Alarm an ${demoName(demo)} senden?` : 'Alarm an alle senden?',
       text: demoOn
         ? `${mode}. Der Alarm geht nur an diesen Empfänger (1 Empfänger), alle anderen pausieren.${mutedAlarm}`
-        : `${mode}. ECHTEN FEUERWEHR-ALARM direkt vom NAS senden ${sendTo}${mutedAlarm}`
+        : `${mode}. ECHTEN FEUERWEHR-ALARM direkt vom Server senden ${sendTo}${mutedAlarm}`
     };
   }
 
@@ -1264,7 +1264,7 @@
     offline: 'Box offline – Relaisalarme kommen gerade NICHT an. Manuell alarmieren geht weiterhin über das Dashboard.',
     alarm: 'Alarm läuft – die Box stellt gerade zu.',
     standing: 'Alarm ausgelöst – der Melder-Kontakt ist noch geschlossen.',
-    nas: 'NAS nicht erreichbar – das Dashboard bekommt seit mehreren Abfragen keine aktuellen Daten. Die Box alarmiert über Bark auch ohne das NAS.',
+    nas: 'Server nicht erreichbar – das Dashboard bekommt seit mehreren Abfragen keine aktuellen Daten. Die Box alarmiert über Bark auch ohne den Server.',
     delivery: 'Zustellung unvollständig – beim letzten Alarm der Box wurden nicht alle Empfänger erreicht.'
   };
   const BROWSER_ALERT_CALM = {

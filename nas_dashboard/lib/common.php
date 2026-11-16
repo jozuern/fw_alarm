@@ -284,8 +284,8 @@ function backup_then_write(array $config, string $name, array $data): bool
 }
 
 // Fehlermeldung, wenn eine Lock-Datei nicht zu öffnen ist (meist fehlendes
-// Schreibrecht der Gruppe http auf den data_dir).
-const LOCK_FAILED_MESSAGE = 'Fehler: Datenordner nicht beschreibbar (Berechtigungen der Gruppe http prüfen).';
+// Schreibrecht des Web-Benutzers auf den data_dir).
+const LOCK_FAILED_MESSAGE = 'Fehler: Datenordner nicht beschreibbar (auf dem Server: sudo chown -R fwalarm: /srv/fw-alarm/data).';
 
 function open_lock(array $config, string $name)
 {
@@ -472,7 +472,7 @@ function web_health_check(array $config): array
     // Meldung das NAS als Ursache nennen darf.
     if ($body === false) {
         return ['ok' => false, 'blocks_pushes' => true,
-            'detail' => 'Web Station nicht erreichbar (' . $err . ')'];
+            'detail' => 'Webserver nicht erreichbar (' . $err . ')'];
     }
     if ($http === 200 && preg_match('/^ok=1$/m', (string)$body)) {
         return ['ok' => true, 'blocks_pushes' => false, 'detail' => 'ok'];
@@ -1644,7 +1644,7 @@ function mutate_alarm_keys(array $config, callable $mutate, bool $soft = false):
 function demo_alarm_block_reason(array $config): ?string
 {
     if (!demo_mode_enabled($config)) {
-        return 'Der Alarm über die Box geht nur im Demo-Modus. Im LIVE-Betrieb den REAL ALARM (direkt vom NAS) benutzen.';
+        return 'Der Alarm über die Box geht nur im Demo-Modus. Im LIVE-Betrieb den REAL ALARM (direkt vom Server) benutzen.';
     }
     $latest = read_json_file(data_path($config, 'latest_status.json'), []);
     $espVersion = (int)($latest['keys_version'] ?? -1);
@@ -2427,7 +2427,7 @@ function admin_notify_types(array $config): array
             ],
         ],
         'nas_web' => [
-            'label' => 'NAS-Dashboard defekt / wieder in Ordnung',
+            'label' => 'Dashboard defekt / wieder in Ordnung',
             'hint' => 'Wenn das Dashboard nicht mehr in seinen Datenordner schreiben kann (Login und Status der Box scheitern dann).',
             'important' => true,
             'default_enabled' => true,
@@ -2441,7 +2441,7 @@ function admin_notify_types(array $config): array
         // Nur sichtbar, wenn der Außen-Wächter eingerichtet ist (siehe unten).
         'outside_watcher' => [
             'label' => 'Außen-Wächter meldet sich nicht',
-            'hint' => 'Wenn sich die Cloud-VM, die das NAS von außen überwacht, nicht mehr meldet – z.B. weil Oracle sie als „idle“ gestoppt hat. Dann würde ein Ausfall des NAS selbst nicht mehr gemeldet.',
+            'hint' => 'Wenn sich das NAS, das den Server von außen überwacht, nicht mehr meldet – z.B. weil zu Hause Strom oder Internet weg sind. Dann würde ein Ausfall des Servers selbst nicht mehr gemeldet.',
             'important' => true,
             'default_enabled' => true,
             'options' => [
@@ -3000,7 +3000,7 @@ function resend_stamped_body(array $config, string $startedEvent, ?array $onlyId
 function bark_send_false_alarm_all(array $config, ?array $onlyIds = null, ?array $snapshot = null, int $origAt = 0): array
 {
     if (!function_exists('curl_init')) {
-        return ['ok' => false, 'message' => 'PHP-cURL fehlt. In Web Station im PHP-Profil die Erweiterung "curl" aktivieren.', 'results' => []];
+        return ['ok' => false, 'message' => 'PHP-cURL fehlt. Auf dem Server das Paket php8.3-curl installieren.', 'results' => []];
     }
     // Bark-Texte bewusst ASCII (ae/ue/oe).
     $title = 'ENTWARNUNG - Fehlalarm';
@@ -3038,13 +3038,13 @@ function bark_send_false_alarm_all(array $config, ?array $onlyIds = null, ?array
 function bark_send_alarm_all(array $config, ?array $onlyIds = null, ?array $snapshot = null, int $origAt = 0): array
 {
     if (!function_exists('curl_init')) {
-        return ['ok' => false, 'message' => 'PHP-cURL fehlt. In Web Station im PHP-Profil die Erweiterung "curl" aktivieren.', 'results' => []];
+        return ['ok' => false, 'message' => 'PHP-cURL fehlt. Auf dem Server das Paket php8.3-curl installieren.', 'results' => []];
     }
     // Zeitstempel wie in der Firmware; Bark-Texte bewusst ASCII (ae/ue/oe).
     // Bewusst KEIN Demo-Zusatz im Text: Ein Demo-Alarm soll exakt so aussehen
     // und klingen wie ein echter - er geht nur an weniger Empfänger.
     $body = resend_stamped_body($config, 'nas_alarm_started', $onlyIds,
-        (string)($config['bark_alarm_body'] ?? 'Manuelle Alarmierung ueber das NAS-Dashboard!'), $origAt);
+        (string)($config['bark_alarm_body'] ?? 'Manuelle Alarmierung ueber das Dashboard!'), $origAt);
     $sent = bark_broadcast($config, static fn(array $entry): array => bark_alarm_fields(
         $config, $body, !empty($entry['muted']), (int)($entry['mute_volume'] ?? 0)), $onlyIds, $snapshot);
 

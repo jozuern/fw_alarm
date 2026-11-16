@@ -107,7 +107,7 @@
     if (s.keysCorrupt || !s.keys) return null;
     const d = store.derive(s);
     const status = s.status;
-    if (d.unsure || !status) return { tone: 'unknown', text: 'Abgleich mit der Box unbekannt – keine aktuelle Antwort vom NAS' };
+    if (d.unsure || !status) return { tone: 'unknown', text: 'Abgleich mit der Box unbekannt – keine aktuelle Antwort vom Server' };
     if (d.offline) return { tone: 'unknown', text: 'Box offline – ob sie die Liste übernommen hat, ist gerade unbekannt' };
     if (L.na(status.keys_version) || s.nasKeysVersion === null || s.nasKeysVersion === undefined) {
       return { tone: 'unknown', text: 'Abgleich mit der Box unbekannt' };
@@ -695,7 +695,7 @@
     return html`<div class="rcp-explain">
       <p><strong>Stumm (Arbeitsmodus):</strong> Alarme kommen weiterhin als Critical Alert an – nur mit der
         eingestellten <strong>Stumm-Lautstärke</strong> (0${NBSP}=${NBSP}lautlos). ${muteMax > 0
-          ? `Nach ${durationLabel(muteMax)} schaltet das NAS automatisch wieder laut.`
+          ? `Nach ${durationLabel(muteMax)} schaltet der Server automatisch wieder laut.`
           : 'Eine automatische Rückschaltung ist abgeschaltet (Einstellungen → „Automatisch wieder laut nach“).'}</p>
       <p><strong>Dauerhaft stumm</strong> schaltet genau diese automatische Rückschaltung für einen Empfänger ab –
         für längere Abwesenheiten (Schichtdienst, Krankheit, Urlaub). Die Stummschaltung gilt dann, bis sie jemand

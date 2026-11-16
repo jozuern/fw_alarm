@@ -150,7 +150,7 @@ test('fix round: muted line in every sending question', () => {
 
 test('fix round: empty vs. not loaded list', () => {
   const empty = L.alarmQuestion('alarm', { enabled: false }, []).text;
-  assert.match(empty, /Not-Liste der NAS-Konfiguration\. Die Empfängerliste ist leer\./);
+  assert.match(empty, /Not-Liste der Server-Konfiguration\. Die Empfängerliste ist leer\./);
   assert.doesNotMatch(empty, /senden an Die/);
   const nl = L.alarmQuestion('alarm', { enabled: false }, null).text;
   assert.match(nl, /noch nicht geladen/); assert.doesNotMatch(nl, /leer/);
@@ -188,8 +188,8 @@ test('fix round: clearedOk and demo counting', () => {
 test('M5: beschädigte Liste – die Frage nennt die Not-Liste, nicht „noch nicht geladen“', () => {
   for (const kind of ['alarm', 'false_alarm']) {
     const t = L.alarmQuestion(kind, { enabled: false }, null, { keysCorrupt: true }).text;
-    assert.match(t, /an die Not-Liste aus der NAS-Konfiguration/, kind);
-    assert.match(t, /Die Empfängerliste auf dem NAS ist beschädigt/, kind);
+    assert.match(t, /an die Not-Liste aus der Server-Konfiguration/, kind);
+    assert.match(t, /Die Empfängerliste auf dem Server ist beschädigt/, kind);
     assert.doesNotMatch(t, /noch nicht geladen/, kind);
   }
   // Demo-Modus: Der Demo-Key steht im Demo-Zustand selbst - die Frage bleibt.

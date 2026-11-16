@@ -22,10 +22,10 @@ test('ranking', () => {
 });
 test('nas problem keeps red when last known offline', () => {
   const r = v({ statusError: { kind: 'network' }, offline: true });
-  assert.equal(r.key, 'nas'); assert.equal(r.tone, 'crit'); assert.equal(r.title, 'NAS nicht erreichbar');
-  assert.equal(v({ statusError: { kind: 'timeout' }, alarmInFlight: true }).title, 'NAS beschäftigt');
+  assert.equal(r.key, 'nas'); assert.equal(r.tone, 'crit'); assert.equal(r.title, 'Server nicht erreichbar');
+  assert.equal(v({ statusError: { kind: 'timeout' }, alarmInFlight: true }).title, 'Server beschäftigt');
   assert.equal(v({ stale: true }).title, 'Status veraltet');
-  assert.equal(v({ statusError: { kind: 'http', status: 500, message: 'x' } }).title, 'NAS-Störung');
+  assert.equal(v({ statusError: { kind: 'http', status: 500, message: 'x' } }).title, 'Server-Störung');
 });
 test('hints', () => {
   const h = (o) => L.collectHints({ status: base, offline: false, stale: false, watchdog: null, keysSummary: { total: 3, muted: 1, permanent: 0, overdue: 0 },
@@ -97,7 +97,7 @@ test('box rows: ids, groups, stale, values', () => {
     'ack', 'firmware', 'uptime', 'reset', 'memory', 'watchdog', 'outside']);
   assert.deepEqual(plain([...new Set(rows.map((r) => r.group))]), ['Alarmkette', 'Verbindung', 'Wartung']);
   assert.equal(rows[0].tone, 'crit');
-  assert.equal(rows.find((r) => r.id === 'keys').value, '6 Empfänger (1 stumm) · v3 (NAS: v4 – Übernahme steht aus)');
+  assert.equal(rows.find((r) => r.id === 'keys').value, '6 Empfänger (1 stumm) · v3 (Server: v4 – Übernahme steht aus)');
   assert.equal(rows.find((r) => r.id === 'keys').tone, 'warn');
   assert.equal(rows.find((r) => r.id === 'uptime').label, 'Läuft seit');
   assert.equal(rows.find((r) => r.id === 'outside').value, 'nicht eingerichtet');
@@ -148,10 +148,10 @@ test('verdict: auth variants and error kinds', () => {
   assert.match(v({ authLost: true }).sub, /Anmeldeseite/);
   for (const kind of ['http', 'csrf', 'readonly', 'mode_changed']) {
     const r = v({ statusError: { kind, status: 403, message: 'Nein' } });
-    assert.equal(r.title, 'NAS-Störung');
-    assert.equal(r.detail, 'Das NAS meldet einen Fehler (HTTP 403): Nein');
+    assert.equal(r.title, 'Server-Störung');
+    assert.equal(r.detail, 'Der Server meldet einen Fehler (HTTP 403): Nein');
   }
-  assert.equal(v({ statusError: {} }).detail, 'Die Antwort des NAS konnte nicht ausgewertet werden');
+  assert.equal(v({ statusError: {} }).detail, 'Die Antwort des Servers konnte nicht ausgewertet werden');
   assert.match(v({ offline: true }).sub, /Alarm an alle senden/);
   assert.doesNotMatch(v({ offline: true }).sub, /REAL ALARM/);
 });
@@ -197,7 +197,7 @@ test('overview rows and recipients fact', () => {
   assert.deepEqual(plain(rows.map((r) => r.id)), ['box', 'wifi', 'watch', 'keys', 'alarm']);
   assert.equal(rows[0].value, 'online · läuft seit 4 T 4 Std 0 Min');
   assert.equal(rows[1].value, 'gut · -61 dBm');
-  assert.equal(rows[2].value, 'NAS + Cloud aktiv');
+  assert.equal(rows[2].value, 'Server + NAS aktiv');
   assert.deepEqual(plain(rows.map((r) => r.href)), ['#/einstellungen/box', null, '#/einstellungen/box', '#/empfaenger', '#/verlauf?filter=alarm']);
   const off = L.overviewRows({ status: base, offline: true, stale: false, statusError: null, demo: null, seenAge: 1380,
     watchdog: null, keysSummary: null, keysCorrupt: '', alarmFact: null });
@@ -213,7 +213,7 @@ test('Hinweis im Browser: Text je Übergang, „wieder in Ordnung“ nur nach ei
   assert.ok(L.browserAlertFor('offline', false).body.startsWith('Box offline'));
   assert.ok(L.browserAlertFor('alarm', false).body.startsWith('Alarm läuft'));
   assert.ok(L.browserAlertFor('standing', false).body.startsWith('Alarm ausgelöst'));
-  assert.ok(L.browserAlertFor('nas', false).body.startsWith('NAS nicht erreichbar'));
+  assert.ok(L.browserAlertFor('nas', false).body.startsWith('Server nicht erreichbar'));
   assert.ok(L.browserAlertFor('delivery', false).body.startsWith('Zustellung unvollständig'));
   // Zurück ins Ruhige: nur, wenn vorher eine Störung gemeldet wurde.
   assert.equal(L.browserAlertFor('ok', false), null);
@@ -236,13 +236,13 @@ test('I1c: Band bei unsicherem Stand – Wortlaut wie im Urteil, rot nach „off
   const clock = L.fmtClockMs(at);
   const band = (o) => L.unsureBand({ authLost: false, alarmInFlight: false, stale: false, statusError: null, offline: false, lastOkMs: at, ...o });
   assert.equal(band({}), null);
-  assert.deepEqual(plain(band({ stale: true })), { tone: 'warn', text: `Keine aktuelle Antwort vom NAS – angezeigte Werte können veraltet sein (Stand ${clock})` });
-  assert.equal(band({ statusError: { kind: 'network' } }).text, `Keine Verbindung zum NAS – angezeigte Werte können veraltet sein (Stand ${clock})`);
-  assert.equal(band({ statusError: { kind: 'http', status: 500, message: 'x' } }).text, `Das NAS meldet einen Fehler (HTTP 500): x – angezeigte Werte können veraltet sein (Stand ${clock})`);
+  assert.deepEqual(plain(band({ stale: true })), { tone: 'warn', text: `Keine aktuelle Antwort vom Server – angezeigte Werte können veraltet sein (Stand ${clock})` });
+  assert.equal(band({ statusError: { kind: 'network' } }).text, `Keine Verbindung zum Server – angezeigte Werte können veraltet sein (Stand ${clock})`);
+  assert.equal(band({ statusError: { kind: 'http', status: 500, message: 'x' } }).text, `Der Server meldet einen Fehler (HTTP 500): x – angezeigte Werte können veraltet sein (Stand ${clock})`);
   assert.equal(band({ statusError: { kind: 'timeout' }, alarmInFlight: true }).text, `Keine Status-Antwort, solange der Alarm-Versand läuft – angezeigte Werte können veraltet sein (Stand ${clock})`);
-  assert.deepEqual(plain(band({ statusError: { kind: 'network' }, offline: true })), { tone: 'crit', text: `Keine Verbindung zum NAS – letzter bekannter Stand (${clock}): Box OFFLINE` });
+  assert.deepEqual(plain(band({ statusError: { kind: 'network' }, offline: true })), { tone: 'crit', text: `Keine Verbindung zum Server – letzter bekannter Stand (${clock}): Box OFFLINE` });
   // Noch nie eine Antwort: nichts, was veralten könnte.
-  assert.equal(band({ statusError: { kind: 'network' }, lastOkMs: 0 }).text, 'Keine Verbindung zum NAS – es liegen noch keine Werte vom NAS vor');
+  assert.equal(band({ statusError: { kind: 'network' }, lastOkMs: 0 }).text, 'Keine Verbindung zum Server – es liegen noch keine Werte vom Server vor');
   // Abgemeldet: nur, solange das Ergebnis eines Alarms stehen bleibt.
   assert.equal(band({ authLost: true }), null);
   assert.match(band({ authLost: true, alarmInFlight: true }).text, /^Abgemeldet – angezeigte Werte werden nicht mehr aktualisiert/);

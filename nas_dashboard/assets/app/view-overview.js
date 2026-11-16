@@ -265,7 +265,7 @@
       <${Part}><${CommandLine} canCancel=${true} onResult=${show}/></${Part}>
       <${ui.Msg} msg=${msg}/>
       <${Part} text="Das Ergebnis konnte nicht angezeigt werden – bitte im Verlauf prüfen, wer erreicht wurde."><${ResultCard}/></${Part}>
-      <p class="group-foot">Alarm und Entwarnung gehen direkt vom NAS an die Empfänger – auch wenn die Box offline ist. Test läuft über die Box (leise Meldung an den Status-Empfänger).</p>
+      <p class="group-foot">Alarm und Entwarnung gehen direkt vom Server an die Empfänger – auch wenn die Box offline ist. Test läuft über die Box (leise Meldung an den Status-Empfänger).</p>
     </section>`;
   }
 
@@ -273,7 +273,7 @@
   // verständigt, darunter Befehlszeile und gemerktes Ergebnis zum Lesen.
   function ReadonlyActions() {
     return html`<div class="group ov-actions">
-      <p class="ov-readonly">Mit diesem Zugang lässt sich nichts auslösen. Muss manuell alarmiert werden, bitte einen Admin verständigen – er kann direkt über das NAS alarmieren.</p>
+      <p class="ov-readonly">Mit diesem Zugang lässt sich nichts auslösen. Muss manuell alarmiert werden, bitte einen Admin verständigen – er kann direkt über den Server alarmieren.</p>
       <${Part}><${CommandLine} canCancel=${false}/></${Part}>
       <${Part}><${ResultCard}/></${Part}>
     </div>`;

@@ -1168,7 +1168,7 @@ if ($action === 'keys_test') {
         json_response(['ok' => false, 'message' => 'Empfänger nicht gefunden.']);
     }
     if (!function_exists('curl_init')) {
-        json_response(['ok' => false, 'message' => 'PHP-cURL fehlt. In Web Station im PHP-Profil die Erweiterung "curl" aktivieren.']);
+        json_response(['ok' => false, 'message' => 'PHP-cURL fehlt. Auf dem Server das Paket php8.3-curl installieren.']);
     }
     $entry = $state['keys'][$idx];
     $label = (string)($entry['label'] ?? '');

@@ -149,7 +149,7 @@
         throw new ApiError('http', message || (json ? '' : shortText(text)), res.status, json);
       }
       if (!json) {
-        throw new ApiError('http', 'Antwort des NAS ist kein gültiges JSON' + (text ? `: ${shortText(text)}` : '.'), res.status, null);
+        throw new ApiError('http', 'Antwort des Servers ist kein gültiges JSON' + (text ? `: ${shortText(text)}` : '.'), res.status, null);
       }
       return json;
     } finally {
@@ -213,9 +213,9 @@
       case 'mode_changed':
         return err.message || 'Der Demo-/LIVE-Modus hat sich geändert – Aktion wurde NICHT ausgeführt.';
       case 'timeout':
-        return 'Keine Antwort vom NAS (Zeitüberschreitung) – ob die Aktion ausgeführt wurde, ist unklar. Bitte Anzeige/Verlauf prüfen.';
+        return 'Keine Antwort vom Server (Zeitüberschreitung) – ob die Aktion ausgeführt wurde, ist unklar. Bitte Anzeige/Verlauf prüfen.';
       case 'network':
-        return 'NAS nicht erreichbar – Verbindung prüfen.';
+        return 'Server nicht erreichbar – Verbindung prüfen.';
       default:
         return `Fehler${err.status ? ` (HTTP ${err.status})` : ''}${err.message ? `: ${err.message}` : '.'}`;
     }

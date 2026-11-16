@@ -199,7 +199,7 @@ test('derive: loading vor dem ersten Status, danach Urteil', async () => {
   h.routes.status = () => { throw new TypeError('Failed to fetch'); };
   await h.store.refreshStatus();
   assert.equal(h.d().verdict.key, 'nas');
-  assert.equal(h.d().verdict.title, 'NAS nicht erreichbar');
+  assert.equal(h.d().verdict.title, 'Server nicht erreichbar');
   assert.equal(h.d().boxRows.find((r) => r.id === 'wifi').tone, 'unknown');
   assert.equal(h.s().failStreak, 1);
 });
@@ -937,9 +937,9 @@ test('Empfänger: beschädigte Liste, Fehler vor dem ersten Laden', async () => 
   assert.ok(h.d().hints.length === 0 || h.d().hints[0].tone === 'crit');
   h.routes.keys_list = () => reply(200, { ok: false, code: 'keys_corrupt' });
   await h.store.refreshKeys();
-  assert.match(h.s().keysCorrupt, /^Empfängerliste auf dem NAS beschädigt/);
+  assert.match(h.s().keysCorrupt, /^Empfängerliste auf dem Server beschädigt/);
   await h.store.refreshStatus();
-  assert.equal(h.d().hints[0].text, 'Die Empfängerliste auf dem NAS ist beschädigt – siehe „Empfänger“.');
+  assert.equal(h.d().hints[0].text, 'Die Empfängerliste auf dem Server ist beschädigt – siehe „Empfänger“.');
 });
 
 test('Empfänger-Aktionen: Felder, Rückmeldung, neue id nach dem Hinzufügen', async () => {
@@ -1401,7 +1401,7 @@ test('I1c: Band „keine aktuelle Antwort“ aus derive – orange, rot nach „
   const at = h.logic.fmtClockMs(T0 * 1000);
   h.routes.status = () => { throw new TypeError('Failed to fetch'); };
   await h.store.refreshStatus();
-  assert.deepEqual(plain(h.d().unsureBand), { tone: 'warn', text: `Keine Verbindung zum NAS – angezeigte Werte können veraltet sein (Stand ${at})` });
+  assert.deepEqual(plain(h.d().unsureBand), { tone: 'warn', text: `Keine Verbindung zum Server – angezeigte Werte können veraltet sein (Stand ${at})` });
   // Spec §5.3: auch Empfänger und Letzter Alarm grau, solange unsicher.
   for (const id of ['box', 'wifi', 'watch', 'keys', 'alarm']) {
     assert.equal(h.d().overviewRows.find((r) => r.id === id).tone, 'unknown', id);
@@ -1412,7 +1412,7 @@ test('I1c: Band „keine aktuelle Antwort“ aus derive – orange, rot nach „
   await g.store.refreshStatus();
   g.clock.now += 20000;
   g.store.tick();
-  assert.equal(g.d().unsureBand.text, `Keine aktuelle Antwort vom NAS – angezeigte Werte können veraltet sein (Stand ${at})`);
+  assert.equal(g.d().unsureBand.text, `Keine aktuelle Antwort vom Server – angezeigte Werte können veraltet sein (Stand ${at})`);
   // Letzter bekannter Stand „Box offline“: rot.
   const o = harness();
   o.store.init(ADMIN);
@@ -1421,7 +1421,7 @@ test('I1c: Band „keine aktuelle Antwort“ aus derive – orange, rot nach „
   assert.equal(o.d().unsureBand, null);            // Box offline, NAS frisch: die Status-Karte reicht
   o.routes.status = () => { const e = new Error('t'); e.name = 'TimeoutError'; throw e; };
   await o.store.refreshStatus();
-  assert.deepEqual(plain(o.d().unsureBand), { tone: 'crit', text: `Keine Antwort vom NAS (Zeitüberschreitung) – letzter bekannter Stand (${at}): Box OFFLINE` });
+  assert.deepEqual(plain(o.d().unsureBand), { tone: 'crit', text: `Keine Antwort vom Server (Zeitüberschreitung) – letzter bekannter Stand (${at}): Box OFFLINE` });
   // Abgemeldet mit gehaltenem Alarm-Ergebnis: Werte werden nicht mehr frisch.
   const a = harness();
   a.store.init(ADMIN);
@@ -1601,8 +1601,8 @@ test('M5: beschädigte Empfängerliste – die Alarm-Frage nennt die Not-Liste',
   await h.store.refreshKeys();
   h.store.confirmAlarm('alarm');
   const t = h.s().confirm.text;
-  assert.match(t, /Empfängerliste auf dem NAS ist beschädigt/);
-  assert.match(t, /Not-Liste aus der NAS-Konfiguration/);
+  assert.match(t, /Empfängerliste auf dem Server ist beschädigt/);
+  assert.match(t, /Not-Liste aus der Server-Konfiguration/);
   assert.doesNotMatch(t, /noch nicht geladen/);
 });
 
