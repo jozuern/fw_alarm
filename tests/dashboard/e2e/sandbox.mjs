@@ -25,7 +25,8 @@ export function winPath(p) {
 // Status-Push der Box. Mit session (apiSession des Admins) passen
 // keys_version/keys_count/keys_muted zur aktuellen Empfängerliste - sonst
 // erscheint nach 60 s der Hinweis „Box hat die Liste nicht übernommen“.
-export async function pushBox(base, session, overrides = {}) {
+// headers: zusätzliche Kopfzeilen des Pushs (z.B. X-FW-Bridge wie von der NAS-Brücke).
+export async function pushBox(base, session, overrides = {}, headers = {}) {
   const fields = { ...BOX_DEFAULTS };
   if (session) {
     const list = await session.get('keys_list');
@@ -40,7 +41,7 @@ export async function pushBox(base, session, overrides = {}) {
   Object.assign(fields, overrides);
   const form = new FormData();
   for (const [k, v] of Object.entries(fields)) form.append(k, String(v));
-  const res = await fetch(`${base}/api/status.php`, { method: 'POST', body: form });
+  const res = await fetch(`${base}/api/status.php`, { method: 'POST', body: form, headers });
   const text = await res.text();
   if (!res.ok || text.trim() !== 'OK') throw new Error(`Status-Push abgelehnt (HTTP ${res.status}): ${text.trim()}`);
   return fields;

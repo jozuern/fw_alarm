@@ -7,6 +7,11 @@ require_machine_auth($config);
 $status = clipped_post_fields(['token']);
 $status['seen_at'] = time();
 $status['remote_addr'] = $_SERVER['REMOTE_ADDR'] ?? '';
+// Kam dieser Push über die Brücke auf dem NAS (sie setzt X-FW-Bridge)? Der
+// Wächter braucht das für den Text von "Box OFFLINE": Solange die Box über
+// das NAS meldet, kann auch ein Ausfall dort die Ursache sein. Nach dem
+// Flashen meldet sich die Box direkt, dann steht hier 0.
+$status['via_bridge'] = isset($_SERVER['HTTP_X_FW_BRIDGE']) ? '1' : '0';
 $pushDevice = substr((string)($status['device_id'] ?? ''), 0, 80);
 
 // Ist box_device_id gesetzt und meldet sich ein ANDERES Board mit dem Token

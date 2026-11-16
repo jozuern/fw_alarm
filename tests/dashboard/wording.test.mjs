@@ -173,3 +173,54 @@ test('„Dashboard DEFEKT“: der Hinweis passt zur Ursache', () => {
   // check_offline.php nutzt genau diesen Text.
   assert.match(read('nas_dashboard/cron/check_offline.php'), /\$web\['detail'\] \. web_fail_notice_text\(\$web\)/);
 });
+
+// Text der Meldung "Alarm-Box OFFLINE". Bis zum Flashen meldet sich die Box
+// über die Brücke auf dem NAS zu Hause: Fällt das NAS oder das Internet dort
+// aus, hört der Server nichts mehr von ihr - sie alarmiert aber weiter direkt
+// über Bark. Die Meldung darf dann nicht behaupten, der Relaisalarm falle aus.
+function offlineText(duration, web, viaBridge, watcherSilentSeconds) {
+  return execFileSync('php', ['-r',
+    "require 'nas_dashboard/lib/common.php'; $a = json_decode($argv[1], true); echo box_offline_notice_text($a[0], $a[1], $a[2], $a[3]);",
+    JSON.stringify([duration, web, viaBridge, watcherSilentSeconds])], { cwd: root, encoding: 'utf8' });
+}
+
+test('„Box OFFLINE“: nennt das NAS zu Hause, solange die Box über die Brücke meldet', () => {
+  const OK = { ok: true, blocks_pushes: false };
+  const PLAIN = 'Kein Status vom ESP32 seit 12 min. Strom/WLAN/Box pruefen! Der Relaisalarm wuerde gerade NICHT ausgeloest. '
+    + '(Manueller REAL ALARM ueber das Dashboard geht weiterhin.)';
+  // Box meldet direkt (nach dem Flashen): Text wie bisher - auch wenn der
+  // Außen-Wächter gerade schweigt (das hat dann nichts miteinander zu tun).
+  assert.equal(offlineText('12 min', OK, false, null), PLAIN);
+  assert.equal(offlineText('12 min', OK, false, 7200), PLAIN);
+
+  // Über die Brücke, Außen-Wächter (auf demselben NAS) meldet sich: Die Box
+  // ist wahrscheinlich wirklich weg - aber der Weg über das NAS wird genannt.
+  const viaBridge = offlineText('12 min', OK, true, 120);
+  assert.ok(viaBridge.startsWith(PLAIN + ' '), viaBridge);
+  assert.match(viaBridge, /Die Box meldet sich noch ueber das NAS zu Hause - ist nur dieser Weg gestoert, alarmiert sie trotzdem direkt ueber Bark\.$/);
+  // Außen-Wächter nicht eingerichtet/noch nie gesehen (null): derselbe Hinweis.
+  assert.equal(offlineText('12 min', OK, true, null), viaBridge);
+
+  // Über die Brücke UND der Außen-Wächter schweigt: vermutlich das NAS.
+  const nasDown = offlineText('12 min', OK, true, 700);
+  assert.match(nasDown, /^Kein Status vom ESP32 seit 12 min - vermutlich liegt es aber am NAS zu Hause, nicht an der Box: /);
+  assert.match(nasDown, /Sie meldet sich noch ueber das NAS, und auch der Aussen-Waechter dort meldet sich seit 12 min nicht\./);
+  assert.match(nasDown, /NAS und Internet zu Hause pruefen\./);
+  assert.match(nasDown, /Kommen die taeglichen Bark-Heartbeats der Box noch an, laeuft sie normal und alarmiert weiter direkt ueber Bark\.$/);
+  assert.doesNotMatch(nasDown, /wuerde gerade NICHT ausgeloest/);
+  assert.match(offlineText('3 Std', OK, true, 3 * 3600), /Aussen-Waechter dort meldet sich seit 3 Std nicht/);
+  // Grenze: Der Wächter kommt alle 5 min - erst nach mehr als 9 min gilt er als stumm.
+  assert.doesNotMatch(offlineText('12 min', OK, true, 540), /vermutlich/);
+  assert.match(offlineText('12 min', OK, true, 541), /vermutlich liegt es aber am NAS zu Hause/);
+
+  // Klemmt der Server selbst, bleibt es bei dessen Text (wie bisher).
+  const server = offlineText('12 min', { ok: false, blocks_pushes: true, detail: 'Webserver nicht erreichbar (x)' }, true, 700);
+  assert.equal(server, 'Kein Status vom ESP32 seit 12 min - Ursache ist aber vermutlich der Server, nicht die Box: '
+    + 'Webserver nicht erreichbar (x). Kommen die taeglichen Bark-Heartbeats der Box noch an, laeuft sie normal.');
+
+  for (const t of [viaBridge, nasDown, server]) assert.match(t, /^[ -~]+$/);
+  const cron = read('nas_dashboard/cron/check_offline.php');
+  assert.match(cron, /\$offlineBody = box_offline_notice_text\(\$duration, \$web, /);
+  // Der Status merkt sich, ob er über die Brücke kam (Kopfzeile X-FW-Bridge).
+  assert.match(read('nas_dashboard/api/status.php'), /\$status\['via_bridge'\] = isset\(\$_SERVER\['HTTP_X_FW_BRIDGE'\]\) \? '1' : '0';/);
+});

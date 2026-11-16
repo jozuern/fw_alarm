@@ -26,11 +26,7 @@ if (PHP_SAPI !== 'cli') {
     require_machine_auth($config);
 }
 
-// Dauer für die Bark-Texte (ASCII): bis 2 Std in Minuten, darüber in Stunden.
-function outage_duration_text(int $minutes): string
-{
-    return $minutes >= 120 ? (int)round($minutes / 60) . ' Std' : $minutes . ' min';
-}
+// (outage_duration_text() - Dauer für die Bark-Texte - steht in lib/common.php.)
 
 // HINWEIS zu den Abschnitten 0 (NAS-Dashboard), 1 (Box) und 7 (Außen-Wächter):
 // Alle drei folgen denselben Regeln (CLAUDE.md, "Meldungen an den Admin"):
@@ -229,13 +225,19 @@ $result = with_lock($config, 'watchdog', function () use ($config, $latest, $see
         // Nur wenn die Störung die Status-Pushs wirklich blockiert - eine
         // einzelne fremde Verlaufsdatei macht die Box nicht "offline".
         // Gilt für die erste Meldung UND für jede Erinnerung.
-        $offlineBody = empty($web['blocks_pushes'])
-            ? "Kein Status vom ESP32 seit {$duration}. "
-                . 'Strom/WLAN/Box pruefen! Der Relaisalarm wuerde gerade NICHT ausgeloest. '
-                . '(Manueller REAL ALARM ueber das Dashboard geht weiterhin.)'
-            : "Kein Status vom ESP32 seit {$duration} - Ursache ist aber vermutlich der Server, "
-                . 'nicht die Box: ' . $web['detail'] . '. '
-                . 'Kommen die taeglichen Bark-Heartbeats der Box noch an, laeuft sie normal.';
+        // Solange die Box sich über die Brücke auf dem NAS meldet (bis zum
+        // Flashen), kann auch das NAS zu Hause die Ursache sein - dann
+        // alarmiert die Box weiter. Schweigt der Außen-Wächter (er läuft auf
+        // demselben NAS) ebenfalls, sagt die Meldung das: box_offline_notice_text().
+        $viaBridge = (string)($latest['via_bridge'] ?? '0') === '1';
+        $watcherSilentSeconds = null;
+        if ($viaBridge && outside_watcher_configured($config)) {
+            $bridgeWatcherSeen = (int)(read_json_file(data_path($config, 'watcher_seen.json'), [])['seen_at'] ?? 0);
+            if ($bridgeWatcherSeen > 0) {
+                $watcherSilentSeconds = max(0, time() - $bridgeWatcherSeen);
+            }
+        }
+        $offlineBody = box_offline_notice_text($duration, $web, $viaBridge, $watcherSilentSeconds);
         $offlineRepeat = (int)$types['box_offline']['repeat_hours'] * 3600;
         // Die OFFLINE-Meldung war fällig, während die Art im Dashboard
         // abgeschaltet war (kein Push), und ist inzwischen wieder

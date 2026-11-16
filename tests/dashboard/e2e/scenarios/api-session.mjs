@@ -4,7 +4,7 @@
 // geändertes Passwort meldet ab, Verhalten hinter einem Proxy/Tunnel.
 import { copyFileSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { winPath } from '../sandbox.mjs';
+import { pushBox, readData, winPath } from '../sandbox.mjs';
 
 const NAME = 'boss925_dashboard';
 const cookies = (res) => res.headers.getSetCookie?.() ?? [];
@@ -161,4 +161,13 @@ export default async function ({ base, assert, sandbox }) {
     const spoof = await loginRequest(base, 'admin', 'test', { 'x-forwarded-for': '1.2.3.4, 198.51.100.66' });
     assert(spoof.status === 429, 'vorangestellter Eintrag umgeht die Sperre nicht, war HTTP ' + spoof.status);
   });
+
+  // ---- Status-Push merkt sich, ob er über die NAS-Brücke kam (X-FW-Bridge) ----
+  // Der Wächter braucht das für den Text von „Box OFFLINE“ (solange die Box
+  // über das NAS meldet, kann auch ein Ausfall dort die Ursache sein).
+  await pushBox(base, null, {}, { 'X-FW-Bridge': '1' });
+  assert(readData(sandbox, 'latest_status').via_bridge === '1', 'Push über die Brücke: via_bridge=1');
+  // Ein Feld im Rumpf kann das nicht vortäuschen - es zählt die Kopfzeile.
+  await pushBox(base, null, { via_bridge: '1' });
+  assert(readData(sandbox, 'latest_status').via_bridge === '0', 'direkter Push: via_bridge=0, auch mit gleichnamigem Feld');
 }

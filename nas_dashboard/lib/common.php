@@ -547,6 +547,58 @@ function web_fail_notice_text(array $web): string
     return $impact . 'Bark-Alarme der Box laufen davon unabhaengig weiter.' . $todo;
 }
 
+// Dauer eines Ausfalls für die Wächter-Meldungen (Bark-Text, ASCII).
+function outage_duration_text(int $minutes): string
+{
+    return $minutes >= 120 ? (int)round($minutes / 60) . ' Std' : $minutes . ' min';
+}
+
+// Ab wann der Außen-Wächter für den Text der "Box OFFLINE"-Meldung als stumm
+// gilt: Er klopft alle 5 min an - mehr als 9 min Stille heißt, mindestens ein
+// Lauf fehlt sicher.
+const BRIDGE_WATCHER_SILENT_S = 540;
+
+// Text der Meldung "Alarm-Box OFFLINE" (Bark-Text, ASCII) - für die erste
+// Meldung UND jede Erinnerung.
+//   $web                  Ergebnis des Selbsttests: Blockiert der Server die
+//                         Status-Pushs selbst, ist er die Ursache, nicht die Box.
+//   $viaBridge            Der letzte Status der Box kam über die Brücke auf
+//                         dem NAS (Kopfzeile X-FW-Bridge, siehe api/status.php).
+//                         So ist es, bis die Box neu geflasht ist; danach
+//                         meldet sie sich direkt und alles hier entfällt.
+//   $watcherSilentSeconds Sekunden seit dem letzten Aufruf des Außen-Wächters
+//                         (er läuft auf DEMSELBEN NAS); null = nicht
+//                         eingerichtet oder noch nie gesehen.
+// Fällt das NAS oder das Internet dort aus, hört der Server nichts mehr von
+// der Box - sie alarmiert aber weiter direkt über Bark. Die Meldung darf dann
+// nicht behaupten, der Relaisalarm falle aus: Schweigt auch der Außen-Wächter,
+// ist das NAS die wahrscheinliche Ursache; sonst wird der Weg über das NAS
+// wenigstens genannt.
+function box_offline_notice_text(string $duration, array $web, bool $viaBridge, ?int $watcherSilentSeconds): string
+{
+    if (!empty($web['blocks_pushes'])) {
+        return "Kein Status vom ESP32 seit {$duration} - Ursache ist aber vermutlich der Server, "
+            . 'nicht die Box: ' . (string)($web['detail'] ?? '') . '. '
+            . 'Kommen die taeglichen Bark-Heartbeats der Box noch an, laeuft sie normal.';
+    }
+    if ($viaBridge && $watcherSilentSeconds !== null && $watcherSilentSeconds > BRIDGE_WATCHER_SILENT_S) {
+        $silent = outage_duration_text(max(1, (int)round($watcherSilentSeconds / 60)));
+        return "Kein Status vom ESP32 seit {$duration} - vermutlich liegt es aber am NAS zu Hause, "
+            . 'nicht an der Box: Sie meldet sich noch ueber das NAS, und auch der Aussen-Waechter dort '
+            . "meldet sich seit {$silent} nicht. NAS und Internet zu Hause pruefen. "
+            . 'Kommen die taeglichen Bark-Heartbeats der Box noch an, laeuft sie normal und alarmiert '
+            . 'weiter direkt ueber Bark.';
+    }
+    $text = "Kein Status vom ESP32 seit {$duration}. "
+        . 'Strom/WLAN/Box pruefen! Der Relaisalarm wuerde gerade NICHT ausgeloest. '
+        . '(Manueller REAL ALARM ueber das Dashboard geht weiterhin.)';
+    if ($viaBridge) {
+        $text .= ' Die Box meldet sich noch ueber das NAS zu Hause - ist nur dieser Weg gestoert, '
+            . 'alarmiert sie trotzdem direkt ueber Bark.';
+    }
+    return $text;
+}
+
 // Maschinen-Token NUR per POST akzeptieren: GET-Parameter landen sonst im
 // Klartext in Webserver-Logs.
 function require_machine_auth(array $config): void
