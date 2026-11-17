@@ -1,7 +1,8 @@
 # Der Dashboard-Server neu in Go — Design (Neubau statt Übertragung)
 
 Stand: 17.11.2026 – vom Nutzer freigegeben, nach einer unabhängigen
-Durchsicht überarbeitet (§16). Ersetzt den ersten Entwurf vom 16.11. (getreue
+Durchsicht überarbeitet (§16); die Durchsicht des Plans hat einzelne Punkte
+nachgeschärft (§17). Ersetzt den ersten Entwurf vom 16.11. (getreue
 Übertragung der PHP-Fassung auf demselben Datenordner; er steht samt seinem
 Plan in der Git-Historie). Plan dazu:
 `docs/superpowers/plans/2026-11-17-go-server-neubau.md`. Betrifft nur die
@@ -111,7 +112,10 @@ Diese Liste ist die Grenze des Neubaus. Alles andere ist frei.
    Seite für Browser, Vorschau-Abrufer schalten nichts.
 4. **Außen-Wächter:** `api/alive.php` mit eigenem Token; Antwortzeilen
    `ok`, `nonce`, `stored`, `box_age_s`, `cron_age_s`, `cron_configured`,
-   `nas_send_failed` in ihrer heutigen Bedeutung.
+   `nas_send_failed` in ihrer heutigen Bedeutung. Einzige Abweichung:
+   `stored` meldet, ob das LETZTE Sichern der flüchtigen Daten gelang (der
+   Aufruf selbst wartet auf kein Sichern mehr) – der Außen-Wächter schreibt
+   den Wert nur in sein Protokoll.
 5. **Schnittstelle der Oberfläche:** `dashboard_api.php` mit denselben
    Aktionen, Feldern, Fehlercodes und Zugangsregeln (`post`/`csrf`/`admin`),
    Anmeldung über `index.php`, dieselben Seiten-Hüllen und meta-Tags.
@@ -298,9 +302,15 @@ Benutzer `fwalarm`, Rechte 0700):
 - **Sichern:** Datei mit festem Namen daneben schreiben (`<datei>.tmp`),
   `fsync`, **das Geschriebene mit dem strengen Leser zurücklesen und
   vergleichen** (stimmt es nicht überein, gilt die Änderung nicht – die gute
-  Datei ist dann noch da), umbenennen, Ordner `fsync`. Unter Windows entfällt
-  der letzte Schritt, und das Umbenennen wird bis zu 1 s wiederholt, wenn ein
-  Virenscanner die Datei hält. Der Verlauf wird je Schub geöffnet, angehängt,
+  Datei ist dann noch da), umbenennen, Ordner `fsync`. Bei `state.json` wird
+  vor dem Umbenennen die bisherige Datei als `state.prev.json` festgehalten
+  (Verweis auf dieselbe Datei, notfalls Kopie) – aber nur, wenn es eine
+  `state.json` gibt: Beim allerersten Sichern und beim Sichern direkt nach
+  einem Rückfall bleibt eine vorhandene `state.prev.json` unangetastet, bis
+  die neue `state.json` liegt. Zu keinem Zeitpunkt fehlen beide. Unter
+  Windows entfällt das `fsync` des Ordners, und Umbenennen, Löschen und
+  Verweisen werden bis zu 1 s wiederholt, wenn ein Virenscanner die Datei
+  hält. Der Verlauf wird je Schub geöffnet, angehängt,
   gesichert und geschlossen.
 - **Einlesen streng:** unbekannte Felder und falsche Typen sind ein Fehler.
   Jede Datei trägt `schema`; ein älteres Schema hebt das Programm beim
@@ -312,15 +322,15 @@ Benutzer `fwalarm`, Rechte 0700):
   | `state.json` | `state.prev.json` | Folge |
   |---|---|---|
   | lesbar | egal | normaler Start |
-  | fehlt | fehlt | Neuanfang mit leerem Zustand (erste Inbetriebnahme, Prüfstand) |
+  | fehlt | fehlt, und im Ordner liegt keine Spur früherer Nutzung (Not-Kopie, Verlauf, Laufzeitdaten, beiseitegelegte Dateien) | Neuanfang mit leerem Zustand (erste Inbetriebnahme, Prüfstand) |
   | fehlt oder nicht lesbar | lesbar | **Rückfall:** die unlesbare Datei wird als `state.corrupt-<Zeit>.json` beiseitegelegt, der Server startet auf der Vorfassung und wendet die Rücksprung-Regel an |
-  | nicht lesbar, oder Schema neuer als das Programm | fehlt oder nicht lesbar | **Notbetrieb** |
+  | nicht lesbar, oder Schema neuer als das Programm, oder fehlt trotz solcher Spuren | fehlt oder nicht lesbar | **Notbetrieb** |
 
 - **Rücksprung-Regel.** Sie gilt für jeden Start, der nicht auf der zuletzt
   selbst geschriebenen `state.json` aufsetzt: Rückfall auf die Vorfassung,
-  Start aus `state.schema-<n>.json` nach einem Rückweg über ein Schema,
-  `fw-alarm state-bump` nach dem Zurückspielen einer Sicherung, erneute
-  Übernahme. Dann könnte die Box (oder ein Browser) Nummern kennen, die der
+  `fw-alarm state-bump` nach dem Zurückspielen einer Sicherung (auch nach
+  einem Rückweg über ein Schema: älteres Programm, `state.schema-<n>.json`
+  als `state.json`, dann `state-bump`), erneute Übernahme. Dann könnte die Box (oder ein Browser) Nummern kennen, die der
   Server gleich noch einmal vergäbe – mit anderem Inhalt. Deshalb:
   Listen-Version, id-Zähler und Befehlsnummer springen um **1000** nach oben;
   ein wartender oder ausgelieferter, nicht quittierter Befehl wird
@@ -334,7 +344,8 @@ Benutzer `fwalarm`, Rechte 0700):
 - **Notbetrieb** ist ein Zustand, kein einzelnes Ereignis. Der Server
   **startet trotzdem**:
   - Alarm und Entwarnung gehen an die Not-Kopie `recipients.rescue.json`.
-    Sie wird nachsichtig gelesen: die gültigen, einmaligen Keys, höchstens
+    Sie wird EINMAL beim Start nachsichtig gelesen und danach aus dem
+    Speicher bedient: die gültigen, einmaligen Keys, höchstens
     10 – lieber die gültigen Einträge als keiner; steht dort ein gültiger
     Demo-Empfänger, geht der Alarm nur an ihn. Ist auch sie nicht lesbar,
     gilt die Not-Liste der Konfiguration (`bark_keys_alarm`).
@@ -424,7 +435,9 @@ Weiter gilt:
   beurteilen lässt. Deshalb geht sie in diesem Fall erst hinaus, wenn die
   Schwelle erreicht ist UND der Außen-Wächter entweder in den letzten
   6,5 min aufgerufen hat (er lebt → es liegt an der Box) oder seit mehr als
-  9 min schweigt (→ das NAS) – das verzögert sie um höchstens 3 min.
+  9 min schweigt (→ das NAS) – das verzögert sie um höchstens 3 min: Wurde
+  der Außen-Wächter noch nie gesehen, geht sie sofort hinaus, und in jedem
+  Fall 3 min nach der Schwelle (dann mit dem neutralen Text).
 - Die Zeile eines vollen Laufs (`WEB_OK | OK | …`, dieselben Wörter wie
   heute) geht ins Journal und an `fw-alarm check`.
 - `cron_age_s` in `alive.php` = Alter des letzten abgeschlossenen vollen
@@ -441,7 +454,9 @@ Weiter gilt:
   beim Start länger als 90 s weg, zählen „Box schweigt“ und „Außen-Wächter
   schweigt“ erst ab dem Wiederanlauf – solange er aus war, konnte ihn ja
   niemand erreichen. Fehlt das Lebenszeichen (erste Inbetriebnahme,
-  verlorene `runtime.json`), zählt die Stille ebenfalls ab dem Start.
+  verlorene `runtime.json`, frisch übernommene Daten), zählt die Stille
+  ebenfalls ab dem Start. Dieser Zeitpunkt wird gemerkt und gilt auch nach
+  einem weiteren Neustart kurz darauf.
 - Überfällige Stummschaltungen rechnet die Leseseite weiter sofort als laut
   (eine Definition); zurückgeschaltet wird im vollen Lauf UND wie heute vor
   den Antworten von Poll, `api/keys.php`, Kurzbefehl-Link und `keys_list`
@@ -489,14 +504,21 @@ Ohne eigenen Wächter-Prozess braucht es andere Netze:
 dieselben Schlüsselnamen wie `config.php` (die Texte der Oberfläche nennen
 sie). Neu: `state_dir`, `listen`, `control_socket`,
 `check_interval_seconds`. Entfallen: `data_dir`, `health_check_url`.
-Unbekannte Schlüssel sind ein Fehler. Fehlt ein Schlüssel, gilt der Wert,
+Unbekannte Schlüssel sind ein Fehler. „Fehlerhaft“ ist eine Datei nur, wenn
+sie sich nicht lesen lässt, einen Syntaxfehler, einen unbekannten Schlüssel,
+einen Wert vom falschen Typ oder eine unbekannte Zeitzone hat. Alles andere
+(ein Hash in falscher Form, `check_interval_seconds = 0` …) sind Hinweise:
+`check-config` nennt sie, der Server arbeitet mit der Datei. Fehlt ein
+Schlüssel, gilt der Wert,
 den der PHP-Code heute dafür nimmt (das `?? …`), nicht der Wert der alten
 Vorlage – das Verhalten soll sich beim Umschalten nicht ändern.
 
 **Anfragen fassen die Datei nie an** (auch die Konfiguration kommt aus dem
 Speicher): Ein Hintergrund-Prüfer sieht alle 2 s nach (Änderungszeit, Größe,
 Dateinummer) und setzt bei einer gültigen neuen Fassung einen Zeiger um;
-`fw-alarm reload` tut dasselbe sofort und meldet das Ergebnis.
+`fw-alarm reload` tut dasselbe sofort und meldet das Ergebnis. Als
+fehlerhaft gilt eine Datei dem Prüfer erst, wenn sie bei der nächsten
+Prüfung unverändert ist – ein Editor, der gerade schreibt, löst nichts aus.
 
 **Ist die Datei fehlerhaft**, gilt die letzte gute weiter – aber nicht
 stillschweigend (ein Passwort mit Tippfehler zu ändern, darf nicht so
@@ -604,10 +626,10 @@ Ruhezeit, Stellvertreter) gelten also auch für sie. Texte ASCII:
 | Anlass | Titel | Wiederholung |
 |---|---|---|
 | Notbetrieb (§6.3) | `Dashboard NOTBETRIEB` – Empfängerliste nicht lesbar; an wie viele Empfänger ein Alarm jetzt ginge und woher (Not-Kopie/Not-Liste); die Box behält ihre gespeicherte Liste (war zuletzt Demo-Modus: evtl. nur den Demo-Empfänger); Ausweg: Sicherung zurückspielen (`server/README.md`) | sofort, dann alle 24 h |
-| Rücksprung (§6.3) | `Dashboard: Stand zurueckgesetzt` – woraus gestartet wurde; die letzte Änderung kann fehlen (Stumm/Laut, Empfänger prüfen) | einmal |
-| `runtime.json`/`sessions.json` nicht lesbar | `Dashboard: Laufzeitdaten verworfen` – alle melden sich neu an, die Box gilt bis zum nächsten Status als nie gesehen | einmal |
+| Rücksprung (§6.3) | `Dashboard: Stand zurueckgesetzt` – woraus gestartet wurde; die letzte Änderung kann fehlen (Stumm/Laut, Empfänger prüfen) | einmal (vorgemerkt, bis Bark sie angenommen hat) |
+| `runtime.json`/`sessions.json` nicht lesbar | `Dashboard: Laufzeitdaten verworfen` – alle melden sich neu an, die Box gilt bis zum nächsten Status als nie gesehen | einmal (vorgemerkt wie oben) |
 | Konfiguration fehlerhaft (§6.8) | `Dashboard: Konfiguration fehlerhaft` – es gilt die letzte gültige, alle Sitzungen wurden beendet, `fw-alarm check-config` nennt den Fehler | sofort, dann alle 24 h |
-| unterbrochener Versand (§6.7) | `Dashboard: Versand unterbrochen` – ein Alarm/eine Entwarnung lief beim Neustart, Ergebnis unbekannt, Verlauf prüfen und ggf. erneut senden | einmal |
+| unterbrochener Versand (§6.7) | `Dashboard: Versand unterbrochen` – ein Alarm/eine Entwarnung lief beim Neustart, Ergebnis unbekannt, Verlauf prüfen und ggf. erneut senden | einmal (vorgemerkt wie oben) |
 
 Bewusst AUSSERHALB dieser Tabelle und nicht einstellbar: die Meldung nach
 einem Absturz (§6.7.3) – sie muss ohne den Server auskommen (Dringlichkeit
@@ -626,7 +648,9 @@ erneuert); Sitzung nur für Angemeldete; an die Zugangsdaten gebunden
 (Passwort ändern meldet alle Sitzungen dieses Kontos ab); neue ID bei jeder
 Anmeldung; Abmelden löscht Sitzung und Cookie; `Sec-Fetch-Site`; Bremse pro
 Absender VOR der Passwortprüfung; genau eine Passwortprüfung pro Versuch,
-auch für unbekannte Benutzer; 1 s Pause nach einem Fehlversuch.
+auch für unbekannte Benutzer (gegen den Hash des Admins, Ergebnis verworfen –
+ein fester Wegwerf-Hash verriete über die Antwortzeit, ob es den Namen
+gibt); 1 s Pause nach einem Fehlversuch.
 
 Sitzungs-ID: 32 Zufallsbytes (`crypto/rand`). Abgelegt wird nur ihr
 SHA-256. Sitzungen überstehen einen Neustart – das Handy bleibt nach einem
@@ -666,9 +690,11 @@ gelöscht.
   - der Verlauf (beide Dateien), Zeile für Zeile.
 - Nicht übernommen: Sitzungen (alle melden sich einmal neu an), Bremsen,
   `log_cache`, Sperrdateien, `.bak`.
-- **Die Listen-Version steigt um eins** – die Box holt die Liste damit auf
-  jeden Fall einmal vom neuen Server, welche kleine Abweichung die
-  Bereinigung auch gebracht hat. (Die Firmware übernimmt eine Liste mit
+- **Die Listen-Version steigt um eins über alles, was es je gab** (das
+  Größte aus Liste, Hochwassermarke und der zuletzt von der Box gemeldeten
+  Version, plus eins) – die Box holt die Liste damit auf jeden Fall einmal
+  vom neuen Server, welche kleine Abweichung die Bereinigung auch gebracht
+  hat. (Die Firmware übernimmt eine Liste mit
   denselben Keys still.)
 - **Die Not-Liste wird aufgefrischt:** In die neue `config.toml` schreibt die
   Übernahme als `bark_keys_alarm` die Keys der heutigen Empfängerliste (die
@@ -684,8 +710,10 @@ gelöscht.
 - Ist `demo_mode.json` kaputt oder fehlt sie trotz `.bak`, übernimmt sie
   LIVE (die Box könnte noch die Demo-Liste halten; die erhöhte Version lässt
   sie neu abholen) – mit Hinweis in der Zusammenfassung.
-- Sie setzt das Lebenszeichen des Servers auf „jetzt“, damit der Start
-  danach nicht als Auszeit zählt.
+- Sie setzt KEIN Lebenszeichen des Servers: Der erste Start zählt damit als
+  „nach einer Auszeit“, die Stille von Box und Außen-Wächter zählt erst ab
+  ihm (§6.5). Beim Umschalten ist die Box durch den Halt der Brücke
+  minutenlang abgeschnitten – daraus darf kein „Box OFFLINE“ werden.
 - Die Ersatz-Ablage des PHP-Wächters im Temp-Ordner und `watcher_unknown_at`
   liest sie nicht: Umgeschaltet wird nur aus einem gesunden Zustand (§12),
   in dem beide leer sind.
@@ -737,7 +765,9 @@ lokaler Benutzer auf der VM; Fehler in Fremdbibliotheken.
   `govulncheck`; Fuzz-Tests für alles, was Eingaben von außen zerlegt
   (Formulare, Konfiguration, Zustandsdateien – auch „schreiben, zurücklesen,
   gleich“ –, Verlaufszeilen, die Übernahme).
-- **Bei jedem Push prüft GitHub mit** (Actions; an feste Stände gebunden, nur
+- **Bei jedem Push prüft GitHub mit** – und gepusht wird während des Baus
+  nach jeder fertigen Aufgabe (Entscheidung des Nutzers vom 17.11.2026; ein
+  Push spielt nichts ein) – (Actions; an feste Stände gebunden, nur
   Leserechte, keine Geheimnisse, kein Einspielen von dort): dieselben
   Prüfungen, dazu `go test -race` (der Race-Detektor läuft auf dem
   Windows-PC nicht) und die Server-Tests gegen Go. Ein grüner Lauf ist
@@ -815,7 +845,9 @@ sie).
 9. Sicherheits-Durchsicht (eigene Sitzung).
 10. **Probe auf der VM** vor dem Umschalten: Go auf einem zweiten Port mit
     einer Übernahme der echten Daten und einem Bark-Ziel, das nichts
-    annimmt. Dort wird geprüft, was der PC nicht kann: die Unit (Start,
+    annimmt – erzwungen, nicht nur eingetragen: Die Probe-Unit darf nur
+    Adressen des eigenen Rechners erreichen und startet nicht, wenn in
+    ihrer Konfiguration etwas anderes als der geschlossene Port steht. Dort wird geprüft, was der PC nicht kann: die Unit (Start,
     Stopp, Neustart), der Watchdog (ein angehaltener Prozess wird nach 3 min
     beendet und neu gestartet), die Meldung nach einem Absturz, der
     Unix-Socket samt `cloudflared`-Aufruf darüber, der Rückweg als
@@ -857,15 +889,19 @@ sie).
    3. Die Brücke auf dem NAS in den Halt setzen (`bridge_hold.php`): Die Box
       und alte Kurzbefehl-Links bekommen 503, abgewiesene Stumm/Laut-Aufrufe
       werden dort notiert.
-   4. Nginx und PHP-FPM anhalten. **Von hier bis Schritt 6 gibt es kein
+   4. Nginx und PHP-FPM anhalten, abschalten und maskieren (die VM startet
+      für Sicherheits-Updates von selbst neu – PHP darf danach nicht wieder
+      auf dem Port sitzen und aus eingefrorenen Daten antworten).
+      **Von hier bis Schritt 6 gibt es kein
       Dashboard und keinen Alarm von Hand** (erwartet: 3–5 min); die Box
       alarmiert wie immer selbst.
    5. `config.php` nach JSON ausgeben, Übernahme laufen lassen,
       `check-state`.
    6. `fw-alarm` auf `127.0.0.1:8080` starten; `fw-alarm health`,
       `server/check.sh`.
-   7. Den Halt der Brücke aufheben; die dort notierten Stumm/Laut-Aufrufe
-      nachholen. Für neue Links, die direkt am Server ankommen: im Journal
+   7. Den Halt der Brücke aufheben – sofort, sobald `fw-alarm health` gut
+      meldet, die längeren Prüfungen folgen danach; die dort notierten
+      Stumm/Laut-Aufrufe nachholen. Für neue Links, die direkt am Server ankommen: im Journal
       von `cloudflared` nachsehen, ob in der Lücke ein Aufruf von
       `api/mute.php` scheiterte, und nachfassen.
    8. Nur harmlose Prüfungen (Status der Box, TEST-Befehl, eigener
@@ -877,7 +913,8 @@ sie).
    repariert: Je länger Go läuft, desto mehr fehlt in den alten Daten, und
    desto mehr Geister-Meldungen brächte der Rückweg. Schritte:
    `fw-alarm check-state --list` ausgeben und aufheben; `systemctl stop
-   fw-alarm` (der Port ist dann wirklich frei); Nginx und PHP-FPM starten;
+   fw-alarm` (der Port ist dann wirklich frei); Nginx und PHP-FPM wieder freigeben
+   und starten;
    den ersten Status-Push der Box und einen Aufruf des Außen-Wächters
    abwarten; ERST DANN den alten Timer wieder starten (sonst meldet sein
    erster Lauf „Box OFFLINE“ und „Aussen-Waechter meldet sich nicht“ aus
@@ -934,7 +971,11 @@ Entwurf vorab (es ist das Alarmgerät, und ein Flash muss sitzen):
   neu, fragt `fw-alarm health` und `fw-alarm version`. Meldet `health`
   danach keinen gesunden Server, legt das Skript das alte Programm von
   selbst zurück und startet erneut – hinter dem Server steht kein zweiter
-  mehr. Letzte Zeile: `deployed <sha>: fw-alarm sha256 <…> ok`.
+  mehr. Letzte Zeile: `deployed <sha>: fw-alarm sha256 <…> ok`. Vor dem
+  Umschalten (es gibt noch keinen Dienst und keinen Zustand) legt
+  `--install-only` nur das Programm ab: ohne Sicherung, ohne Prüfungen, ohne
+  Neustart. Die alten Skripte `server/deploy.sh` und `server/backup.sh`
+  weigern sich, sobald `fw-alarm` läuft.
 - `server/backup.sh` ruft `fw-alarm flush` und `check-state` auf der VM und
   holt dann `/var/lib/fw-alarm` und `/etc/fw-alarm/config.toml`; ein Archiv
   zählt erst nach der Prüfung (lesbar, Empfängerliste und Konfiguration
@@ -947,7 +988,8 @@ Entwurf vorab (es ist das Alarmgerät, und ein Flash muss sitzen):
   Empfänger und Stumm-Zustände ansehen: Was seit der Sicherung geändert
   wurde, fehlt.
 - `server/check.sh` prüft von innen (`fw-alarm health`, Rechte der Ordner,
-  Stand = eingespielter Stand) und von außen (wie die Box: TLS 1.2, ohne
+  Stand = eingespielter Stand, Nginx und PHP-FPM weder aktiv noch
+  eingeschaltet, auf dem Port lauscht `fw-alarm`) und von außen (wie die Box: TLS 1.2, ohne
   `Accept`).
 - Das Runbook (`server/README.md`) in einfachen Worten: was Pflicht ist, was
   freiwillig, genaue Befehle, Tabelle „Meldung → wo nachsehen“.
@@ -1033,3 +1075,26 @@ alle sind oben eingearbeitet:
 | Wie Tests Störungen herstellen; Regeln ohne Test | §11.2, §11.3, §11.6, §11.10 |
 | Messung für Oracles 20-%-Regel | §11.11 |
 | Neue Meldungen außerhalb der Regeln; Texte, die nicht mehr stimmen | §7, §12.6, §12a |
+
+## 17. Durchsicht des Plans vom 17.11.2026
+
+Vor dem ersten Go-Code hat eine zweite unabhängige Durchsicht den
+Umsetzungsplan gegen diesen Entwurf und den Quelltext geprüft (2 Fehler,
+16 offene Punkte). Was davon den Entwurf selbst berührt, ist oben
+eingearbeitet:
+
+| Befund | Wo gelöst |
+|---|---|
+| Nginx und PHP-FPM wären nach dem Umschalten nur angehalten gewesen – nach einem Neustart der VM hätte PHP wieder aus eingefrorenen Daten geantwortet | §12.5 Schritt 4, §13 `check.sh` |
+| Das Sichern hätte beim ersten Sichern nach einem Rückfall die einzige gute Datei gelöscht | §6.3 Sichern, Start-Tabelle |
+| Anmeldung unbekannter Benutzer gegen einen festen Wegwerf-Hash | §8 |
+| Probe auf der VM: geschlossenes Bark-Ziel nur von Hand eingetragen | §11.10 |
+| Geister-„Box OFFLINE“ beim Umschalten (Halt der Brücke, Lebenszeichen der Übernahme) | §9, §6.5, §12.5 Schritt 7 |
+| Erste „Box OFFLINE“ über die Brücke: Außen-Wächter nie gesehen; Obergrenze 3 min | §6.5 |
+| Einmalige Meldungen gingen bei gescheitertem Versand verloren | §7 |
+| Übernahme: Listen-Version ohne Hochwassermarke und Version der Box | §9 |
+| „Fehlerhaft“ und „Hinweis“ bei der Konfiguration nicht getrennt; halb geschriebene Datei | §6.8 |
+| `stored` in `alive.php` | §4.4 |
+| GitHub prüfte erst vor der Probe auf der VM | §10 (Push nach jeder Aufgabe) |
+| `--install-only`, alte Skripte nach dem Umschalten | §13 |
+
