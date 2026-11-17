@@ -95,6 +95,17 @@ bei NAS-Ausfall unverändert unabhängig funktionieren. Die Oberfläche ist
 Preact/htm ohne Build-Schritt und ohne npm (siehe „Frontend des Dashboards“
 unter „Bewusste Entscheidungen“).
 
+**Server-Tests** (`tests/backend/`, README dort): Die Regeln der Server-Seite –
+Box-Protokoll (`api/{status,poll,ack,keys}.php`), `api/alive.php`,
+Kurzbefehl-Link, Wächter, Alarm-Versand – prüft
+`node --test "tests/backend/*.test.mjs"` von außen: Jede Testdatei startet ein
+eigenes Dashboard (`php -S`, leerer Datenordner im Temp-Ordner, freier Port)
+und eine Bark-Attrappe im Testprozess (`harness.mjs`), spricht nur HTTP und
+fasst den Datenordner über `backend.data` an. Sie sind der Maßstab für die
+geplante Go-Fassung (Treiber über `FW_BACKEND`): nur Beobachtbares prüfen, nie
+interne Namen. Eine neue oder geänderte Server-Regel bekommt dort ihren Test –
+für die alte UND die neue Firmware (`box().oldStatus()`).
+
 Und `cloud_watcher/`: der **Außen-Wächter** – ein Bash-Skript, das ein
 ANDERER Rechner als der Server alle 5 min ausführt. Seit dem Umzug ist das
 das NAS (DSM-Aufgabe als root; bis 11/2026 war es umgekehrt: eine Cloud-VM
