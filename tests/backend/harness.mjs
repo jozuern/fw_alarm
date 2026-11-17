@@ -1,15 +1,17 @@
 // Prüfstand für die Server-Seite (Box-Protokoll, Wächter, Kurzbefehl-Link,
-// Alarm-Versand): startet pro Testdatei ein EIGENES Dashboard mit leerem
-// Datenordner und eine Bark-Attrappe im Testprozess - eigene Ports, eigener
-// Temp-Ordner, nichts bleibt liegen. Die Tests sprechen nur HTTP und fassen
-// den Datenordner über backend.data an; welche Implementierung dahinter läuft
-// (heute PHP, später Go), entscheidet allein der Treiber hier (FW_BACKEND).
+// Alarm-Versand, Anmeldung und Dashboard-API): startet pro Testdatei ein
+// EIGENES Dashboard mit leerem Datenordner und eine Bark-Attrappe im
+// Testprozess - eigene Ports, eigener Temp-Ordner, nichts bleibt liegen.
+// Die Tests sprechen nur HTTP und fassen den Datenordner über backend.data
+// an; welche Implementierung dahinter läuft (heute PHP, später Go),
+// entscheidet allein der Treiber hier (FW_BACKEND).
 //
 // Aufruf: node --test "tests/backend/*.test.mjs"
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync,
+  appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync,
+  writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
 import { createServer as createTcpServer } from 'node:net';
@@ -47,6 +49,8 @@ export const ADMIN = { user: 'admin', password: 'test' };
 export const READER = { user: 'leser', password: 'test' };
 // bcrypt-Hash von "test" (cost 4, damit die Anmeldung im Test nichts kostet).
 const TEST_PASSWORD_HASH = '$2y$04$r60I68m5mVq98EDvnpGXGeS1SZtBd2wWlr0dy0MuX73YPDZ27VzZy';
+// bcrypt-Hash von "anderes" (cost 4): ein geändertes Passwort in der Konfiguration.
+export const OTHER_PASSWORD_HASH = '$2y$04$arQ57ZxGZu0qqkyhgNiBc.Ri6mtxzvUCvCwP8PvCH/TfBrFX9abKO';
 const DATA_FILE_GUARD = '<?php http_response_code(404); exit; ?>\n';
 
 function freePort() {
@@ -182,6 +186,14 @@ function dataAccess(dataDir) {
     log() {
       if (!existsSync(file('commands.log'))) return [];
       return body('commands.log').split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line));
+    },
+    // Hängt Einträge roh an den Verlauf an (eine JSON-Zeile pro Eintrag, ohne
+    // eigenes log_at) - so entsteht ein Verlauf beliebiger Länge ohne die
+    // Aktionen dafür. Eine neue Datei bekommt zuerst die Guard-Zeile.
+    // name = 'commands.log.1' füllt die rotierte (ältere) Datei.
+    appendLog(entries, name = 'commands.log') {
+      const lines = entries.map((entry) => `${JSON.stringify(entry)}\n`).join('');
+      appendFileSync(file(name), (existsSync(file(name)) ? '' : DATA_FILE_GUARD) + lines);
     },
   };
   return api;
@@ -423,13 +435,19 @@ export function box(backend, defaults = {}) {
 }
 
 // ============================ DASHBOARD-SITZUNG =============================
+// Das Anmeldeformular abschicken (POST /index.php) - die Antwort, wie sie ist
+// (Weiterleitung, Cookie, Anmeldeseite mit Fehler).
+export function rawLogin(backend, user, password, headers = {}) {
+  return postForm(`${backend.base}/index.php`, { action: 'login', user, password }, headers);
+}
+
 // Anmelden und die JSON-API benutzen (wie ein Browser, ohne Browser).
 export async function session(backend, account = ADMIN) {
   const base = backend.base;
   let cookie = '';
   let csrf = '';
   const api = (action, params = {}) => `${base}/dashboard_api.php?` + new URLSearchParams({ action, ...params });
-  const login = await postForm(`${base}/index.php`, { action: 'login', user: account.user, password: account.password });
+  const login = await rawLogin(backend, account.user, account.password);
   for (const c of login.headers.getSetCookie?.() ?? []) {
     const pair = c.split(';')[0];
     if (pair.startsWith('boss925_dashboard=')) cookie = pair;

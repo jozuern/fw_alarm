@@ -20,7 +20,9 @@ Key-Präfix `fail` = HTTP 500, `bad` = 400, `slow` = 4 s Verzögerung.
 
 Szenarien (`tests/dashboard/e2e/scenarios/`, je `run.mjs <name>`; vor jedem
 Lauf nach Code-Änderungen `setup.sh` erneut, die Sandbox nutzt eine Kopie):
-`smoke api-settings api-keys api-session shell overview recipients log settings switch`.
+`smoke shell overview recipients log settings switch`. Anmeldung, Sitzungen
+und die Dashboard-Aktionen ohne Oberfläche prüfen die Server-Tests in
+`tests/backend/` (ohne Chrome, siehe README dort).
 `index.php` ist die neue Oberfläche (Anmeldeseite bzw. App), `classic.php` die
 eingefrorene alte (`switch` prüft beide). Die Unit-Tests laufen ohne Sandbox:
 `node --test "tests/dashboard/*.test.mjs"` (die Ordner-Form scheitert unter Node 24).

@@ -27,6 +27,13 @@ und eine Bark-Attrappe im Testprozess; am Ende wird alles entfernt
 | `mute-link.test.mjs` | Kurzbefehl-Link: Text und Browser-Seite, Vorschauen, Bremse, dauerhaft stumm |
 | `watchdog.test.mjs` | Wächter: Box offline/wieder da, Selbsttest, Erinnerungen, Außen-Wächter, wie Meldungen rausgehen |
 | `alarm-send.test.mjs` | Alarm, Entwarnung und Test-Push direkt an Bark: Felder, Empfänger, bestätigter Modus, Teilausfall, Nachsendung |
+| `session.test.mjs` | Anmeldung und Sitzung: Cookie, keine Sitzung für Unbekannte, `Sec-Fetch-Site`, Passwortwechsel, Abmelden, Bremse gegen Durchprobieren, hinter einem Proxy |
+| `health.test.mjs` | Selbsttest des Datenordners (`api/health.php`): Antwort, Störungen, über einen Proxy 404 |
+| `dashboard-access.test.mjs` | Zugangsregeln aller Dashboard-Aktionen (Anmeldung, Methode, CSRF, Rolle), Felder der Status-Antwort |
+| `dashboard-keys.test.mjs` | Empfänger pflegen: umbenennen, Key ersetzen, Telefonnummer, neue Kurzbefehl-Links, Datenordner nicht beschreibbar |
+| `dashboard-settings.test.mjs` | Einstellung „Automatisch wieder laut nach“: Stufen, Wert aus der Konfiguration, Verlauf |
+| `dashboard-notify.test.mjs` | Meldungen an den Admin: Liste, Einstellen, Probe-Meldung, Meldungen bei der Anmeldung |
+| `dashboard-log.test.mjs` | Verlauf im Dashboard: freigegebene Felder, Filter, Menge, rotierte Datei |
 
 ## Regeln für neue Tests
 
@@ -39,6 +46,11 @@ und eine Bark-Attrappe im Testprozess; am Ende wird alles entfernt
 - **Speichern scheitern lassen:** `backend.data.block('name')` legt an die
   Stelle der Datei einen Ordner – das wirkt auf jedem System (ein
   Schreibschutz per `chmod` wirkt unter Windows und als root nicht).
+- **Langer Verlauf:** `backend.data.appendLog([...])` hängt Einträge roh an
+  `commands.log` an (mit `'commands.log.1'` als zweitem Argument an die
+  rotierte Datei) – statt hunderter Aktionen.
+- **Anmelden:** `session(backend, READER)` für die API, `rawLogin(...)` für die
+  rohe Antwort des Anmeldeformulars (Weiterleitung, Cookie, Fehlerseite).
 - **Meldungen nach der Antwort:** Der Server verschickt manches erst, nachdem
   er geantwortet hat – dafür `waitFor(...)`, für „es darf nichts kommen“
   `settle()`.
@@ -48,12 +60,19 @@ und eine Bark-Attrappe im Testprozess; am Ende wird alles entfernt
   auf `main`, `box().oldStatus()` die der Box im Betrieb (ohne `alarm_seq`,
   `alarm_source`, `core`, `max_alloc_heap`, `alarm_gaveup`).
 - Der Test-Server von PHP bedient unter Windows nur eine Anfrage zugleich:
-  Regeln über gleichzeitige Anfragen lassen sich hier nicht prüfen.
+  Regeln über gleichzeitige Anfragen lassen sich hier nicht prüfen. Er
+  antwortet außerdem erst, wenn auch die Arbeit „nach der Antwort“ erledigt
+  ist (`fastcgi_finish_request()` gibt es nur unter PHP-FPM).
+- Unter PHP übersprungen (`backend.kind === 'php'`, Hinweis in der Ausgabe):
+  „länger als 12 Std ohne Anfrage“ (`session.test.mjs`, die Sitzungen von PHP
+  liegen außerhalb des Prüfstands) und „die Antwort auf die Anmeldung wartet
+  nicht auf Bark“ (`dashboard-notify.test.mjs`, siehe oben).
 
 ## Eine andere Server-Fassung prüfen
 
 `FW_BACKEND` wählt den Treiber in `harness.mjs` (heute nur `php`). Ein Treiber
-liefert `base`, `dataDir`, `configure()`, `reset()`, `runWatchdog()`, `stop()`;
+liefert `kind`, `base`, `dataDir`, `configure()`, `reset()`, `runWatchdog()`,
+`stop()` – und `sessionsDir`, wenn seine Sitzungen im Prüfstand liegen;
 alles andere (Attrappe, Helfer, Tests) bleibt gleich. `FW_BACKEND_SRC=<Ordner>`
 prüft eine Kopie von `nas_dashboard/` statt des Repo-Stands – z.B. eine
 absichtlich verfälschte, um zu sehen, dass die Tests anschlagen.
