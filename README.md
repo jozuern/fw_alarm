@@ -481,12 +481,13 @@ Tunnel (`server/README.md`). Im zweiten Fall bleibt das NAS als Brücke für die
 alte Adresse (`nas_bridge/README.md`) und als Außen-Wächter
 (`cloud_watcher/README.md`). Der Server wird gerade als Go-Programm neu
 gebaut (`cmd/`, `internal/`). Bei jedem Push prüft GitHub
-(`.github/workflows/ci.yml`) die Go-Fassung – gofmt, `go vet`, staticcheck,
-govulncheck, `go test -race` und den Bau für `linux/arm64` und
-`windows/amd64` – und lässt die Node-Tests unter `tests/dashboard/`,
-`tests/server/` und `tests/watcher/` laufen; auf dem PC prüft
-`bash tools/check-go.sh` nur die Go-Fassung (gofmt, `go vet` auch für
-`linux/arm64`, staticcheck, govulncheck, `go test` ohne Race-Detektor).
+(`.github/workflows/ci.yml`) die Go-Fassung – gofmt, `go mod tidy -diff`,
+`go vet`, staticcheck, govulncheck, `go test -race` und den Bau für
+`linux/arm64` und `windows/amd64` – und lässt die Node-Tests unter
+`tests/dashboard/`, `tests/server/` und `tests/watcher/` laufen; auf dem PC
+prüft `bash tools/check-go.sh` nur die Go-Fassung (gofmt, `go mod tidy -diff`,
+`go vet` auch für `linux/arm64`, staticcheck, govulncheck, `go test` ohne
+Race-Detektor).
 
 Funktionen:
 

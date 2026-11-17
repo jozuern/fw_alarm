@@ -217,16 +217,50 @@ func TestSameFileRepaired(t *testing.T) {
 }
 
 // Ein neueres Schema in state.json heißt: dieses Programm ist zu alt –
-// Notbetrieb, auch wenn eine Vorfassung lesbar wäre; nichts wird angefasst.
+// Notbetrieb, was auch immer state.prev.json hält. Ein älteres Programm
+// fällt nie hinter Daten zurück, die ein neueres geschrieben hat; die
+// Not-Kopie hält den Alarm am Laufen, nichts wird geschrieben.
 func TestSchemaNewerIsEmergency(t *testing.T) {
+	t.Run("neueres Schema, Vorfassung lesbar", func(t *testing.T) {
+		f := storetest.New()
+		newer := schemaDoc(t, sample3(13), 2)
+		f.Put(at("state.json"), newer)
+		plant(t, f, "state.prev.json", sample(12))
+		prevBytes, _ := f.Get(at("state.prev.json"))
+		s, info := open(t, f)
+		if info.Mode != store.StartEmergency || !s.Emergency() || info.Rewound {
+			t.Fatalf("Start: %s, Rücksprung %v", mode(info.Mode), info.Rewound)
+		}
+		if !same(t, s.State(), model.NewState()) {
+			t.Errorf("bedient wird nicht der leere Notbetriebs-Zustand: Version %d, %d Empfänger",
+				s.State().KeysVersion, len(s.State().Recipients))
+		}
+		if got, _ := f.Get(at("state.json")); !bytes.Equal(got, newer) {
+			t.Error("state.json verändert")
+		}
+		if got, _ := f.Get(at("state.prev.json")); !bytes.Equal(got, prevBytes) {
+			t.Error("state.prev.json verändert")
+		}
+		for _, c := range f.Log() {
+			for _, name := range c.Names {
+				if c.Writes() && durable(name) {
+					t.Errorf("Schreibaufruf auf feste Daten: %v", c)
+				}
+			}
+		}
+		if err := s.SaveState(sample(14)); !errors.Is(err, store.ErrEmergency) {
+			t.Errorf("Sichern: %v", err)
+		}
+	})
+
 	for _, c := range []struct {
 		name  string
 		setup func(*storetest.FaultFS)
 	}{
-		{"Vorfassung fehlt", func(f *storetest.FaultFS) { f.Put(at("state.json"), schemaDoc(t, sample(12), 2)) }},
-		{"Vorfassung lesbar", func(f *storetest.FaultFS) {
+		{"neueres Schema, Vorfassung fehlt", func(f *storetest.FaultFS) { f.Put(at("state.json"), schemaDoc(t, sample(12), 2)) }},
+		{"neueres Schema, Vorfassung kaputt", func(f *storetest.FaultFS) {
 			f.Put(at("state.json"), schemaDoc(t, sample(12), 2))
-			plant(t, f, "state.prev.json", sample(11))
+			f.Put(at("state.prev.json"), garbage)
 		}},
 		{"state.json fehlt, Vorfassung neuer", func(f *storetest.FaultFS) { f.Put(at("state.prev.json"), schemaDoc(t, sample(12), 2)) }},
 	} {

@@ -79,9 +79,9 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
   den der PHP-Code dafür nimmt. Befehle bisher: `fw-alarm version`,
   `fw-alarm check-config [--config <datei>]`, `fw-alarm hash-password`
   (Argon2id).
-- Prüfen auf dem PC: `bash tools/check-go.sh` (nur Go: gofmt, `go vet` für
-  PC und `linux/arm64`, staticcheck, govulncheck, `go test` ohne
-  Race-Detektor) und `bash tools/test-go.sh [dateien…]` (baut
+- Prüfen auf dem PC: `bash tools/check-go.sh` (nur Go: gofmt,
+  `go mod tidy -diff`, `go vet` für PC und `linux/arm64`, staticcheck,
+  govulncheck, `go test` ohne Race-Detektor) und `bash tools/test-go.sh [dateien…]` (baut
   `bin/fw-alarm` wie das Produkt – ohne CGO, `-trimpath` – und lässt
   Server-Tests aus `tests/backend/` gegen Go laufen; ohne Angabe die Dateien
   aus `tools/go-green.txt`). Go ist auf dem PC pro Benutzer installiert, die

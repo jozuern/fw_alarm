@@ -3,6 +3,7 @@ package model
 import (
 	"bytes"
 	"encoding/json"
+	"time"
 )
 
 // Rescue ist die Not-Kopie nur für den Alarm (recipients.rescue.json):
@@ -34,13 +35,19 @@ func (r Rescue) MarshalJSON() ([]byte, error) {
 	return json.Marshal(plain(r))
 }
 
-// Targets liefert die Empfänger, an die ein Alarm im Notbetrieb ginge (Spec
-// §6.3): die gültigen, einmaligen Keys der Kopie, höchstens MaxRecipients –
-// lieber die gültigen Einträge als keiner. Verweist DemoKeyID auf einen
-// dieser Einträge, nur auf ihn (demo = true); ein Verweis ins Leere
-// alarmiert lieber alle als niemanden (wie Effective). Stumm-Zustand und
-// Stumm-Lautstärke wie gespeichert. Keine Targets = die Kopie taugt nicht.
-func (r Rescue) Targets() (targets []Target, demo bool) {
+// Targets liefert die Empfänger, an die ein Alarm im Notbetrieb aus dieser
+// Not-Kopie ginge (Spec §6.3) – die Regel gehört hierher, Zeit und
+// Höchstdauer kennt der Aufrufer:
+//   - Steht ein gültiger Demo-Empfänger in der Kopie (DemoKeyID eines
+//     gültigen, einmaligen Eintrags), nur er, und demo = true.
+//   - Sonst alle gültigen, einmaligen Keys in ihrer Reihenfolge, höchstens
+//     MaxRecipients – lieber die gültigen Einträge als keiner; ein
+//     Demo-Verweis ins Leere alarmiert lieber alle als niemanden.
+//   - Eine überfällige Stummschaltung zählt als laut, genau wie bei
+//     MuteIsStale (dauerhaft = nie überfällig, muteMax ≤ 0 = nie); die
+//     Stumm-Lautstärke bleibt (auf 0–10 begrenzt).
+//   - ok = false, wenn kein gültiger Key übrig bleibt.
+func (r Rescue) Targets(now time.Time, muteMax int) (targets []Target, demo bool, ok bool) {
 	list := make([]Target, 0, min(len(r.Recipients), MaxRecipients))
 	seen := make(map[string]bool, len(r.Recipients))
 	for _, rr := range r.Recipients {
@@ -48,26 +55,23 @@ func (r Rescue) Targets() (targets []Target, demo bool) {
 		if !ValidKey(key) || seen[key] {
 			continue
 		}
-		if len(list) >= MaxRecipients {
-			break
-		}
 		seen[key] = true
-		list = append(list, Target{
+		stale := MuteIsStale(Recipient{Muted: rr.Muted, MutedAt: rr.MutedAt, MutePermanent: rr.MutePermanent}, now, muteMax)
+		tg := Target{
 			ID:         rr.ID,
 			Key:        key,
 			Label:      rr.Label,
-			Muted:      rr.Muted,
+			Muted:      rr.Muted && !stale,
 			MuteVolume: min(10, max(0, rr.MuteVolume)),
-		})
-	}
-	if r.DemoKeyID != 0 {
-		for _, tg := range list {
-			if tg.ID == r.DemoKeyID {
-				return []Target{tg}, true
-			}
+		}
+		if r.DemoKeyID != 0 && rr.ID == r.DemoKeyID {
+			return []Target{tg}, true, true
+		}
+		if len(list) < MaxRecipients {
+			list = append(list, tg)
 		}
 	}
-	return list, false
+	return list, false, len(list) > 0
 }
 
 // DecodeRescueLenient liest die Not-Kopie nachsichtig – lieber die gültigen

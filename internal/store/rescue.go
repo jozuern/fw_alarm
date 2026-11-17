@@ -1,9 +1,15 @@
 package store
 
-import "fwalarm/internal/model"
+import (
+	"slices"
+
+	"fwalarm/internal/model"
+)
 
 // readRescue liest die Not-Kopie im Notbetrieb EINMAL, nachsichtig (Spec
-// §6.3); danach bedient sie der Speicher – ein Alarm liest nie eine Datei.
+// §6.3), und hält sie im Speicher – ein Alarm liest nie eine Datei. Was
+// sie für einen Alarm heißt, entscheidet model.Rescue.Targets beim
+// Aufrufer (er kennt Zeit und Höchstdauer der Stummschaltung).
 func (s *Store) readRescue() {
 	raw, err := s.fsys.ReadFile(s.path(fileRescue))
 	if err != nil {
@@ -12,22 +18,21 @@ func (s *Store) readRescue() {
 	}
 	r := model.DecodeRescueLenient(raw)
 	s.rescue = &r
-	targets, demo := r.Targets()
-	s.log.Warn("Notbetrieb: Not-Kopie gelesen", "empfaenger", len(targets), "demo", demo, "bytes", len(raw))
+	s.log.Warn("Notbetrieb: Not-Kopie gelesen", "eintraege", len(r.Recipients),
+		"demo", r.DemoKeyID != 0, "bytes", len(raw))
 }
 
-// Rescue liefert die Empfänger der Not-Kopie aus dem Speicher (nur im
-// Notbetrieb gelesen): die gültigen, einmaligen Keys, höchstens 10; mit
-// gültigem Demo-Empfänger nur ihn. ok=false: keine Kopie oder kein gültiger
-// Key darin – dann gilt die Not-Liste der Konfiguration (Aufgabe 20). Jeder
-// Aufruf liefert eine eigene Liste.
-func (s *Store) Rescue() (targets []model.Target, ok bool) {
+// Rescue liefert die Not-Kopie, wie sie beim Start im Notbetrieb EINMAL
+// nachsichtig gelesen wurde – aus dem Speicher, ohne Auslegung; jeder
+// Aufruf bekommt eine eigene Liste. false: keine lesbare Kopie (keine
+// Datei, nicht lesbar) oder kein Notbetrieb – nur dort wird sie gelesen.
+// Ließ sich die Datei lesen, war aber kein JSON, ist die Kopie leer;
+// Targets meldet dann ok=false (Aufgabe 20: Not-Liste der Konfiguration).
+func (s *Store) Rescue() (model.Rescue, bool) {
 	if s.rescue == nil {
-		return nil, false
+		return model.Rescue{}, false
 	}
-	targets, _ = s.rescue.Targets()
-	if len(targets) == 0 {
-		return nil, false
-	}
-	return targets, true
+	r := *s.rescue
+	r.Recipients = slices.Clone(r.Recipients)
+	return r, true
 }

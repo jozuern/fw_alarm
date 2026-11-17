@@ -40,6 +40,8 @@ gofmt_clean() {
 vet_linux_arm64() { GOOS=linux GOARCH=arm64 go vet ./...; }
 
 check "gofmt -l cmd internal nas_dashboard" gofmt_clean
+# go.mod/go.sum so, wie go mod tidy sie schriebe (sonst Unterschied und Fehler).
+check "go mod tidy -diff" go mod tidy -diff
 check "go vet ./..." go vet ./...
 check "GOOS=linux GOARCH=arm64 go vet ./..." vet_linux_arm64
 check "staticcheck ./..." staticcheck ./...

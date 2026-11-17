@@ -36,6 +36,9 @@ jobs:
         run: |
           out="$(gofmt -l cmd internal nas_dashboard)"
           if [ -n "$out" ]; then echo "nicht gofmt-formatiert:"; echo "$out"; exit 1; fi
+      # go.mod/go.sum so, wie go mod tidy sie schriebe – sonst Unterschied und Fehler.
+      - name: go mod tidy
+        run: go mod tidy -diff
       - name: go vet
         run: go vet ./...
       - name: staticcheck
