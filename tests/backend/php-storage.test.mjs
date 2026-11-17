@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import {
-  BACKEND_KIND, STATUS_KEY, WATCHER_TOKEN, box, now, postForm, session, sha256, startBackend,
+  BACKEND_KIND, STATUS_KEY, WATCHER_TOKEN, box, now, postForm, request, session, sha256, startBackend,
 } from './harness.mjs';
 
 let backend;
@@ -538,6 +538,201 @@ describe('Nur PHP: Ablage im Datenordner', { skip: BACKEND_KIND !== 'php' && 'nu
         await backend.configure({});
         assert.ok(parts(await run()).includes('NOTIFIED_OFFLINE'));
         assert.equal(toAdmin(mark).length, 1);
+      });
+    });
+  });
+
+  // ==========================================================================
+  describe('alarm-send.test.mjs', () => {
+    const KEY_A = 'annakey00001';
+    const KEY_B = 'benkey000001';
+    const NOT_KEY = 'startkey0001';    // Not-Liste (bark_keys_alarm) des Prüfstands
+    const ALARM_TITLE = 'FEUERWEHR-ALARM (manuell)';
+    const ALARM_BODY = 'Manuelle Alarmierung ueber das Dashboard!';
+    const alarm = (fields = {}) => admin.post({ action: 'alarm', expect_demo: '0', ...fields });
+    // Felder einer Anfrage als Text - ob der Server sie als Formular oder als JSON
+    // schickt, ist für Bark dasselbe.
+    const fieldsOf = (req) => Object.fromEntries(Object.entries(req.fields).map(([k, v]) => [k, String(v)]));
+    // Text (trägt den Zeitstempel) und alle übrigen Felder getrennt.
+    const split = (req) => {
+      const { body, ...rest } = fieldsOf(req);
+      return { body, rest };
+    };
+    const sentTo = (key, mark) => backend.bark.to(key, mark);
+    const keysHit = (mark) => [...new Set(backend.bark.since(mark).map((r) => r.key))].sort();
+    // Die Felder eines Alarms ohne den Text: Critical Alert mit Alarmton; call=1
+    // (Ton-Wiederholung) nur für laute Empfänger.
+    const alarmFields = ({ volume = '10', call = true, title = ALARM_TITLE } = {}) => ({
+      title, sound: 'alarm_fw', level: 'critical', volume, ...(call ? { call: '1' } : {}),
+    });
+    // Zeitstempel im Bark-Text: "[TT.MM.JJJJ HH:MM]" in der Zeitzone des Servers.
+    const clock = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    });
+    function stamp(ts) {
+      const p = Object.fromEntries(clock.formatToParts(new Date(ts * 1000)).map((x) => [x.type, x.value]));
+      return `[${p.day}.${p.month}.${p.year} ${p.hour}:${p.minute}]`;
+    }
+    // Text eines frischen Versands: Stempel = Zeit des Versands. Zwischen
+    // started_at und dem Stempeln kann die Minute umspringen - beides gilt.
+    function assertStamped(body, startedAt, text) {
+      const allowed = [startedAt, startedAt + 5].map((t) => `${stamp(t)} ${text}`);
+      assert.ok(allowed.includes(body), `Text "${body}" - erwartet "${allowed[0]}"`);
+    }
+    // Genau EINE Anfrage an diesen Key, mit genau diesen Feldern.
+    function assertOne(key, mark, expected, startedAt, text) {
+      const got = sentTo(key, mark);
+      assert.equal(got.length, 1, `genau eine Meldung an ${key}`);
+      assert.equal(got[0].method, 'POST');
+      const { body, rest } = split(got[0]);
+      assert.deepEqual(rest, expected, `Felder an ${key}`);
+      assertStamped(body, startedAt, text);
+      return got[0];
+    }
+    const assertAlarm = (key, mark, res, expected = alarmFields()) => assertOne(key, mark, expected, res.started_at, ALARM_BODY);
+    // Eintrag für eine von Hand geschriebene alarm_keys.json.
+    const handEntry = (id, key, extra = {}) => ({
+      id, label: `Hand ${id}`, key, added_at: now() - 1000, mute_token: `handtoken${String(id).padStart(3, '0')}`, ...extra,
+    });
+
+    describe('Alarm: wer ihn bekommt', () => {
+      it('Liste UND Sicherung unlesbar: ebenfalls die Not-Liste', async () => {
+        await admin.addKey('Anna', KEY_A);
+        backend.data.corrupt('alarm_keys.json');
+        backend.data.corrupt('alarm_keys.json.bak');
+        const mark = backend.bark.mark();
+        const res = await alarm();
+        assert.equal(res.http, 200);
+        assert.equal(res.ok, true);
+        assertAlarm(NOT_KEY, mark, res);
+        assert.deepEqual(keysHit(mark), [NOT_KEY]);
+        assert.match(res.message, /Fallback-Liste aus config\.php verwendet/);
+      });
+
+      it('nur die Liste kaputt: es gilt die Sicherung', async () => {
+        const anna = await admin.addKey('Anna', KEY_A);
+        await admin.addKey('Ben', KEY_B);
+        // Die Sicherung hält einen älteren Stand: nur Anna.
+        const state = backend.data.read('alarm_keys.json');
+        backend.data.write('alarm_keys.json.bak', { ...state, keys: state.keys.filter((k) => k.id === anna.id) });
+        backend.data.corrupt('alarm_keys.json');
+        const mark = backend.bark.mark();
+        const res = await alarm();
+        assert.equal(res.ok, true);
+        assert.deepEqual(keysHit(mark), [KEY_A]);
+        assert.doesNotMatch(res.message, /Fallback/);
+      });
+
+      it('eine Liste nur aus ungültigen Keys zählt wie eine leere: die Not-Liste', async () => {
+        backend.data.write('alarm_keys.json', {
+          next_id: 5, version: 4, keys: [handEntry(1, 'kurz'), handEntry(2, 'un gueltig!')],
+        });
+        const mark = backend.bark.mark();
+        const res = await alarm();
+        assert.equal(res.ok, true);
+        assert.deepEqual(keysHit(mark), [NOT_KEY]);
+        assert.match(res.message, /Fallback-Liste aus config\.php verwendet/);
+      });
+
+      it('von Hand verdorbene Liste: nur die gültigen, einmaligen, ersten 10 werden alarmiert', async () => {
+        const valid = Array.from({ length: 12 }, (_, i) => `handkey${String(i + 1).padStart(5, '0')}`);
+        backend.data.write('alarm_keys.json', {
+          next_id: 30,
+          version: 7,
+          keys: [
+            handEntry(1, valid[0]),
+            handEntry(2, 'kurz'),                 // zu kurz
+            'kein Eintrag',                       // gar kein Objekt
+            handEntry(3, valid[0]),               // doppelt
+            handEntry(4, 'un gueltig!'),          // verbotene Zeichen
+            ...valid.slice(1).map((key, i) => handEntry(10 + i, key)),
+          ],
+        });
+        const mark = backend.bark.mark();
+        const res = await alarm();
+        assert.equal(res.ok, true);
+        assert.deepEqual(keysHit(mark), valid.slice(0, 10));
+        assert.equal(backend.bark.since(mark).length, 10, 'jeder genau einmal');
+        assert.deepEqual(res.results.map((r) => r.id), [1, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+        assert.match(res.message, /^10\/10 Empfänger erreicht\./);
+      });
+    });
+  });
+
+  // ==========================================================================
+  describe('mute-link.test.mjs', () => {
+    const ANNA_KEY = 'annakey00001';
+    // Die Klartext-Antworten (ASCII, so lesen sie die Kurzbefehle der Kollegen).
+    const TEXT = {
+      on: 'ok=1\nmuted=1\n',
+      off: 'ok=1\nmuted=0\n',
+      noState: 'ok=0\nerror=state fehlt (on oder off)\n',
+      unknown: 'ok=0\nerror=unbekannter Empfaenger\n',
+      tooMany: 'ok=0\nerror=zu viele Fehlversuche - spaeter erneut\n',
+      preview: 'ok=0\nerror=Vorschau - nichts geaendert\n',
+      storage: 'ok=0\nerror=speichern fehlgeschlagen\n',
+    };
+    // So meldet sich ein Browser, der eine Seite öffnet.
+    const BROWSER = { accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' };
+
+    let anna;
+    beforeEach(async () => {
+      anna = await admin.addKey('Anna', ANNA_KEY);
+    });
+
+    const endpoint = () => `${backend.base}/api/mute.php`;
+    const muteUrl = (query) => `${endpoint()}?${new URLSearchParams(query)}`;
+    // Annas Link (bzw. derselbe Link mit einem anderen Token).
+    const link = (state, token = anna.mute_token) => muteUrl({ t: token, state });
+    const call = (state, headers = {}) => request(link(state), { headers });
+    // Gezählte Fehlversuche aller Absender (0 = die Bremse hat nichts gezählt).
+    const countedFailures = () => Object.values(backend.data.read('mute_throttle.json') ?? {})
+      .reduce((sum, who) => sum + Number(who?.count ?? 0), 0);
+    // Eine Seite für Menschen: HTML, nicht zwischenspeicherbar, ohne eingebettete
+    // Styles und Skripte (die CSP verbietet sie) - und ohne Token und Bark-Key.
+    function assertPage(r) {
+      assert.match(r.headers.get('content-type'), /^text\/html/);
+      assert.match(r.headers.get('cache-control'), /no-store/);
+      const csp = r.headers.get('content-security-policy');
+      assert.match(csp, /style-src 'self'/);
+      assert.match(csp, /script-src 'self'/);
+      assert.doesNotMatch(csp, /unsafe-inline/);
+      assert.match(r.text, /^<!doctype html>/i);
+      assert.doesNotMatch(r.text, /<style/i, 'kein <style>-Block');
+      assert.doesNotMatch(r.text, /\sstyle\s*=/i, 'kein style=-Attribut');
+      for (const script of r.text.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+        assert.match(script[1], /\ssrc="[^"]+"/, 'Skripte nur per Adresse');
+        assert.equal(script[2].trim(), '', 'kein eingebettetes Skript');
+      }
+      assert.equal(r.text.includes(anna.mute_token), false, 'Token steht nicht in der Seite');
+      assert.equal(r.text.includes(ANNA_KEY), false, 'Bark-Key steht nicht in der Seite');
+    }
+
+    describe('Störung beim Speichern', () => {
+      it('Liste samt Sicherung unlesbar: 500 "speichern fehlgeschlagen" - und kein Fehlversuch', async () => {
+        backend.data.corrupt('alarm_keys.json');
+        backend.data.corrupt('alarm_keys.json.bak');
+        for (let i = 0; i < 5; i++) {
+          const r = await call(i % 2 ? 'off' : 'on');
+          assert.equal(r.status, 500);
+          assert.equal(r.text, TEXT.storage);
+          assert.match(r.headers.get('cache-control'), /no-store/);
+        }
+        const page = await call('on', BROWSER);
+        assert.equal(page.status, 500);
+        assertPage(page);
+        assert.match(page.text, /Nicht gespeichert/);
+        assert.equal(countedFailures(), 0);
+
+        // Wären die sechs Aufrufe gezählt worden, käme unter den nächsten 20
+        // Fehlversuchen schon ein 429.
+        backend.data.remove('alarm_keys.json');
+        backend.data.remove('alarm_keys.json.bak');
+        for (let i = 0; i < 20; i++) {
+          assert.equal((await request(link('on', 'gibtesnicht12'))).status, 404, `Fehlversuch ${i + 1}`);
+        }
+        assert.equal((await request(link('on', 'gibtesnicht12'))).status, 429);
       });
     });
   });

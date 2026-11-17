@@ -5,8 +5,9 @@
 // Verlauf sagen. Die Regeln: bestätigter Modus (expect_demo), Demo-Modus,
 // Arbeitsmodus (stumm), Wiederholungen pro Empfänger, Nachsendung nur an die
 // nicht Erreichten - und dass ein Alarm nie am Speichern scheitert.
+// (Kaputte, von Hand verdorbene oder samt Sicherung unlesbare Listen gelten
+// nur für PHP: php-storage.test.mjs.)
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import {
   READER, STATUS_KEY, now, postForm, session, settle, startBackend, waitFor,
@@ -53,11 +54,14 @@ async function ok(promise) {
 const mute = (entry) => ok(admin.post({ action: 'keys_mute', id: entry.id, muted: '1' }));
 const muteVolume = (entry, volume) => ok(admin.post({ action: 'keys_set_mute_volume', id: entry.id, volume }));
 const demoOn = (entry) => ok(admin.post({ action: 'demo_set', enabled: '1', id: entry.id }));
-const listEntry = (id) => backend.data.read('alarm_keys.json').keys.find((k) => k.id === id);
+// Der Eintrag, wie er gespeichert ist.
+const listEntry = (id) => backend.state.recipient(id);
 // Eine Stummschaltung "seit s Sekunden" - als hätte der Kollege sie so lange nicht beendet.
-const muteSince = (entry, seconds) => backend.data.edit('alarm_keys.json', (d) => {
-  d.keys.find((k) => k.id === entry.id).muted_at = now() - seconds;
-});
+const muteSince = (entry, seconds) => backend.state.ageMute(entry.id, seconds);
+// "Fallback-Liste aus <Konfigurationsdatei> verwendet" in der Antwort (mit
+// dem Anfang davor, z.B. "ACHTUNG: ").
+const fallbackNote = (before = '') => new RegExp(
+  `${before}Fallback-Liste aus ${backend.words.configFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} verwendet`);
 
 // ---- Was bei Bark ankam ----------------------------------------------------
 // Felder einer Anfrage als Text - ob der Server sie als Formular oder als JSON
@@ -117,24 +121,8 @@ const assertClear = (key, mark, res, expected = clearFields()) => assertOne(key,
 // ---- Verlauf ---------------------------------------------------------------
 // Wie das Dashboard ihn zeigt (neueste zuerst), ohne die Uhrzeit.
 const alarmLog = async () => (await admin.log('alarm')).map(({ at, ...rest }) => rest);
-// Der Prüfstand kann den Verlauf nur lesen. Hier werden passende Einträge
-// "älter gemacht" (log_at), alles andere bleibt Zeile für Zeile wie gespeichert.
-function ageLogEntries(seconds, match) {
-  const path = backend.data.path('commands.log');
-  const lines = readFileSync(path, 'utf8').split('\n').map((line) => {
-    if (!line.startsWith('{')) return line;
-    const entry = JSON.parse(line);
-    if (!match(entry)) return line;
-    entry.log_at -= seconds;
-    return JSON.stringify(entry);
-  });
-  writeFileSync(path, lines.join('\n'));
-}
-
-// Eintrag für eine von Hand geschriebene alarm_keys.json.
-const handEntry = (id, key, extra = {}) => ({
-  id, label: `Hand ${id}`, key, added_at: now() - 1000, mute_token: `handtoken${String(id).padStart(3, '0')}`, ...extra,
-});
+// Die Versand-Einträge eines Alarms (nas_alarm_started, nas_alarm) um s älter machen.
+const ageAlarmLog = (seconds) => backend.state.ageLog(seconds, (e) => e.event.startsWith('nas_alarm'));
 
 describe('Alarm: was an Bark geht', () => {
   it('zwei laute Empfänger: je EINE Meldung - Critical Alert, Alarmton, volle Lautstärke, call=1', async () => {
@@ -194,8 +182,8 @@ describe('Alarm: was an Bark geht', () => {
   it('eine überfällige Stummschaltung zählt als LAUT - und wird nach dem Versand weggeschrieben', async () => {
     const anna = await admin.addKey('Anna', KEY_A);
     await mute(anna);
-    muteSince(anna, MUTE_MAX + 100);
-    const versionBefore = backend.data.read('alarm_keys.json').version;
+    await muteSince(anna, MUTE_MAX + 100);
+    const versionBefore = await backend.state.listVersion();
     const mark = backend.bark.mark();
     const res = await alarm();
 
@@ -207,10 +195,10 @@ describe('Alarm: was an Bark geht', () => {
 
     // Danach steht der Eintrag als laut in der Liste, unter neuer Version
     // (die Box holt sie sich daraufhin).
-    const stored = listEntry(anna.id);
+    const stored = await listEntry(anna.id);
     assert.equal(stored.muted, false);
     assert.equal(stored.muted_at, 0);
-    assert.ok(backend.data.read('alarm_keys.json').version > versionBefore, 'neue Listen-Version');
+    assert.ok(await backend.state.listVersion() > versionBefore, 'neue Listen-Version');
     // Der Betroffene erfährt es leise (nach der Antwort).
     const info = await waitFor(() => sentTo(KEY_A, mark).find((r) => r.fields.level !== 'critical'),
       'Info "wieder laut" an den Betroffenen');
@@ -224,22 +212,19 @@ describe('Alarm: was an Bark geht', () => {
   it('eine Stummschaltung kurz vor der Frist bleibt stumm', async () => {
     const anna = await admin.addKey('Anna', KEY_A);
     await mute(anna);
-    muteSince(anna, MUTE_MAX - 100);
+    await muteSince(anna, MUTE_MAX - 100);
     const mark = backend.bark.mark();
     const res = await alarm();
     assertAlarm(KEY_A, mark, res, alarmFields({ volume: '0', call: false }));
-    assert.equal(listEntry(anna.id).muted, true);
+    assert.equal((await listEntry(anna.id)).muted, true);
   });
 
   it('der Alarm geht auch raus, wenn sich die Liste gerade nicht speichern lässt', async () => {
     const anna = await admin.addKey('Anna', KEY_A);
     await mute(anna);
-    // Überfällig stumm; lesbar bleibt die Liste über ihre Sicherung, speichern
-    // lässt sie sich nicht (an ihrer Stelle liegt ein Ordner).
-    const state = backend.data.read('alarm_keys.json');
-    state.keys[0].muted_at = now() - MUTE_MAX - 100;
-    backend.data.write('alarm_keys.json.bak', state);
-    backend.data.block('alarm_keys.json');
+    // Überfällig stumm; lesbar bleibt die Liste, speichern lässt sie sich nicht.
+    await muteSince(anna, MUTE_MAX + 100);
+    await backend.storage.fail('durable');
     try {
       const mark = backend.bark.mark();
       const res = await alarm();
@@ -252,18 +237,18 @@ describe('Alarm: was an Bark geht', () => {
       // ihn bis zum Speichern weiter stumm).
       await settle();
       assert.equal(backend.bark.since(mark).length, 1);
-      assert.equal(backend.data.read('alarm_keys.json.bak').keys[0].muted, true);
+      assert.equal((await listEntry(anna.id)).muted, true);
       const row = (await admin.keys()).keys[0];
       assert.equal(row.muted, false);
       assert.equal(row.mute_overdue, true);
     } finally {
-      backend.data.unblock('alarm_keys.json');
+      await backend.storage.repair('durable');
     }
   });
 
   it('der Alarm geht auch raus, wenn sich der Verlauf nicht schreiben lässt', async () => {
     await admin.addKey('Anna', KEY_A);
-    backend.data.block('commands.log');
+    await backend.storage.fail('history');
     try {
       const mark = backend.bark.mark();
       const res = await alarm();
@@ -271,7 +256,7 @@ describe('Alarm: was an Bark geht', () => {
       assert.equal(res.ok, true);
       assertAlarm(KEY_A, mark, res);
     } finally {
-      backend.data.unblock('commands.log');
+      await backend.storage.repair('history');
     }
   });
 
@@ -279,13 +264,11 @@ describe('Alarm: was an Bark geht', () => {
     const anna = await admin.addKey('Anna', KEY_A);
     await admin.addKey('Ben', KEY_B);
     await mute(anna);
-    const state = backend.data.read('alarm_keys.json');
-    state.keys[0].muted_at = now() - MUTE_MAX - 100;
-    backend.data.write('alarm_keys.json.bak', state);
-    // Liste, Verlauf und die Sperrdateien dazu: nichts davon lässt sich anlegen
-    // oder ersetzen (so sah die Störung 10/2026 für den Alarm aus).
-    const blocked = ['alarm_keys.json', 'commands.log', 'keys.lock', 'log.lock'];
-    for (const name of blocked) backend.data.block(name);
+    await muteSince(anna, MUTE_MAX + 100);
+    // Weder die Liste noch der Verlauf lässt sich sichern (so sah die Störung
+    // 10/2026 für den Alarm aus).
+    await backend.storage.fail('durable');
+    await backend.storage.fail('history');
     try {
       const mark = backend.bark.mark();
       const res = await alarm();
@@ -295,21 +278,22 @@ describe('Alarm: was an Bark geht', () => {
       assertAlarm(KEY_A, mark, res);
       assertAlarm(KEY_B, mark, res);
     } finally {
-      for (const name of blocked) backend.data.unblock(name);
+      await backend.storage.repair('history');
+      await backend.storage.repair('durable');
     }
   });
 
   it('dauerhaft stumm läuft nie ab: auch nach Tagen Stumm-Lautstärke und kein call', async () => {
     const anna = await admin.addKey('Anna', KEY_A);
     await ok(admin.post({ action: 'keys_set_mute_permanent', id: anna.id, permanent: '1' }));
-    muteSince(anna, 5 * 86400);
+    await muteSince(anna, 5 * 86400);
     const mark = backend.bark.mark();
     const res = await alarm();
     assertAlarm(KEY_A, mark, res, alarmFields({ volume: '0', call: false }));
     assert.equal(res.results[0].muted, true);
     await settle();
     assert.equal(backend.bark.since(mark).length, 1, 'keine automatische Rückschaltung');
-    assert.equal(listEntry(anna.id).muted, true);
+    assert.equal((await listEntry(anna.id)).muted, true);
   });
 
   it('Titel und Text gehen so raus, wie sie in der Konfiguration stehen', async () => {
@@ -360,7 +344,7 @@ describe('Alarm: wer ihn bekommt', () => {
     assertAlarm(NOT_KEY, mark, res);
     assert.deepEqual(keysHit(mark), [NOT_KEY]);
     assert.match(res.message, /^1\/1 Empfänger erreicht\./);
-    assert.match(res.message, /ACHTUNG: Fallback-Liste aus config\.php verwendet/);
+    assert.match(res.message, fallbackNote('ACHTUNG: '));
     // Einträge der Not-Liste haben keine Nummer und keinen Namen.
     assert.deepEqual(res.results.map((r) => [r.id, r.label, r.key, r.ok]), [[0, '', 'star...', true]]);
   });
@@ -386,44 +370,6 @@ describe('Alarm: wer ihn bekommt', () => {
     assert.doesNotMatch(res.message, /Fallback/);
   });
 
-  it('Liste UND Sicherung unlesbar: ebenfalls die Not-Liste', async () => {
-    await admin.addKey('Anna', KEY_A);
-    backend.data.corrupt('alarm_keys.json');
-    backend.data.corrupt('alarm_keys.json.bak');
-    const mark = backend.bark.mark();
-    const res = await alarm();
-    assert.equal(res.http, 200);
-    assert.equal(res.ok, true);
-    assertAlarm(NOT_KEY, mark, res);
-    assert.deepEqual(keysHit(mark), [NOT_KEY]);
-    assert.match(res.message, /Fallback-Liste aus config\.php verwendet/);
-  });
-
-  it('nur die Liste kaputt: es gilt die Sicherung', async () => {
-    const anna = await admin.addKey('Anna', KEY_A);
-    await admin.addKey('Ben', KEY_B);
-    // Die Sicherung hält einen älteren Stand: nur Anna.
-    const state = backend.data.read('alarm_keys.json');
-    backend.data.write('alarm_keys.json.bak', { ...state, keys: state.keys.filter((k) => k.id === anna.id) });
-    backend.data.corrupt('alarm_keys.json');
-    const mark = backend.bark.mark();
-    const res = await alarm();
-    assert.equal(res.ok, true);
-    assert.deepEqual(keysHit(mark), [KEY_A]);
-    assert.doesNotMatch(res.message, /Fallback/);
-  });
-
-  it('eine Liste nur aus ungültigen Keys zählt wie eine leere: die Not-Liste', async () => {
-    backend.data.write('alarm_keys.json', {
-      next_id: 5, version: 4, keys: [handEntry(1, 'kurz'), handEntry(2, 'un gueltig!')],
-    });
-    const mark = backend.bark.mark();
-    const res = await alarm();
-    assert.equal(res.ok, true);
-    assert.deepEqual(keysHit(mark), [NOT_KEY]);
-    assert.match(res.message, /Fallback-Liste aus config\.php verwendet/);
-  });
-
   it('weder Dashboard- noch Not-Liste: nichts gesendet, die Antwort sagt warum', async () => {
     await backend.configure({ bark_keys_alarm: [] });
     const mark = backend.bark.mark();
@@ -433,29 +379,6 @@ describe('Alarm: wer ihn bekommt', () => {
     assert.match(res.message, /^Keine Alarm-Empfänger/);
     assert.deepEqual(res.results, []);
     await assertNothingSent(mark);
-  });
-
-  it('von Hand verdorbene Liste: nur die gültigen, einmaligen, ersten 10 werden alarmiert', async () => {
-    const valid = Array.from({ length: 12 }, (_, i) => `handkey${String(i + 1).padStart(5, '0')}`);
-    backend.data.write('alarm_keys.json', {
-      next_id: 30,
-      version: 7,
-      keys: [
-        handEntry(1, valid[0]),
-        handEntry(2, 'kurz'),                 // zu kurz
-        'kein Eintrag',                       // gar kein Objekt
-        handEntry(3, valid[0]),               // doppelt
-        handEntry(4, 'un gueltig!'),          // verbotene Zeichen
-        ...valid.slice(1).map((key, i) => handEntry(10 + i, key)),
-      ],
-    });
-    const mark = backend.bark.mark();
-    const res = await alarm();
-    assert.equal(res.ok, true);
-    assert.deepEqual(keysHit(mark), valid.slice(0, 10));
-    assert.equal(backend.bark.since(mark).length, 10, 'jeder genau einmal');
-    assert.deepEqual(res.results.map((r) => r.id), [1, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
-    assert.match(res.message, /^10\/10 Empfänger erreicht\./);
   });
 
   it('Demo-Modus: NUR der Test-Empfänger - und die Meldung gleicht der echten Zeichen für Zeichen', async () => {
@@ -741,7 +664,7 @@ describe('Alarm: Nachsendung nur an die nicht Erreichten (only_ids)', () => {
   it('ohne orig_at gilt die Zeit des letzten Versands aus dem Verlauf', async () => {
     const anna = await admin.addKey('Anna', KEY_A);
     const first = await alarm();
-    ageLogEntries(2 * 3600 + 120, (e) => e.event.startsWith('nas_alarm'));
+    await ageAlarmLog(2 * 3600 + 120);
     const mark = backend.bark.mark();
     await alarm({ only_ids: String(anna.id) });
     // Eine weitere Nachsendung ändert daran nichts: Maßgeblich ist der Versand, nicht die Nachsendung davor.
@@ -757,7 +680,7 @@ describe('Alarm: Nachsendung nur an die nicht Erreichten (only_ids)', () => {
   it('... aber nur, wenn dieser Versand höchstens 6 h her ist - sonst gilt jetzt', async () => {
     const anna = await admin.addKey('Anna', KEY_A);
     await alarm();
-    ageLogEntries(6 * 3600 + 600, (e) => e.event.startsWith('nas_alarm'));
+    await ageAlarmLog(6 * 3600 + 600);
     const mark = backend.bark.mark();
     const from = now();
     await alarm({ only_ids: String(anna.id) });
@@ -923,7 +846,7 @@ describe('Entwarnung', () => {
   it('eine überfällige Stummschaltung zählt auch hier als laut', async () => {
     const anna = await admin.addKey('Anna', KEY_A);
     await mute(anna);
-    muteSince(anna, MUTE_MAX + 100);
+    await muteSince(anna, MUTE_MAX + 100);
     const mark = backend.bark.mark();
     const res = await entwarnung();
     const critical = sentTo(KEY_A, mark).filter((r) => r.fields.level === 'critical');
@@ -931,7 +854,7 @@ describe('Entwarnung', () => {
     assert.deepEqual(split(critical[0]).rest, clearFields());
     assert.equal(res.results[0].muted, false);
     await waitFor(() => sentTo(KEY_A, mark).find((r) => r.fields.title === 'Alarmton wieder LAUT'), 'Info "wieder laut"');
-    assert.equal(listEntry(anna.id).muted, false);
+    assert.equal((await listEntry(anna.id)).muted, false);
   });
 
   it('leere Dashboard-Liste: die Not-Liste, mit Hinweis in der Antwort', async () => {
@@ -940,7 +863,7 @@ describe('Entwarnung', () => {
     assert.equal(res.ok, true);
     assertClear(NOT_KEY, mark, res);
     assert.deepEqual(keysHit(mark), [NOT_KEY]);
-    assert.match(res.message, /Fallback-Liste aus config\.php verwendet/);
+    assert.match(res.message, fallbackNote());
   });
 
   it('Demo-Modus: nur der Test-Empfänger', async () => {
@@ -995,7 +918,7 @@ describe('Entwarnung', () => {
   it('Nachsendung ohne orig_at nimmt die Zeit der letzten ENTWARNUNG, nicht die eines Alarms', async () => {
     const anna = await admin.addKey('Anna', KEY_A);
     await alarm();
-    ageLogEntries(3600, (e) => e.event.startsWith('nas_alarm'));
+    await ageAlarmLog(3600);
     const mark = backend.bark.mark();
     const from = now();
     await entwarnung({ only_ids: String(anna.id) });
@@ -1106,7 +1029,7 @@ describe('Verlauf', () => {
     await demoOn(anna);
     await alarm({ expect_demo: String(anna.id) });
 
-    const raw = backend.data.log();
+    const raw = await backend.state.log();
     const text = JSON.stringify(raw) + JSON.stringify(await admin.log('all'));
     for (const key of [KEY_A, KEY_B, KEY_FAIL, STATUS_KEY, NOT_KEY]) {
       assert.equal(text.includes(key), false, `Key ${key.slice(0, 4)}... im Verlauf`);

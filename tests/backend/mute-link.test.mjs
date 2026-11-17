@@ -4,6 +4,7 @@
 // Durchprobieren, Link-Vorschauen, die nichts umschalten, und für Browser eine
 // Seite ohne Token und ohne Key. Jede Regel hier muss auch eine neue
 // Server-Version erfüllen: Die verteilten Kurzbefehle bleiben dieselben.
+// (Liste samt Sicherung unlesbar gilt nur für PHP: php-storage.test.mjs.)
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import {
@@ -46,8 +47,12 @@ const entryOf = async (id = anna.id) => (await admin.keys()).keys.find((k) => k.
 const version = async () => (await admin.keys()).version;
 const keyEvents = async (...events) => (await admin.log('keys')).filter((e) => events.includes(e.event));
 // Gezählte Fehlversuche aller Absender (0 = die Bremse hat nichts gezählt).
-const countedFailures = () => Object.values(backend.data.read('mute_throttle.json') ?? {})
-  .reduce((sum, who) => sum + Number(who?.count ?? 0), 0);
+const countedFailures = () => backend.state.muteFailures();
+// Annas Stummschaltung begann vor s Sekunden; liefert den gespeicherten Beginn.
+async function annaMutedSince(seconds) {
+  await backend.state.ageMute(anna.id, seconds);
+  return (await backend.state.recipient(anna.id)).muted_at;
+}
 // Die Parameter der Umleitung (Location ist relativ zur aufgerufenen Adresse).
 const redirectOf = (r, from) => new URL(r.headers.get('location'), from);
 // "16.11. um 14:05 Uhr" in der Zeitzone des Servers (config.php: Europe/Berlin).
@@ -109,8 +114,7 @@ describe('Kurzbefehl oder Skript (kein Browser)', () => {
   it('derselbe Aufruf noch einmal: gleiche Antwort, keine neue Version, kein zweiter Eintrag', async () => {
     await call('on');
     // Die bestehende Stummschaltung läuft schon 10 Minuten.
-    const since = now() - 600;
-    backend.data.edit('alarm_keys.json', (list) => { list.keys.find((k) => k.id === anna.id).muted_at = since; });
+    const since = await annaMutedSince(600);
     const before = await version();
 
     const again = await call('on');
@@ -259,7 +263,7 @@ describe('Kurzbefehl oder Skript (kein Browser)', () => {
     await call('off');
     await request(muteUrl({ key: ANNA_KEY, state: 'on' }));
     await request(link('off', 'gibtesnicht12'));
-    const stored = JSON.stringify(backend.data.log());
+    const stored = JSON.stringify(await backend.state.log());
     assert.equal(stored.includes(anna.mute_token), false);
     assert.equal(stored.includes(ANNA_KEY), false);
     assert.ok(stored.includes('anna...'), 'Key maskiert auf die ersten vier Zeichen');
@@ -305,7 +309,7 @@ describe('Bremse gegen Durchprobieren', () => {
     for (let i = 0; i < 25; i++) {
       assert.equal((await call(i % 2 ? 'off' : 'on')).status, 200);
     }
-    assert.equal(countedFailures(), 0);
+    assert.equal(await countedFailures(), 0);
     for (let i = 0; i < 20; i++) {
       assert.equal((await request(link('on', 'gibtesnicht12'))).status, 404, `Fehlversuch ${i + 1}`);
     }
@@ -316,9 +320,7 @@ describe('Bremse gegen Durchprobieren', () => {
     for (let i = 0; i < 20; i++) await request(link('on', 'gibtesnicht12'));
     assert.equal((await request(link('on', 'gibtesnicht12'))).status, 429);
     // Als lägen die Fehlversuche 15 Minuten zurück.
-    backend.data.edit('mute_throttle.json', (all) => {
-      for (const who of Object.keys(all)) all[who].first_at = now() - 901;
-    });
+    await backend.state.ageMuteThrottle(901);
     const r = await request(link('on', 'gibtesnicht12'));
     assert.equal(r.status, 404);
     assert.equal(r.text, TEXT.unknown);
@@ -481,8 +483,7 @@ describe('Aufruf im Browser', () => {
 
   it('ein zweiter Aufruf bei schon passendem Zustand leitet mit same=1 um', async () => {
     await call('on', BROWSER);
-    const since = now() - 600;
-    backend.data.edit('alarm_keys.json', (list) => { list.keys.find((k) => k.id === anna.id).muted_at = since; });
+    const since = await annaMutedSince(600);
     const before = await version();
 
     const again = await call('on', BROWSER);
@@ -583,9 +584,7 @@ describe('Dauerhaft stumm und Sicherheitsnetz', () => {
     const bert = await admin.addKey('Bert', BERT_KEY);
     assert.equal((await admin.post({ action: 'keys_mute', id: bert.id, muted: '1' })).ok, true);
     const before = await version();
-    backend.data.edit('alarm_keys.json', (list) => {
-      list.keys.find((k) => k.id === bert.id).muted_at = now() - (MUTE_MAX + 100);
-    });
+    await backend.state.ageMute(bert.id, MUTE_MAX + 100);
 
     const mark = backend.bark.mark();
     assert.equal((await call('on')).text, TEXT.on);
@@ -595,7 +594,7 @@ describe('Dauerhaft stumm und Sicherheitsnetz', () => {
     assert.match(info.fields.body, /Stummschaltung automatisch beendet/);
 
     // Gespeichert vom Link-Aufruf selbst (noch bevor das Dashboard nachsieht).
-    const stored = backend.data.read('alarm_keys.json');
+    const stored = await backend.state.recipients();
     assert.equal(stored.keys.find((k) => k.id === bert.id).muted, false);
     assert.equal(stored.keys.find((k) => k.id === anna.id).muted, true);
     assert.ok(stored.version > before);
@@ -611,9 +610,7 @@ describe('Dauerhaft stumm und Sicherheitsnetz', () => {
   it('eine DAUERHAFTE Stummschaltung eines anderen bleibt dabei bestehen', async () => {
     const bert = await admin.addKey('Bert', BERT_KEY);
     assert.equal((await admin.post({ action: 'keys_set_mute_permanent', id: bert.id, permanent: '1' })).ok, true);
-    backend.data.edit('alarm_keys.json', (list) => {
-      list.keys.find((k) => k.id === bert.id).muted_at = now() - 30 * 86400;
-    });
+    await backend.state.ageMute(bert.id, 30 * 86400);
     const mark = backend.bark.mark();
     assert.equal((await call('on')).text, TEXT.on);
     await settle();
@@ -637,8 +634,7 @@ describe('Dauerhaft stumm und Sicherheitsnetz', () => {
     assert.equal(entry.mute_until, entry.muted_at + MUTE_MAX);
 
     // Bei einer schon laufenden Stummschaltung zählt ihr Beginn.
-    const since = now() - 600;
-    backend.data.edit('alarm_keys.json', (list) => { list.keys.find((k) => k.id === anna.id).muted_at = since; });
+    const since = await annaMutedSince(600);
     q = redirectOf(await call('on', BROWSER), link('on')).searchParams;
     assert.equal(q.get('same'), '1');
     assert.equal(q.get('until'), String(since + MUTE_MAX));
@@ -672,36 +668,9 @@ describe('Dauerhaft stumm und Sicherheitsnetz', () => {
 });
 
 describe('Störung beim Speichern', () => {
-  it('Liste samt Sicherung unlesbar: 500 "speichern fehlgeschlagen" - und kein Fehlversuch', async () => {
-    backend.data.corrupt('alarm_keys.json');
-    backend.data.corrupt('alarm_keys.json.bak');
-    for (let i = 0; i < 5; i++) {
-      const r = await call(i % 2 ? 'off' : 'on');
-      assert.equal(r.status, 500);
-      assert.equal(r.text, TEXT.storage);
-      assert.match(r.headers.get('cache-control'), /no-store/);
-    }
-    const page = await call('on', BROWSER);
-    assert.equal(page.status, 500);
-    assertPage(page);
-    assert.match(page.text, /Nicht gespeichert/);
-    assert.equal(countedFailures(), 0);
-
-    // Wären die sechs Aufrufe gezählt worden, käme unter den nächsten 20
-    // Fehlversuchen schon ein 429.
-    backend.data.remove('alarm_keys.json');
-    backend.data.remove('alarm_keys.json.bak');
-    for (let i = 0; i < 20; i++) {
-      assert.equal((await request(link('on', 'gibtesnicht12'))).status, 404, `Fehlversuch ${i + 1}`);
-    }
-    assert.equal((await request(link('on', 'gibtesnicht12'))).status, 429);
-  });
-
   it('Liste lässt sich nicht speichern: 500, nichts geschaltet, kein Eintrag im Verlauf', async () => {
-    // Lesbar bleibt die Liste über ihre Sicherung; an der Stelle der Liste
-    // selbst liegt ein Ordner - das Ersetzen der Datei scheitert.
-    backend.data.write('alarm_keys.json.bak', backend.data.read('alarm_keys.json'));
-    backend.data.block('alarm_keys.json');
+    // Lesbar bleibt die Liste, speichern lässt sie sich nicht.
+    await backend.storage.fail('durable');
     try {
       const r = await call('on');
       assert.equal(r.status, 500);
@@ -711,9 +680,9 @@ describe('Störung beim Speichern', () => {
       assertPage(page);
       assert.match(page.text, /Nicht gespeichert/);
     } finally {
-      backend.data.unblock('alarm_keys.json');
+      await backend.storage.repair('durable');
     }
-    assert.equal(countedFailures(), 0);
+    assert.equal(await countedFailures(), 0);
     assert.equal((await entryOf()).muted, false);
     assert.deepEqual(await keyEvents('key_muted', 'key_unmuted'), []);
 

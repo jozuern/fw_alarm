@@ -102,7 +102,9 @@ Kurzbefehl-Link, Wächter, Alarm-Versand – prüft
 `node --test "tests/backend/*.test.mjs"` von außen: Jede Testdatei startet ein
 eigenes Dashboard (`php -S`, leerer Datenordner im Temp-Ordner, freier Port)
 und eine Bark-Attrappe im Testprozess (`harness.mjs`), spricht nur HTTP und
-fasst den Datenordner über `backend.data` an. Sie sind der Maßstab für die
+sagt über `backend.state`/`backend.storage`, welchen gespeicherten Zustand
+sie braucht (die Dateien von PHP, `backend.data`, nur in `php-*.test.mjs`).
+Sie sind der Maßstab für die
 geplante Go-Fassung (Treiber über `FW_BACKEND`; Design – Neubau innen, außen
 gleich – in `docs/superpowers/specs/2026-11-17-go-server-neubau-design.md`,
 Plan daneben unter `plans/`): nur Beobachtbares prüfen, nie interne Namen. Eine neue oder geänderte Server-Regel bekommt dort ihren Test –

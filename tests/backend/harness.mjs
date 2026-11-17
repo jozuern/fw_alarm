@@ -5,7 +5,9 @@
 // Die Tests sprechen HTTP und sagen über backend.state / backend.storage,
 // WAS sie brauchen ("der letzte Status ist 200 s alt", "Sichern scheitert");
 // WO das liegt, weiß allein der Treiber hier (FW_BACKEND: heute PHP, später
-// Go). backend.data (die Dateien von PHP) bleibt nur für php-*.test.mjs.
+// Go). backend.data (die Dateien von PHP) fasst unter tests/backend/ nur
+// php-*.test.mjs an - die Chrome-Szenarien (tests/dashboard/e2e/) noch, bis
+// sie auf dieselben Helfer umgestellt sind.
 //
 // Aufruf: node --test "tests/backend/*.test.mjs"
 import { execFile, execFileSync, spawn } from 'node:child_process';
@@ -148,8 +150,10 @@ export async function startBarkMock() {
 // Laufzeitdateien wie die Anwendung sie schreibt: <name>.php, erste Zeile =
 // Guard, danach JSON (bzw. beim Verlauf eine JSON-Zeile pro Eintrag). name ist
 // der logische Name aus CLAUDE.md, z.B. 'latest_status.json', 'commands.log'.
-// Als backend.data nur für php-*.test.mjs (Regeln, die allein PHPs Ablage
-// betreffen); alle anderen Tests nehmen backend.state / backend.storage.
+// Als backend.data unter tests/backend/ nur für php-*.test.mjs (Regeln, die
+// allein PHPs Ablage betreffen); alle anderen Tests nehmen backend.state /
+// backend.storage. (Die Chrome-Szenarien unter tests/dashboard/e2e/ nutzen
+// es noch, bis sie umgestellt sind.)
 function dataAccess(dataDir) {
   const file = (name) => join(dataDir, `${name}.php`);
   const body = (name) => {
@@ -225,12 +229,18 @@ function dataAccess(dataDir) {
 //     ageMark(name, s)         Merker des Wächters (WATCH_MARKS) = vor s
 //     ageRetry(kind, s)        nur Go: Sperrfrist nach gescheitertem Versand
 //     ageMuteThrottle(s)       gezählte Fehlversuche am Kurzbefehl-Link begannen vor s
-//     ageLog(s, match)         passende Verlaufs-Einträge um s älter (log_at -= s)
+//     ageLog(s, match)         passende Verlaufs-Einträge um s älter (log_at -= s) - als
+//                              einziger RELATIV ("um s älter machen"), die übrigen age*
+//                              setzen ein absolutes "vor s". match ist eine Bedingung
+//                              (eintrag) => boolean über den gespeicherten Eintrag, ohne
+//                              Angabe alle Einträge. Wirft, wenn ein passender Eintrag
+//                              kein log_at als Zahl hat (dann ändert sich nichts).
 //     ageSession(cookie, s)    nur Go: diese Sitzung ist seit s untätig
 //   Herstellen:
 //     setWatcher({ seenAgo, barkFailedAt = 0 })   Außen-Wächter zuletzt gesehen vor seenAgo
 //     setMarks({ name: wert|null })                mehrere Merker in einem Zug; null löscht
-//     setCommand(patch)                            Felder des laufenden Befehls (COMMAND_FIELDS)
+//     setCommand(patch)                            Felder des laufenden Befehls (COMMAND_FIELDS);
+//                                                  wirft ohne laufenden Befehl
 //     seedLog(entries, { rotated = false })        Einträge wie gegeben (ohne uid, ohne eigenes
 //                                                  log_at); rotated = die ältere Datei
 //     seedRecipients(entries, { version = 1, nextId = größte id + 1 })
@@ -250,19 +260,18 @@ function dataAccess(dataDir) {
 // backend.storage
 //   fail(what) / repair(what), what: 'selftest' | 'durable' | 'history' |
 //   'volatile' - das Sichern dieses Teils scheitert bzw. geht wieder;
-//   repair stellt den Stand von vor fail() her.
+//   repair stellt den Stand von vor fail() her. Ein zweites fail(what) ohne
+//   repair dazwischen tut nichts, ebenso repair(what) ohne vorheriges fail.
 // backend.words
 //   configFile: Name der Konfigurationsdatei in Texten ('config.php' | 'config.toml').
 //
-// Jeder Helfer gibt zuerst die Kontrolle ab, bevor er etwas anfasst: Ein
-// Aufruf ohne await fällt so auch unter PHP auf (unter Go liefe er in einen
+// Die Eingaben prüft startBackend() für JEDEN Treiber gleich (STATE_INPUT,
+// STORAGE_INPUT unten): Dieselbe falsche Eingabe wirft unter PHP und Go
+// denselben Fehler, der Treiber bekommt nur geprüfte Werte. Und jeder Helfer
+// gibt zuerst die Kontrolle ab, bevor der Treiber etwas anfasst: Ein Aufruf
+// ohne await fällt so auch unter PHP auf (unter Go liefe er in einen
 // Neustart des Servers hinein).
 const yieldFirst = () => new Promise((resolve) => setImmediate(resolve));
-const yieldingAll = (impl) => Object.fromEntries(Object.entries(impl).map(([name, fn]) => [name,
-  async (...args) => {
-    await yieldFirst();
-    return fn(...args);
-  }]));
 
 // Merker des Wächters - die Namen aus watchdog_state.json von PHP, die auch
 // die Go-Fassung führt (Plan: "File formats", runtime.json "watch").
@@ -321,6 +330,91 @@ function checkRecipients(entries) {
     keys.add(entry.key);
   }
   return Math.max(0, ...ids);
+}
+
+// Eingaben jedes Helfers: prüfen (wirft mit "backend.state.<name>: …") und
+// die Argumente liefern, mit denen der Treiber aufgerufen wird - Standards
+// schon eingesetzt. Ein Helfer, der hier fehlt, gehört nicht zum Vertrag.
+const anything = (...args) => args;
+const STATE_INPUT = {
+  ageBoxStatus: (s) => { checkSeconds('ageBoxStatus', s); return [s]; },
+  ageDevice: (deviceId, s) => { checkSeconds('ageDevice', s); return [deviceId, s]; },
+  ageMute: (idOrAll, s) => { checkSeconds('ageMute', s); return [idOrAll, s]; },
+  ageDemo: (s) => { checkSeconds('ageDemo', s); return [s]; },
+  ageCommand: (which, s) => {
+    checkSeconds('ageCommand', s);
+    if (!['created', 'delivered'].includes(which)) throw stateError('ageCommand', `which ist 'created' oder 'delivered', nicht "${which}"`);
+    return [which, s];
+  },
+  ageWatcher: (s) => { checkSeconds('ageWatcher', s); return [s]; },
+  ageMark: (name, s) => { checkMark('ageMark', name); checkSeconds('ageMark', s); return [name, s]; },
+  ageRetry: (kind, s) => { checkSeconds('ageRetry', s); return [kind, s]; },
+  ageMuteThrottle: (s) => { checkSeconds('ageMuteThrottle', s); return [s]; },
+  ageLog: (s, match = () => true) => {
+    checkSeconds('ageLog', s);
+    if (typeof match !== 'function') throw stateError('ageLog', 'match ist eine Bedingung (eintrag) => boolean');
+    return [s, match];
+  },
+  ageSession: (cookie, s) => { checkSeconds('ageSession', s); return [cookie, s]; },
+
+  setWatcher: ({ seenAgo, barkFailedAt = 0 } = {}) => {
+    checkSeconds('setWatcher', seenAgo);
+    return [{ seenAgo, barkFailedAt }];
+  },
+  setMarks: (marks) => {
+    if (!marks || typeof marks !== 'object' || Array.isArray(marks)) throw stateError('setMarks', 'Merker als Objekt { name: wert|null }');
+    for (const name of Object.keys(marks)) checkMark('setMarks', name);
+    return [marks];
+  },
+  setCommand: (patch) => {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw stateError('setCommand', 'Felder als Objekt');
+    const unknown = Object.keys(patch).filter((name) => !COMMAND_FIELDS.has(name));
+    if (unknown.length) throw stateError('setCommand', `unbekannte Felder ${unknown.join(', ')}`);
+    return [patch];
+  },
+  seedLog: (entries, { rotated = false } = {}) => {
+    if (!Array.isArray(entries) || entries.some((e) => !e || typeof e !== 'object' || Array.isArray(e))) {
+      throw stateError('seedLog', 'Einträge als Liste von Objekten');
+    }
+    return [entries, { rotated: Boolean(rotated) }];
+  },
+  seedRecipients: (entries, { version = 1, nextId } = {}) => {
+    const maxId = checkRecipients(entries);
+    const next = nextId ?? maxId + 1;
+    if (!Number.isInteger(next) || next <= maxId) {
+      throw stateError('seedRecipients', `nextId ${next} muss größer sein als jede id`);
+    }
+    if (!Number.isInteger(version) || version < 0) throw stateError('seedRecipients', `Version ${version} ungültig`);
+    return [entries, { version, nextId: next }];
+  },
+
+  boxStatus: anything,
+  recipients: anything,
+  recipient: anything,
+  listVersion: anything,
+  demo: anything,
+  command: anything,
+  watcher: anything,
+  marks: anything,
+  log: anything,
+  muteFailures: anything,
+  notifyStored: anything,
+};
+const storagePart = (helper) => (what) => {
+  if (!STORAGE_PARTS.includes(what)) throw new Error(`backend.storage.${helper}: unbekannter Teil "${what}" (${STORAGE_PARTS.join(', ')})`);
+  return [what];
+};
+const STORAGE_INPUT = { fail: storagePart('fail'), repair: storagePart('repair') };
+
+// Die Helfer eines Treibers hinter den gemeinsamen Prüfungen (siehe oben).
+// Fehlt dem Treiber ein Helfer des Vertrags, scheitert schon der Start.
+function contractHelpers(kind, part, impl, inputs) {
+  const missing = Object.keys(inputs).filter((name) => typeof impl?.[name] !== 'function');
+  if (missing.length) throw new Error(`Treiber "${kind}": backend.${part} ohne ${missing.join(', ')}`);
+  return Object.fromEntries(Object.entries(inputs).map(([name, input]) => [name, async (...args) => {
+    await yieldFirst();
+    return impl[name](...input(...args));
+  }]));
 }
 
 // PHP: Zustand liegt in den Laufzeitdateien von dataAccess().
@@ -384,21 +478,19 @@ function phpBench(dataDir) {
     : []);
   const watchState = () => read('watchdog_state.json') ?? {};
 
-  const state = yieldingAll({
+  // Die Eingaben sind hier schon geprüft (STATE_INPUT, STORAGE_INPUT).
+  const state = {
     ageBoxStatus(seconds) {
-      checkSeconds('ageBoxStatus', seconds);
       change('ageBoxStatus', 'latest_status.json', 'noch kein Status der Box gespeichert',
         (d) => { d.seen_at = ago(seconds); });
     },
     ageDevice(deviceId, seconds) {
-      checkSeconds('ageDevice', seconds);
       change('ageDevice', 'devices_seen.json', 'noch kein Board gesehen', (all) => {
         if (!all[deviceId]) throw stateError('ageDevice', `Board "${deviceId}" hat sich nie gemeldet`);
         all[deviceId].seen_at = ago(seconds);
       });
     },
     ageMute(idOrAll, seconds) {
-      checkSeconds('ageMute', seconds);
       change('ageMute', 'alarm_keys.json', 'keine Empfängerliste gespeichert', (list) => {
         const keys = (list.keys ?? []).filter((k) => k && typeof k === 'object');
         const targets = idOrAll === 'all' ? keys.filter((k) => k.muted) : keys.filter((k) => k.id === idOrAll);
@@ -411,38 +503,33 @@ function phpBench(dataDir) {
       });
     },
     ageDemo(seconds) {
-      checkSeconds('ageDemo', seconds);
       change('ageDemo', 'demo_mode.json', 'noch kein Demo-Zustand gespeichert', (d) => { d.changed_at = ago(seconds); });
     },
     ageCommand(which, seconds) {
-      checkSeconds('ageCommand', seconds);
-      if (!['created', 'delivered'].includes(which)) throw stateError('ageCommand', `which ist 'created' oder 'delivered', nicht "${which}"`);
       change('ageCommand', 'command_state.json', 'kein Befehl gespeichert', (d) => {
         if (!d.current) throw stateError('ageCommand', 'kein laufender Befehl');
         d.current[`${which}_at`] = ago(seconds);
       });
     },
     ageWatcher(seconds) {
-      checkSeconds('ageWatcher', seconds);
       change('ageWatcher', 'watcher_seen.json', 'der Außen-Wächter hat sich nie gemeldet', (d) => { d.seen_at = ago(seconds); });
     },
     ageMark(name, seconds) {
-      checkMark('ageMark', name);
-      checkSeconds('ageMark', seconds);
       files.write('watchdog_state.json', { ...watchState(), [name]: ago(seconds) });
     },
     ageRetry() {
       throw stateError('ageRetry', 'nur unter Go - PHP versucht eine gescheiterte Meldung beim nächsten Lauf erneut, eine Sperrfrist gibt es dort nicht');
     },
     ageMuteThrottle(seconds) {
-      checkSeconds('ageMuteThrottle', seconds);
       change('ageMuteThrottle', 'mute_throttle.json', 'keine Fehlversuche gezählt', (all) => {
         if (Object.keys(all).length === 0) throw stateError('ageMuteThrottle', 'keine Fehlversuche gezählt');
         for (const who of Object.keys(all)) all[who].first_at = ago(seconds);
       });
     },
-    ageLog(seconds, match = () => true) {
-      checkSeconds('ageLog', seconds);
+    ageLog(seconds, match) {
+      // Erst beide Dateien ausrechnen, dann schreiben: Wirft ein Eintrag,
+      // bleibt alles, wie es war.
+      const changed = [];
       for (const name of ['commands.log.1', 'commands.log']) {
         if (!isFile(name)) continue;
         const path = files.path(name);
@@ -451,50 +538,41 @@ function phpBench(dataDir) {
           if (!line.startsWith('{')) return line;
           const entry = JSON.parse(line);
           if (!match(entry)) return line;
+          if (typeof entry.log_at !== 'number' || !Number.isFinite(entry.log_at)) {
+            throw stateError('ageLog', `passender Eintrag ohne log_at als Zahl: ${line}`);
+          }
           entry.log_at -= seconds;
           return JSON.stringify(entry);
         });
-        writeFileSync(path, lines.join('\n'));
+        changed.push([path, lines.join('\n')]);
       }
+      for (const [path, text] of changed) writeFileSync(path, text);
     },
     ageSession() {
       throw stateError('ageSession', 'nicht unter PHP - die Sitzungen von PHP liegen außerhalb des Prüfstands');
     },
 
-    setWatcher({ seenAgo, barkFailedAt = 0 } = {}) {
-      checkSeconds('setWatcher', seenAgo);
+    setWatcher({ seenAgo, barkFailedAt }) {
       files.write('watcher_seen.json', { seen_at: ago(seenAgo), bark_failed_at: barkFailedAt });
     },
     setMarks(marks) {
       const next = watchState();
       for (const [name, value] of Object.entries(marks)) {
-        checkMark('setMarks', name);
         if (value === null) delete next[name]; else next[name] = value;
       }
       files.write('watchdog_state.json', next);
     },
     setCommand(patch) {
-      const unknown = Object.keys(patch).filter((name) => !COMMAND_FIELDS.has(name));
-      if (unknown.length) throw stateError('setCommand', `unbekannte Felder ${unknown.join(', ')}`);
       change('setCommand', 'command_state.json', 'kein Befehl gespeichert', (d) => {
         if (!d.current) throw stateError('setCommand', 'kein laufender Befehl');
         Object.assign(d.current, patch);
       });
     },
-    seedLog(entries, { rotated = false } = {}) {
-      if (!Array.isArray(entries) || entries.some((e) => !e || typeof e !== 'object' || Array.isArray(e))) {
-        throw stateError('seedLog', 'Einträge als Liste von Objekten');
-      }
+    seedLog(entries, { rotated }) {
       files.appendLog(entries, rotated ? 'commands.log.1' : 'commands.log');
     },
-    seedRecipients(entries, { version = 1, nextId } = {}) {
-      const maxId = checkRecipients(entries);
-      const next = nextId ?? maxId + 1;
-      if (!Number.isInteger(next) || next <= maxId) {
-        throw stateError('seedRecipients', `nextId ${next} muss größer sein als jede id`);
-      }
-      if (!Number.isInteger(version) || version < 0) throw stateError('seedRecipients', `Version ${version} ungültig`);
-      files.write('alarm_keys.json', { next_id: next, version, keys: entries });
+    seedRecipients(entries, { version, nextId }) {
+      files.write('alarm_keys.json', { next_id: nextId, version, keys: entries });
     },
 
     boxStatus() {
@@ -536,7 +614,7 @@ function phpBench(dataDir) {
       const stored = read('notify_settings.json') ?? {};
       return { global: stored.global ?? {}, types: stored.types ?? {} };
     },
-  });
+  };
 
   const remember = (name) => {
     if (!saved.has(name)) saved.set(name, isFile(name) ? readFileSync(files.path(name)) : null);
@@ -547,13 +625,9 @@ function phpBench(dataDir) {
     if (before) writeFileSync(files.path(name), before);
     else rmSync(files.path(name), { recursive: true, force: true });
   };
-  const partsOf = (helper, what) => {
-    if (!STORAGE_PARTS.includes(what)) throw new Error(`backend.storage.${helper}: unbekannter Teil "${what}" (${STORAGE_PARTS.join(', ')})`);
-    return PHP_STORAGE[what];
-  };
-  const storage = yieldingAll({
+  const storage = {
     fail(what) {
-      const names = partsOf('fail', what);
+      const names = PHP_STORAGE[what];
       if (failed.has(what)) return;
       if (what === 'durable' && isFile('alarm_keys.json')) {
         remember('alarm_keys.json.bak');
@@ -566,7 +640,7 @@ function phpBench(dataDir) {
       failed.add(what);
     },
     repair(what) {
-      const names = partsOf('repair', what);
+      const names = PHP_STORAGE[what];
       if (!failed.has(what)) return;
       for (const name of names) {
         files.unblock(name);
@@ -575,7 +649,7 @@ function phpBench(dataDir) {
       if (what === 'durable' && saved.has('alarm_keys.json.bak')) restore('alarm_keys.json.bak');
       failed.delete(what);
     },
-  });
+  };
 
   return {
     state,
@@ -750,8 +824,18 @@ export async function startBackend(options = {}) {
   const root = mkdtempSync(join(tmpdir(), 'fw-backend-'));
   const bark = await startBarkMock();
   let driver;
+  let state;
+  let storage;
   try {
     driver = await drivers[kind](root, bark, options);
+    // Dieselben Prüfungen der Eingaben für jeden Treiber (ABSICHTS-HELFER).
+    try {
+      state = contractHelpers(kind, 'state', driver.state, STATE_INPUT);
+      storage = contractHelpers(kind, 'storage', driver.storage, STORAGE_INPUT);
+    } catch (error) {
+      await driver.stop();
+      throw error;
+    }
   } catch (error) {
     await bark.stop();
     rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -760,9 +844,11 @@ export async function startBackend(options = {}) {
   if (options.config) await driver.configure(options.config);
   const backend = {
     ...driver,
+    state,
+    storage,
     root,
     bark,
-    // Die Dateien von PHP - nur für php-*.test.mjs.
+    // Die Dateien von PHP - unter tests/backend/ nur für php-*.test.mjs.
     data: dataAccess(driver.dataDir),
     async reset() {
       await driver.reset();

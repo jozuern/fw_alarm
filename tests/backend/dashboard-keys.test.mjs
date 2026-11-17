@@ -228,32 +228,32 @@ describe('Datenordner nicht beschreibbar', () => {
     { cookie: admin.cookie, 'x-csrf-token': await csrf() });
 
   it('keys_add: 500 mit lesbarer Meldung, nichts angelegt', async () => {
-    backend.data.block('keys.lock');
+    await backend.storage.fail('durable');
     try {
       await assertStorageError(await post({ action: 'keys_add', label: 'Anna', key: ANNA_KEY }));
     } finally {
-      backend.data.unblock('keys.lock');
+      await backend.storage.repair('durable');
     }
     assert.deepEqual((await list()).keys, []);
   });
 
   it('notify_set: 500 mit lesbarer Meldung, nichts gespeichert', async () => {
-    backend.data.block('notify.lock');
+    await backend.storage.fail('durable');
     try {
       await assertStorageError(await post({ action: 'notify_set', type: 'login_success', key: 'enabled', value: '1' }));
     } finally {
-      backend.data.unblock('notify.lock');
+      await backend.storage.repair('durable');
     }
     const notify = await admin.get('notify_list');
     assert.equal(notify.types.find((t) => t.key === 'login_success').enabled, false);
   });
 
   it('enqueue: 500 mit lesbarer Meldung, kein Befehl angelegt', async () => {
-    backend.data.block('command.lock');
+    await backend.storage.fail('durable');
     try {
       await assertStorageError(await post({ action: 'enqueue', type: 'TEST' }));
     } finally {
-      backend.data.unblock('command.lock');
+      await backend.storage.repair('durable');
     }
     assert.equal((await admin.get('status')).command, null);
   });

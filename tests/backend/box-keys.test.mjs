@@ -162,6 +162,23 @@ describe('Demo-Modus', () => {
     assert.deepEqual(rows(r.kv).map((x) => x[0]), ['annakey00001', 'bertkey00001']);
   });
 
+  it('Demo aus, obwohl er nie an war: gelingt und erhöht trotzdem jedes Mal die Version (Reparaturweg)', async () => {
+    await admin.addKey('Anna', 'annakey00001');
+    await admin.addKey('Bert', 'bertkey00001');
+    let v = await version();
+    for (let i = 0; i < 2; i++) {
+      await post({ action: 'demo_set', enabled: '0' });
+      assert.equal(await version(), v + 1, `${i + 1}. Mal aus`);
+      v += 1;
+      assert.equal((await admin.get('status')).demo.enabled, false);
+      // Die Box sieht die neue Version und holt darunter die volle Liste.
+      assert.equal((await b.poll()).kv.keys_version, String(v));
+      const r = await b.keys();
+      assert.equal(r.kv.version, String(v));
+      assert.deepEqual(rows(r.kv).map((x) => x[0]), ['annakey00001', 'bertkey00001']);
+    }
+  });
+
   it('ist der Demo-Empfänger stumm, gilt das auch in der Demo-Liste', async () => {
     const anna = await admin.addKey('Anna', 'annakey00001');
     await post({ action: 'keys_set_mute_volume', id: anna.id, volume: '2' });

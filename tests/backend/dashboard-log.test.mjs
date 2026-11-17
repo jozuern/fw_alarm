@@ -4,8 +4,8 @@
 // Ereignisse und alles, was sonst noch im Verlauf steht (z.B. die
 // Einzelergebnisse eines Alarms samt Bark-Keys), gehen nie hinaus. Dazu die
 // Filter (Alarme / Empfänger / System), die Obergrenze und die rotierte
-// Datei commands.log.1. Der Verlauf entsteht hier direkt in der Datei
-// (backend.data.appendLog), nicht über die Aktionen, die ihn sonst schreiben.
+// Datei commands.log.1. Der Verlauf entsteht hier direkt im Speicher
+// (backend.state.seedLog), nicht über die Aktionen, die ihn sonst schreiben.
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import { READER, now, session, startBackend } from './harness.mjs';
@@ -134,11 +134,11 @@ const UNKNOWN = { event: 'geheim_ereignis', key: SECRET_KEY, secret: 'nie zeigen
 
 // Den Verlauf mit allen Ereignissen füllen (Zeitstempel aufsteigend, das
 // unbekannte mittendrin). Liefert die Zeitstempel der Einträge.
-function seedAll() {
+async function seedAll() {
   const start = now() - 3600;
   const lines = EVENTS.map((e, i) => ({ ...e.raw, log_at: start + i * 10 }));
   lines.splice(10, 0, { ...UNKNOWN, log_at: start + 95 });
-  backend.data.appendLog(lines);
+  await backend.state.seedLog(lines);
   return EVENTS.map((_, i) => start + i * 10);
 }
 // Was der Browser für diese Ereignisse bekommen muss, neueste zuerst.
@@ -153,7 +153,7 @@ const labels = (entries) => entries.map((e) => e.label);
 
 describe('Ausgabe', () => {
   it('neueste zuerst, nur freigegebene Felder in festem Typ - nie das unbekannte Ereignis, nie die Einzelergebnisse', async () => {
-    const stamps = seedAll();
+    const stamps = await seedAll();
     const res = await admin.get('log_view', { limit: 100, filter: 'all' });
     assert.equal(res.http, 200);
     assert.equal(res.ok, true);
@@ -167,10 +167,28 @@ describe('Ausgabe', () => {
   });
 
   it('die Lese-Rolle bekommt dasselbe ohne die Einträge nur für den Admin', async () => {
-    const stamps = seedAll();
+    const stamps = await seedAll();
     const res = await reader.get('log_view', { limit: 100, filter: 'all' });
     assert.equal(res.ok, true);
     assert.deepEqual(res.entries, expected(stamps, (e) => !e.admin));
+  });
+
+  it('ein Abbruch ohne Grund kommt ohne message; ein Relaisalarm mit eigener source behält sie', async () => {
+    const at = now() - 100;
+    await backend.state.seedLog([
+      // Abgebrochen im Dashboard: ohne cancel_reason.
+      { event: 'cancelled', command: { id: 21, type: 'ALARM', state: 'cancelled', created_by: 'admin', cancelled_by: 'admin' }, log_at: at },
+      // Demo-Alarm über die Box: source steht im Eintrag.
+      { event: 'relay_alarm', info: '17.11. 10:07', device_id: 'fw-box-1', source: 'remote', log_at: at + 1 },
+    ]);
+    for (const who of [admin, reader]) {
+      const res = await who.get('log_view', { limit: 100, filter: 'all' });
+      assert.equal(res.ok, true);
+      assert.deepEqual(res.entries, [
+        { at: at + 1, event: 'relay_alarm', info: '17.11. 10:07', source: 'remote' },
+        { at, event: 'cancelled', id: 21, type: 'ALARM', by: 'admin' },
+      ]);
+    }
   });
 
   it('server_time liegt bei (für "vor 5 min" unabhängig von der Uhr des Browsers)', async () => {
@@ -185,20 +203,20 @@ describe('Ausgabe', () => {
 describe('Filter', () => {
   for (const filter of ['alarm', 'keys', 'system']) {
     it(`${filter}: nur die Einträge dieser Gruppe`, async () => {
-      const stamps = seedAll();
+      const stamps = await seedAll();
       const res = await admin.get('log_view', { limit: 100, filter });
       assert.deepEqual(res.entries, expected(stamps, (e) => e.cat === filter));
     });
   }
 
   it('alarm_core: nur die Versand-Ereignisse (ohne die Befehle der Demo-Alarme)', async () => {
-    const stamps = seedAll();
+    const stamps = await seedAll();
     const res = await admin.get('log_view', { limit: 100, filter: 'alarm_core' });
     assert.deepEqual(res.entries, expected(stamps, (e) => e.core));
   });
 
   it('ein unbekannter Filter zählt als "alles"', async () => {
-    const stamps = seedAll();
+    const stamps = await seedAll();
     for (const filter of ['gibtesnicht', '', 'ALARM']) {
       const res = await admin.get('log_view', { limit: 100, filter });
       assert.deepEqual(res.entries, expected(stamps), `filter "${filter}"`);
@@ -207,7 +225,7 @@ describe('Filter', () => {
 
   it('Befehle (created, late_ack ...) vom Typ ALARM gehören zu "alarm", andere zu "system"', async () => {
     const at = now() - 100;
-    backend.data.appendLog([
+    await backend.state.seedLog([
       { event: 'created', command: { id: 1, type: 'ALARM', created_by: 'admin' }, log_at: at },
       { event: 'late_ack', id: 1, result: 'executed', type: 'ALARM', log_at: at + 1 },
       { event: 'created', command: { id: 2, type: 'TEST', created_by: 'admin' }, log_at: at + 2 },
@@ -221,7 +239,7 @@ describe('Filter', () => {
 
   it('die Lese-Rolle: Einträge nur für den Admin fallen VOR dem Abzählen heraus', async () => {
     const at = now() - 1000;
-    backend.data.appendLog([
+    await backend.state.seedLog([
       ...Array.from({ length: 5 }, (_, i) => keyAdded(i + 1, at + i)),
       ...Array.from({ length: 30 }, (_, i) => ({ event: 'setting_changed', by: 'admin', label: 'x', value: `${i}`, log_at: at + 10 + i })),
     ]);
@@ -237,7 +255,7 @@ describe('Filter', () => {
 describe('Menge', () => {
   it('limit gilt von 1 bis 100', async () => {
     const at = now() - 1000;
-    backend.data.appendLog(Array.from({ length: 120 }, (_, i) => keyAdded(i + 1, at + i)));
+    await backend.state.seedLog(Array.from({ length: 120 }, (_, i) => keyAdded(i + 1, at + i)));
     const count = async (limit, filter = 'all') => (await admin.get('log_view', { limit, filter })).entries.length;
     assert.equal(await count(7), 7);
     assert.equal(await count(0), 1);
@@ -249,8 +267,8 @@ describe('Menge', () => {
 
   it('reicht die aktuelle Datei nicht, kommen die Einträge der rotierten Datei commands.log.1 dazu', async () => {
     const at = now() - 1000;
-    backend.data.appendLog([keyAdded(1, at), keyAdded(2, at + 1), keyAdded(3, at + 2)], 'commands.log.1');
-    backend.data.appendLog([keyAdded(4, at + 3), keyAdded(5, at + 4)]);
+    await backend.state.seedLog([keyAdded(1, at), keyAdded(2, at + 1), keyAdded(3, at + 2)], { rotated: true });
+    await backend.state.seedLog([keyAdded(4, at + 3), keyAdded(5, at + 4)]);
     for (const filter of ['all', 'keys']) {
       assert.deepEqual(labels((await admin.get('log_view', { limit: 5, filter })).entries),
         ['K5', 'K4', 'K3', 'K2', 'K1'], filter);

@@ -105,10 +105,10 @@ describe('Liste der Meldungen (notify_list)', () => {
     offline = optionOf(typeOf(res, 'box_offline'), 'offline_after_s');
     assert.equal(offline.value, '777');
     assert.deepEqual(offline.choices.map((c) => c.value), ['300', '600', '777', '900', '1800', '3600', '7200']);
-    assert.equal(offline.choices.find((c) => c.value === '777').text, '777 s (aus config.php)');
+    assert.equal(offline.choices.find((c) => c.value === '777').text, `777 s (aus ${backend.words.configFile})`);
     const demo = optionOf(typeOf(res, 'demo_reminder'), 'after_s');
     assert.equal(demo.value, '5000');
-    assert.equal(demo.choices.find((c) => c.value === '5000').text, 'nach 5000 s (aus config.php)');
+    assert.equal(demo.choices.find((c) => c.value === '5000').text, `nach 5000 s (aus ${backend.words.configFile})`);
   });
 });
 
@@ -133,7 +133,7 @@ describe('Einstellen (notify_set)', () => {
       assert.equal(res.message, message, `${type}/${key}=${value}`);
     }
     assert.deepEqual(await list(), before);
-    assert.equal(backend.data.exists('notify_settings.json'), false);
+    assert.deepEqual(await backend.state.notifyStored(), { global: {}, types: {} }, 'nichts gespeichert');
     assert.deepEqual((await admin.log('all')).filter((e) => e.event === 'notify_changed'), []);
   });
 
@@ -267,10 +267,13 @@ describe('Meldungen bei der Anmeldung', () => {
     await setOk('login_success', 'enabled', '1');
     const ADMIN_TEXT = "Admin 'admin' hat sich angemeldet (von 127.0.0.1).";
     const READER_TEXT = "Lese-Benutzer 'leser' hat sich angemeldet (von 127.0.0.1).";
-    // Meldet sich account an: welche Texte kamen beim Status-Key an?
-    const loginTexts = async (account) => {
+    // Meldet sich account an: welche Texte kamen beim Status-Key an? Der
+    // Server darf antworten, bevor er sendet - deshalb erst auf die erwarteten
+    // count Meldungen warten, dann, ob danach noch eine kommt.
+    const loginTexts = async (account, count) => {
       const mark = backend.bark.mark();
       assert.equal((await rawLogin(backend, account.user, account.password)).status, 302);
+      if (count > 0) await waitFor(() => toStatus(mark).length >= count, `${count} Meldung(en) "Anmeldung"`);
       await settle();
       return toStatus(mark).map((r) => {
         assert.equal(r.fields.title, 'Dashboard: Anmeldung');
@@ -279,14 +282,14 @@ describe('Meldungen bei der Anmeldung', () => {
         return r.fields.body.replace(STAMP, '');
       });
     };
-    assert.deepEqual(await loginTexts(ADMIN), [ADMIN_TEXT], 'alle: Admin');
-    assert.deepEqual(await loginTexts(READER), [READER_TEXT], 'alle: Lese-Benutzer');
+    assert.deepEqual(await loginTexts(ADMIN, 1), [ADMIN_TEXT], 'alle: Admin');
+    assert.deepEqual(await loginTexts(READER, 1), [READER_TEXT], 'alle: Lese-Benutzer');
     await setOk('login_success', 'who', 'admin');
-    assert.deepEqual(await loginTexts(ADMIN), [ADMIN_TEXT], 'nur Admin: Admin');
-    assert.deepEqual(await loginTexts(READER), [], 'nur Admin: Lese-Benutzer');
+    assert.deepEqual(await loginTexts(ADMIN, 1), [ADMIN_TEXT], 'nur Admin: Admin');
+    assert.deepEqual(await loginTexts(READER, 0), [], 'nur Admin: Lese-Benutzer');
     await setOk('login_success', 'who', 'readonly');
-    assert.deepEqual(await loginTexts(ADMIN), [], 'nur Lese-Benutzer: Admin');
-    assert.deepEqual(await loginTexts(READER), [READER_TEXT], 'nur Lese-Benutzer: Lese-Benutzer');
+    assert.deepEqual(await loginTexts(ADMIN, 0), [], 'nur Lese-Benutzer: Admin');
+    assert.deepEqual(await loginTexts(READER, 1), [READER_TEXT], 'nur Lese-Benutzer: Lese-Benutzer');
 
     // Ein Fehlversuch ist keine Anmeldung.
     const mark = backend.bark.mark();
@@ -331,7 +334,7 @@ describe('Im Verlauf', () => {
 
   it('für die Lese-Rolle fällt notify_changed VOR dem Abzählen heraus', async () => {
     const at = now() - 1000;
-    backend.data.appendLog([
+    await backend.state.seedLog([
       ...Array.from({ length: 5 }, (_, i) => ({
         event: 'key_added', by: 'admin', label: `K${i + 1}`, key: 'kkkk...', log_at: at + i,
       })),

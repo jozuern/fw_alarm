@@ -8,11 +8,9 @@
 // classic.php, die Aktion status und abgelehnte Aufrufe - keinen Status-Push
 // der Box.
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import {
-  ADMIN, OTHER_PASSWORD_HASH, READER, now, postForm, rawLogin, request, session, startBackend,
+  ADMIN, OTHER_PASSWORD_HASH, READER, postForm, rawLogin, request, session, startBackend,
 } from './harness.mjs';
 
 let backend;
@@ -50,10 +48,6 @@ async function loginCookie() {
 }
 const csrfOf = async (cookie) => JSON.parse((await status(cookie)).text).csrf;
 const logout = (cookie, fields) => postForm(`${backend.base}/index.php`, { action: 'logout', ...fields }, { cookie });
-// Sitzungsdateien, wo der Prüfstand sie sehen kann (Go); unter PHP liegen sie
-// außerhalb des Prüfstands - dann gibt es hier nichts zu prüfen.
-const sessionFiles = () => (backend.sessionsDir && existsSync(backend.sessionsDir)
-  ? readdirSync(backend.sessionsDir) : []);
 
 describe('Ohne Anmeldung keine Sitzung', () => {
   it('die Anmeldeseite setzt kein Cookie und ist nicht zwischenspeicherbar', async () => {
@@ -61,7 +55,6 @@ describe('Ohne Anmeldung keine Sitzung', () => {
     assert.equal(r.status, 200);
     assert.deepEqual(cookies(r), []);
     assert.match(r.headers.get('cache-control'), /no-store/);
-    assert.deepEqual(sessionFiles(), []);
   });
 
   it('eine anonyme API-Anfrage: 401 {"ok":false}, kein Cookie, nicht zwischenspeicherbar', async () => {
@@ -70,14 +63,12 @@ describe('Ohne Anmeldung keine Sitzung', () => {
     assert.deepEqual(JSON.parse(r.text), { ok: false });
     assert.deepEqual(cookies(r), []);
     assert.match(r.headers.get('cache-control'), /no-store/);
-    assert.deepEqual(sessionFiles(), []);
   });
 
   it('eine erfundene Sitzungs-ID: 401, weder ein neues noch ein Lösch-Cookie', async () => {
     const r = await status(`${NAME}=abcdefabcdefabcdefabcdefabcdef12`);
     assert.equal(r.status, 401);
     assert.deepEqual(cookies(r), []);
-    assert.deepEqual(sessionFiles(), []);
   });
 
   it('ein Fehlversuch setzt kein Cookie', async () => {
@@ -85,13 +76,26 @@ describe('Ohne Anmeldung keine Sitzung', () => {
     assert.equal(r.status, 200);
     assert.ok(r.text.includes(FAILED));
     assert.deepEqual(cookies(r), []);
-    assert.deepEqual(sessionFiles(), []);
   });
 
   it('classic.php ohne Anmeldung: Weiterleitung ohne Cookie', async () => {
     const r = await request(`${backend.base}/classic.php`);
     assert.equal(r.status, 302);
     assert.deepEqual(cookies(r), []);
+  });
+
+  it('classic.php (alte Lesezeichen): 302 auf index.php - auch angemeldet, nie mit Cookie', async () => {
+    const cookie = await loginCookie();
+    for (const headers of [{}, { cookie }]) {
+      const r = await request(`${backend.base}/classic.php`, { headers });
+      assert.equal(r.status, 302, JSON.stringify(headers));
+      const location = r.headers.get('location');
+      assert.ok(location === 'index.php' || (/^https?:\/\//.test(location) && location.endsWith('/index.php')),
+        `Weiterleitung auf index.php, war "${location}"`);
+      assert.deepEqual(cookies(r), [], JSON.stringify(headers));
+    }
+    // Die Sitzung bleibt davon unberührt.
+    assert.equal((await status(cookie)).status, 200);
   });
 });
 
@@ -194,17 +198,8 @@ describe('Sitzung an die Zugangsdaten gebunden', () => {
     }
     const cookie = await loginCookie();
     assert.equal((await status(cookie)).status, 200);
-    // Als wäre die letzte Anfrage 12 Std und eine Minute her.
-    let edited = 0;
-    for (const name of sessionFiles()) {
-      const path = join(backend.sessionsDir, name);
-      const data = JSON.parse(readFileSync(path, 'utf8'));
-      if (!('last_seen' in data)) continue;
-      data.last_seen = now() - IDLE_MAX - 60;
-      writeFileSync(path, JSON.stringify(data));
-      edited++;
-    }
-    assert.ok(edited > 0, 'keine Sitzungsdatei mit last_seen gefunden');
+    // Als wäre die letzte Anfrage 13 Std her.
+    await backend.state.ageSession(cookie, 13 * 3600);
     assert.equal((await status(cookie)).status, 401);
   });
 });
@@ -307,6 +302,17 @@ describe('Hinter einem Proxy', () => {
     assert.equal(r.status, 302);
     assert.equal(isSecure(find(r)), false);
     assert.equal(r.headers.get('strict-transport-security'), null);
+  });
+
+  it('nicht vom eingetragenen Proxy: auch X-Forwarded-For zählt nicht - die Bremse trifft den Absender selbst', async () => {
+    await backend.configure({ ...PROXY, trusted_proxies: ['10.0.0.1'], login_max_failures: 2 });
+    for (const forwarded of ['198.51.100.1', '198.51.100.2']) {
+      const r = await rawLogin(backend, ADMIN.user, 'falsch', { 'x-forwarded-for': forwarded });
+      assert.equal(r.status, 200, `Fehlversuch "von" ${forwarded}`);
+    }
+    const other = await rawLogin(backend, ADMIN.user, ADMIN.password, { 'x-forwarded-for': '198.51.100.3' });
+    assert.equal(other.status, 429, 'eine vorgegebene Adresse umgeht die Sperre nicht');
+    assert.deepEqual(cookies(other), []);
   });
 
   it('die Sperre trifft den LETZTEN Eintrag von X-Forwarded-For; ein vorangestellter ändert nichts', async () => {

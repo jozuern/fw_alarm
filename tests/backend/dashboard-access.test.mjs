@@ -19,13 +19,11 @@ before(async () => { backend = await startBackend(); });
 after(async () => { await backend.stop(); });
 beforeEach(async () => {
   await backend.reset();
-  // Ein Empfänger (id 1), direkt in die Liste geschrieben: Die Aktionen
-  // hätten so jemanden, an dem sie etwas ändern oder dem sie etwas senden.
-  backend.data.write('alarm_keys.json', {
-    next_id: 2,
-    version: 1,
-    keys: [{ id: 1, label: 'Anna', key: 'annakey00001', added_at: 1, mute_token: 'AnnasToken12' }],
-  });
+  // Ein Empfänger (id 1), direkt in die Liste gelegt: Die Aktionen hätten so
+  // jemanden, an dem sie etwas ändern oder dem sie etwas senden.
+  await backend.state.seedRecipients(
+    [{ id: 1, label: 'Anna', key: 'annakey00001', added_at: 1, mute_token: 'AnnasToken12' }],
+    { version: 1, nextId: 2 });
   admin = await session(backend);
   reader = await session(backend, READER);
 });
@@ -104,7 +102,7 @@ function assertRejected(r, httpStatus, code, what) {
 async function assertNothingHappened() {
   await settle();
   assert.equal(backend.bark.requests.length, 0, 'nichts an Bark');
-  assert.deepEqual(backend.data.log(), [], 'nichts im Verlauf');
+  assert.deepEqual(await backend.state.log(), [], 'nichts im Verlauf');
 }
 
 describe('Ohne Anmeldung', () => {
@@ -160,6 +158,22 @@ describe('CSRF-Token', () => {
   it('die Prüfung kommt vor der Rolle: Lese-Rolle ohne Token bekommt 403 "csrf"', async () => {
     for (const action of NAMES.filter((a) => ACTIONS[a].csrf)) {
       assertRejected(await postAs(reader.cookie, action), 403, 'csrf', action);
+    }
+    await assertNothingHappened();
+  });
+
+  it('das Token gilt auch als Formularfeld csrf (statt X-CSRF-Token): die Lese-Rolle kommt damit bis zur Rolle', async () => {
+    const token = (await reader.get('status')).csrf;
+    assert.ok(token, 'CSRF-Token der Lese-Rolle');
+    const asField = (action, csrf) => postForm(`${backend.base}/dashboard_api.php`,
+      { action, ...FIELDS[action], csrf }, { cookie: reader.cookie });
+    for (const action of NAMES.filter((a) => ACTIONS[a].csrf)) {
+      // Richtiges Token im Feld: die CSRF-Prüfung ist bestanden, es scheitert erst an der Rolle.
+      assertRejected(await asField(action, token), 403, 'readonly', `${action} (Feld)`);
+      // Dasselbe als Kopfzeile.
+      assertRejected(await postAs(reader.cookie, action, { 'x-csrf-token': token }), 403, 'readonly', `${action} (Kopfzeile)`);
+      // Falsches Token im Feld: weiter "csrf".
+      assertRejected(await asField(action, 'falsch'), 403, 'csrf', `${action} (falsches Feld)`);
     }
     await assertNothingHappened();
   });
