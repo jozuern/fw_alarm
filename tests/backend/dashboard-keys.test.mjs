@@ -5,11 +5,11 @@
 // erhöht die Listen-Version nicht; die Telefonnummer sieht nur der Admin und
 // sie steht nie im Verlauf. Dazu: Lässt sich der Datenordner gar nicht
 // beschreiben, zeigt das Dashboard eine lesbare Meldung - ohne Pfad.
-// Einige Fälle rufen den Kurzbefehl-Link auf (api/mute.php) oder legen einen
-// Befehl an (enqueue).
+// Einige Fälle fragen die Liste wie die Box ab (api/keys.php), rufen den
+// Kurzbefehl-Link auf (api/mute.php) oder legen einen Befehl an (enqueue).
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
-import { READER, postForm, request, session, startBackend } from './harness.mjs';
+import { READER, box, postForm, request, session, startBackend } from './harness.mjs';
 
 let backend;
 let admin;
@@ -21,7 +21,9 @@ beforeEach(async () => {
 });
 
 const ANNA_KEY = 'annakey00001';
-const ANNA_KEY_NEW = 'annakey00002';
+// Annas neuer Key (neues iPhone) - mit anderem Anfang, damit auch die
+// maskierte Form ("neue...") zeigt, dass ersetzt wurde.
+const ANNA_KEY_NEW = 'neuekey00001';
 const MAX_KEY = 'maxkey000001';
 const PHONE_KEY = 'phonekey0001';
 const STORAGE = {
@@ -88,7 +90,7 @@ describe('Umbenennen', () => {
 });
 
 describe('Key ersetzen', () => {
-  it('keys_replace_key: neue Version; Name, Telefon und Kurzbefehl-Token bleiben', async () => {
+  it('keys_replace_key: der neue Key gilt, neue Version; Name, Telefon und Kurzbefehl-Token bleiben', async () => {
     const anna = await annaWithPhone();
     const v0 = await version();
     const r = await admin.post({ action: 'keys_replace_key', id: anna.id, key: ANNA_KEY_NEW });
@@ -99,7 +101,15 @@ describe('Key ersetzen', () => {
     assert.equal(k.mute_token, anna.mute_token, 'Token bleibt');
     assert.equal(k.phone, '+49 171 1234567', 'Telefon bleibt');
     assert.equal(k.label, 'Anna B.', 'Name bleibt');
-    assert.equal(k.key_masked, 'anna...');
+    assert.equal(k.key_masked, 'neue...', 'der neue Key ist eingetragen');
+
+    // Die Box bekommt unter der neuen Version den neuen Key - den alten nicht mehr.
+    const forBox = await box(backend).keys();
+    assert.equal(forBox.status, 200);
+    assert.equal(forBox.kv.version, String(after.version));
+    assert.equal(forBox.kv.count, '1');
+    assert.equal(forBox.kv.key0, ANNA_KEY_NEW);
+    assert.equal(forBox.text.includes(ANNA_KEY), false, 'alter Key nicht mehr in der Liste der Box');
   });
 
   it('doppelter Key, ungültiger Key und unbekannte id werden abgelehnt', async () => {
