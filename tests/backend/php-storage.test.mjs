@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import {
-  BACKEND_KIND, STATUS_KEY, WATCHER_TOKEN, box, now, postForm, request, session, sha256, startBackend,
+  BACKEND_KIND, STATUS_KEY, WATCHER_TOKEN, box, now, postForm, request, session, settle, sha256, startBackend,
 } from './harness.mjs';
 
 let backend;
@@ -595,6 +595,63 @@ describe('Nur PHP: Ablage im Datenordner', { skip: BACKEND_KIND !== 'php' && 'nu
     const handEntry = (id, key, extra = {}) => ({
       id, label: `Hand ${id}`, key, added_at: now() - 1000, mute_token: `handtoken${String(id).padStart(3, '0')}`, ...extra,
     });
+    const MUTE_MAX = 43200;            // mute_max_seconds ab Werk (12 h)
+    async function ok(promise) {
+      const res = await promise;
+      assert.equal(res.ok, true, JSON.stringify(res));
+      return res;
+    }
+    const mute = (entry) => ok(admin.post({ action: 'keys_mute', id: entry.id, muted: '1' }));
+
+    // Nur EINE Datei klemmt (nicht ihre Sperre): So läuft das Schreiben unter
+    // gehaltener Sperre und scheitert erst dort - der Zweig, den
+    // storage.fail('durable'/'history') nicht erreicht (er sperrt auch die
+    // Sperrdatei).
+    describe('Alarm: was an Bark geht', () => {
+      it('der Alarm geht auch raus, wenn sich die Liste gerade nicht speichern lässt', async () => {
+        const anna = await admin.addKey('Anna', KEY_A);
+        await mute(anna);
+        // Überfällig stumm; lesbar bleibt die Liste über ihre Sicherung, speichern
+        // lässt sie sich nicht (an ihrer Stelle liegt ein Ordner).
+        const state = backend.data.read('alarm_keys.json');
+        state.keys[0].muted_at = now() - MUTE_MAX - 100;
+        backend.data.write('alarm_keys.json.bak', state);
+        backend.data.block('alarm_keys.json');
+        try {
+          const mark = backend.bark.mark();
+          const res = await alarm();
+          assert.equal(res.http, 200);
+          assert.equal(res.ok, true);
+          assert.equal(res.results[0].muted, false, 'für den Alarm zählt er schon als laut');
+          assertAlarm(KEY_A, mark, res);
+          // Gespeichert wurde nichts - dann gibt es auch keine Info "wieder laut",
+          // und das Dashboard zeigt die Zeile als überfällig (die Box alarmiert
+          // ihn bis zum Speichern weiter stumm).
+          await settle();
+          assert.equal(backend.bark.since(mark).length, 1);
+          assert.equal(backend.data.read('alarm_keys.json.bak').keys[0].muted, true);
+          const row = (await admin.keys()).keys[0];
+          assert.equal(row.muted, false);
+          assert.equal(row.mute_overdue, true);
+        } finally {
+          backend.data.unblock('alarm_keys.json');
+        }
+      });
+
+      it('der Alarm geht auch raus, wenn sich der Verlauf nicht schreiben lässt', async () => {
+        await admin.addKey('Anna', KEY_A);
+        backend.data.block('commands.log');
+        try {
+          const mark = backend.bark.mark();
+          const res = await alarm();
+          assert.equal(res.http, 200);
+          assert.equal(res.ok, true);
+          assertAlarm(KEY_A, mark, res);
+        } finally {
+          backend.data.unblock('commands.log');
+        }
+      });
+    });
 
     describe('Alarm: wer ihn bekommt', () => {
       it('Liste UND Sicherung unlesbar: ebenfalls die Not-Liste', async () => {
@@ -686,6 +743,8 @@ describe('Nur PHP: Ablage im Datenordner', { skip: BACKEND_KIND !== 'php' && 'nu
     // Annas Link (bzw. derselbe Link mit einem anderen Token).
     const link = (state, token = anna.mute_token) => muteUrl({ t: token, state });
     const call = (state, headers = {}) => request(link(state), { headers });
+    const entryOf = async (id = anna.id) => (await admin.keys()).keys.find((k) => k.id === id);
+    const keyEvents = async (...events) => (await admin.log('keys')).filter((e) => events.includes(e.event));
     // Gezählte Fehlversuche aller Absender (0 = die Bremse hat nichts gezählt).
     const countedFailures = () => Object.values(backend.data.read('mute_throttle.json') ?? {})
       .reduce((sum, who) => sum + Number(who?.count ?? 0), 0);
@@ -733,6 +792,32 @@ describe('Nur PHP: Ablage im Datenordner', { skip: BACKEND_KIND !== 'php' && 'nu
           assert.equal((await request(link('on', 'gibtesnicht12'))).status, 404, `Fehlversuch ${i + 1}`);
         }
         assert.equal((await request(link('on', 'gibtesnicht12'))).status, 429);
+      });
+
+      // Nur die Liste klemmt, nicht ihre Sperre (siehe alarm-send oben).
+      it('Liste lässt sich nicht speichern: 500, nichts geschaltet, kein Eintrag im Verlauf', async () => {
+        // Lesbar bleibt die Liste über ihre Sicherung; an der Stelle der Liste
+        // selbst liegt ein Ordner - das Ersetzen der Datei scheitert.
+        backend.data.write('alarm_keys.json.bak', backend.data.read('alarm_keys.json'));
+        backend.data.block('alarm_keys.json');
+        try {
+          const r = await call('on');
+          assert.equal(r.status, 500);
+          assert.equal(r.text, TEXT.storage);
+          const page = await call('on', BROWSER);
+          assert.equal(page.status, 500);
+          assertPage(page);
+          assert.match(page.text, /Nicht gespeichert/);
+        } finally {
+          backend.data.unblock('alarm_keys.json');
+        }
+        assert.equal(countedFailures(), 0);
+        assert.equal((await entryOf()).muted, false);
+        assert.deepEqual(await keyEvents('key_muted', 'key_unmuted'), []);
+
+        // Sobald das Speichern wieder geht, schaltet derselbe Link.
+        assert.equal((await call('on')).text, TEXT.on);
+        assert.equal((await entryOf()).muted, true);
       });
     });
   });

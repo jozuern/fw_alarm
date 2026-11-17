@@ -51,7 +51,10 @@ const countedFailures = () => backend.state.muteFailures();
 // Annas Stummschaltung begann vor s Sekunden; liefert den gespeicherten Beginn.
 async function annaMutedSince(seconds) {
   await backend.state.ageMute(anna.id, seconds);
-  return (await backend.state.recipient(anna.id)).muted_at;
+  const since = (await backend.state.recipient(anna.id)).muted_at;
+  // Wirklich so alt - sonst prüften die genauen Vergleiche danach nichts.
+  assert.ok(now() - since >= seconds - 1 && now() - since <= seconds + 5, `muted_at ${since}, erwartet vor ${seconds} s`);
+  return since;
 }
 // Die Parameter der Umleitung (Location ist relativ zur aufgerufenen Adresse).
 const redirectOf = (r, from) => new URL(r.headers.get('location'), from);

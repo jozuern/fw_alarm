@@ -833,7 +833,8 @@ export async function startBackend(options = {}) {
       state = contractHelpers(kind, 'state', driver.state, STATE_INPUT);
       storage = contractHelpers(kind, 'storage', driver.storage, STORAGE_INPUT);
     } catch (error) {
-      await driver.stop();
+      // Scheitert auch das Anhalten, zählt trotzdem der eigentliche Fehler.
+      try { await driver.stop(); } catch { /* bewusst verschluckt: der Vertragsfehler sagt, was los ist */ }
       throw error;
     }
   } catch (error) {

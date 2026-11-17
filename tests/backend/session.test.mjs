@@ -198,8 +198,8 @@ describe('Sitzung an die Zugangsdaten gebunden', () => {
     }
     const cookie = await loginCookie();
     assert.equal((await status(cookie)).status, 200);
-    // Als wäre die letzte Anfrage 13 Std her.
-    await backend.state.ageSession(cookie, 13 * 3600);
+    // Als wäre die letzte Anfrage 12 Std und eine Minute her.
+    await backend.state.ageSession(cookie, IDLE_MAX + 60);
     assert.equal((await status(cookie)).status, 401);
   });
 });
