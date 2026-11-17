@@ -103,8 +103,9 @@ Kurzbefehl-Link, Wächter, Alarm-Versand – prüft
 eigenes Dashboard (`php -S`, leerer Datenordner im Temp-Ordner, freier Port)
 und eine Bark-Attrappe im Testprozess (`harness.mjs`), spricht nur HTTP und
 fasst den Datenordner über `backend.data` an. Sie sind der Maßstab für die
-geplante Go-Fassung (Treiber über `FW_BACKEND`): nur Beobachtbares prüfen, nie
-interne Namen. Eine neue oder geänderte Server-Regel bekommt dort ihren Test –
+geplante Go-Fassung (Treiber über `FW_BACKEND`; Design – Neubau innen, außen
+gleich – in `docs/superpowers/specs/2026-11-17-go-server-neubau-design.md`,
+Plan daneben unter `plans/`): nur Beobachtbares prüfen, nie interne Namen. Eine neue oder geänderte Server-Regel bekommt dort ihren Test –
 für die alte UND die neue Firmware (`box().oldStatus()`).
 
 Und `cloud_watcher/`: der **Außen-Wächter** – ein Bash-Skript, das ein
