@@ -24,8 +24,8 @@ const bridgeDir = join(tmp, 'bridge');
 const bridgeDownDir = join(tmp, 'bridge-down');
 const procs = [];
 
-// PHP-Aufruf wie in tests/dashboard/sandbox/start.sh: Unter Windows ist cURL
-// nicht von selbst geladen.
+// PHP-Aufruf wie im Prüfstand (tests/backend/harness.mjs): Unter Windows ist
+// cURL nicht von selbst geladen.
 function phpArgs() {
   const mods = execFileSync('php', ['-m'], { encoding: 'utf8' }).toLowerCase();
   if (/^curl$/m.test(mods)) return [];

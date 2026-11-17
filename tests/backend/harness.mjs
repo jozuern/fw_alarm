@@ -41,7 +41,7 @@ export async function waitFor(probe, what = 'Bedingung', timeoutMs = 8000) {
 // Für "es darf NICHTS kommen": so lange warten, wie ein Nachlauf höchstens braucht.
 export const settle = () => sleep(400);
 
-// ---- Zugänge des Prüfstands (wie tests/dashboard/sandbox) ------------------
+// ---- Zugänge des Prüfstands -------------------------------------------------
 export const MACHINE_TOKEN = 'box-token';
 export const WATCHER_TOKEN = 'watcher-token';
 export const STATUS_KEY = 'statuskey0001';

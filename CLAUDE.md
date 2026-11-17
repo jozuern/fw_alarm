@@ -965,11 +965,13 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   pro Gerät in `localStorage`, jeder Zugriff in try/catch.
   Tests: `node --test "tests/dashboard/*.test.mjs"` (Logik, Anfragen, Store,
   Kontrast, ortsneutrale Texte samt der Wächter-Texte aus PHP – die
-  Ordner-Form `node --test tests/dashboard/` scheitert unter Node 24); Ende-zu-Ende: `node tests/dashboard/e2e/run.mjs <name>` startet das
-  Dashboard über denselben Prüfstand wie die Server-Tests (`tests/backend/harness.mjs`,
-  `FW_BACKEND` wählt die Fassung; leerer Datenordner pro Lauf, README in
-  `tests/dashboard/sandbox/`; Szenarien in `tests/dashboard/e2e/scenarios/`,
-  Headless Chrome über CDP; von Hand: `node tests/backend/serve.mjs`). Neue Farbklassen gehören in `pairs()` von
+  Ordner-Form `node --test tests/dashboard/` scheitert unter Node 24);
+  Ende-zu-Ende: `node tests/dashboard/e2e/run.mjs <name>` startet das
+  Dashboard über denselben Prüfstand wie die Server-Tests
+  (`tests/backend/harness.mjs`, `FW_BACKEND` wählt die Fassung; leerer
+  Datenordner pro Lauf, README in `tests/dashboard/e2e/`; Szenarien in
+  `tests/dashboard/e2e/scenarios/`, Headless Chrome über CDP; von Hand:
+  `node tests/backend/serve.mjs`). Neue Farbklassen gehören in `pairs()` von
   `tests/dashboard/contrast.test.mjs` (WCAG AA in beiden Designs).
 - `REMOTE_HTTP_TIMEOUT_MS` nicht wieder unter ~4 s drücken: Der TLS-Handshake
   ESP32↔Synology braucht typischerweise 1–3 s; zu knappe Timeouts führen zu

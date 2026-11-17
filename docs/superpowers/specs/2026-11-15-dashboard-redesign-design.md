@@ -2,6 +2,22 @@
 
 Stand: 2026-11-15 · Status: freigegeben (2026-11-15), umgesetzt und am 2026-11-16 aufs NAS ausgerollt (Stand `bf1a7c8`). Maßgeblich für den heutigen Stand ist CLAUDE.md; dieses Dokument beschreibt die Planung.
 
+Was sich seitdem geändert hat (die Abschnitte unten zeigen weiter den Stand
+der Planung):
+
+- **16.11.2026:** Das Dashboard läuft nicht mehr auf dem NAS, sondern auf dem
+  Server (Oracle-VM, `server/README.md`). Wo unten „NAS“ den Ort des
+  Dashboards meint, ist heute der Server gemeint; ausgerollt wird mit
+  `server/deploy.sh`, nicht mehr per Kopie aufs NAS (Abschnitt 9.6).
+- **17.11.2026:** Die Rückfall-Ansicht ist entfernt. `classic.php` leitet nur
+  noch mit 302 auf `index.php` um, `assets/classic/` ist gelöscht, der Link
+  „Alte Ansicht öffnen“ und der zweite Ausweg in den Ersatzanzeigen entfallen
+  (es bleibt „Neu laden“). Das betrifft die Abschnitte 4 (Rückfall-Ansicht),
+  7 („Konto“), 8 (Satz zu `classic.php`), 9.1 (Dateiliste), 9.4 und 9.5.
+- **17.11.2026:** Die Chrome-Szenarien starten ihr Dashboard selbst über den
+  Prüfstand der Server-Tests (`tests/dashboard/e2e/README.md`); die Sandbox
+  aus Bash-Skripten gibt es nicht mehr.
+
 ## 1. Absicht und Warum
 
 Das NAS-Dashboard (`nas_dashboard/`) bekommt ein komplett neues Frontend:

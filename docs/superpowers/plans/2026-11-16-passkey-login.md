@@ -1,5 +1,7 @@
 # Passkey Login Implementation Plan
 
+> **Status 2026-11-17: parked — do not execute as written.** Passkeys are built only after the dashboard server has been rebuilt in Go (design: `docs/superpowers/specs/2026-11-17-go-server-neubau-design.md`), and then in Go; this plan is rewritten at that point. Still valid and to be carried over: the rules in **Global Constraints** and **Review Focus** (RP ID never from the `Host` header, user verification required, adding a passkey needs the account password, a password change invalidates that account's passkeys, an unreadable passkey store never locks anyone out, the password login stays). Outdated: every PHP file and function named below, the library `lbuchs/WebAuthn`, and all test commands — the Bash sandbox (`tests/dashboard/sandbox/setup.sh`, `SANDBOX_DIR`) and the scenarios `api-session`/`api-settings`/`api-keys` no longer exist (local setup today: `tests/dashboard/e2e/README.md`, server tests: `tests/backend/`).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Sign in to the dashboard with a passkey (Face ID on the iPhone, Windows Hello on the PC); the password stays as fallback.
