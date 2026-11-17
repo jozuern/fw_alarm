@@ -77,9 +77,13 @@ if [ "$mode" = public ]; then
 fi
 if [ -z "$miss" ]; then pass headers; else fail headers "fehlt:$miss"; fi
 
-# --- classic --------------------------------------------------------------
+# --- classic (alte Lesezeichen: nur noch 302 auf index.php) ---------------
 req "$base/classic.php"
-if [ "$code" = 302 ]; then pass classic; else fail classic "$(why)"; fi
+loc="$(hdr Location)"
+case "$code $loc" in
+    "302 index.php" | "302 "*/index.php) pass classic ;;
+    *) fail classic "$(why) Location: ${loc:-fehlt}" ;;
+esac
 
 # --- api-401 --------------------------------------------------------------
 req "$base/dashboard_api.php?action=status"

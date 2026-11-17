@@ -1,17 +1,14 @@
 // Umstellung auf die neue Oberfläche: index.php zeigt die neue Anmeldeseite
 // (Fehlversuch: Text, Benutzername bleibt, Fokus im Passwortfeld) und danach
-// die neue App; classic.php ist der vorübergehende Rückfall auf die bisherige
-// Oberfläche (ohne Anmeldung -> index.php, REAL ALARM geht dort weiter über
-// die Bark-Attrappe); next.php und die alten Dateien gibt es nicht mehr;
+// die neue App; die alte Oberfläche ist entfernt: classic.php leitet nur noch
+// auf index.php um (ohne und mit Anmeldung, alte Lesezeichen landen so in der
+// App); next.php, assets/classic/ und die alten Dateien gibt es nicht mehr;
 // manifest.json + Icons für den Home-Bildschirm; Abmelden in den
 // Einstellungen führt zur Anmeldeseite, das alte Sitzungs-Cookie gilt nicht
 // mehr. Dazu: Design „Hell“ greift schon auf der Anmeldeseite (ohne main.js),
 // die Seite geht ohne JavaScript, und die Bestätigungsseite der
 // Kurzbefehl-Links (api/mute.php) nutzt das neue Stylesheet.
-// Jeder Lauf startet mit leeren Daten: Der eigene Empfänger („swtch…“) wird am
-// Ende wieder gelöscht, der Demo-Modus bleibt aus.
-import { apiSession } from '../cdp.mjs';
-import { pushBox, barkLog } from '../sandbox.mjs';
+// Jeder Lauf startet mit leeren Daten; das Szenario legt nichts an.
 
 const q = (s) => JSON.stringify(s);
 const text = (page, sel) => page.eval(`(document.querySelector(${q(sel)})?.textContent || '').replace(/\\s+/g, ' ').trim()`);
@@ -46,16 +43,11 @@ async function sessionCookie(page, base) {
   return cookies.find((c) => c.name === COOKIE) || null;
 }
 
-export default async function ({ browser, base, backend, assert, shot }) {
-  const admin = await apiSession(base, 'admin', 'test');
-  const u = Date.now().toString(36);
-  const KEY = 'swtch' + u;
-  let keyId = null;
-
+export default async function ({ browser, base, assert, shot }) {
   // ---- Ohne Browser: weg / umgeleitet / ausgeliefert ------------------------
   const next = await fetch(`${base}/next.php`, { redirect: 'manual' });
   assert(next.status === 404, 'next.php gibt es nicht mehr, war HTTP ' + next.status);
-  for (const old of ['assets/app.js', 'assets/style.css']) {
+  for (const old of ['assets/app.js', 'assets/style.css', 'assets/classic/app.js', 'assets/classic/style.css']) {
     const r = await fetch(`${base}/${old}`, { redirect: 'manual' });
     assert(r.status === 404, `${old} gibt es nicht mehr, war HTTP ${r.status}`);
   }
@@ -154,44 +146,18 @@ export default async function ({ browser, base, backend, assert, shot }) {
     assert(await metaOf('apple-mobile-web-app-status-bar-style') === 'black-translucent', 'App: Statusleiste black-translucent');
     assert(await metaOf('apple-mobile-web-app-title') === 'Alarm-Wächter', 'App: Home-Bildschirm-Titel');
 
-    // ---- classic.php: bisherige Oberfläche, REAL ALARM über die Attrappe ------
-    assert((await admin.post({ action: 'demo_set', enabled: '0' })).ok, 'Demo aus');
-    const known = new Set((await admin.get('keys_list')).keys.map((k) => k.id));
-    const added = await admin.post({ action: 'keys_add', label: 'Umstellung', key: KEY });
-    assert(added.ok === true, 'keys_add: ' + JSON.stringify(added));
-    keyId = (await admin.get('keys_list')).keys.find((k) => !known.has(k.id)).id;
-    await pushBox(backend, admin);
-
-    await page.viewport({ width: 1280, height: 900, mobile: false, scale: 1 });
+    // ---- classic.php leitet auf index.php um (auch angemeldet) ----------------
+    const authed = await sessionCookie(page, base);
+    assert(authed, 'angemeldet: Sitzungs-Cookie vorhanden');
+    const classicAuthed = await fetch(`${base}/classic.php`, { redirect: 'manual', headers: { cookie: `${COOKIE}=${authed.value}` } });
+    assert(classicAuthed.status === 302 && /(^|\/)index\.php$/.test(classicAuthed.headers.get('location') || ''),
+      'classic.php angemeldet -> index.php, war ' + classicAuthed.status + ' ' + classicAuthed.headers.get('location'));
+    // Altes Lesezeichen im Browser: landet in der App, nicht in einer alten Ansicht.
     await open(page, `${base}/classic.php`);
-    await page.waitFor(`!!document.querySelector('[data-state]')`);
-    const assets = JSON.parse(await page.eval(`JSON.stringify({
-      css: Array.from(document.querySelectorAll('link[rel="stylesheet"]')).map((l) => l.getAttribute('href')),
-      js: Array.from(document.scripts).map((s) => s.getAttribute('src')),
-      logout: document.querySelector('form.logout-form')?.getAttribute('action')
-    })`));
-    assert(assets.css.length === 1 && /^assets\/classic\/style\.css\?v=\d{6,}$/.test(assets.css[0]), 'classic: Stylesheet ' + assets.css);
-    assert(assets.js.length === 1 && /^assets\/classic\/app\.js\?v=\d{6,}$/.test(assets.js[0]), 'classic: Skript ' + assets.js);
-    assert(assets.logout === 'index.php', 'classic: Abmelden postet an index.php, war ' + assets.logout);
-    // Zurück zur neuen Oberfläche: Knopf „Neue Ansicht“ in der Kopfzeile.
-    assert(await page.eval(`(() => { const b = Array.from(document.querySelectorAll('.topbar form[method="get"] button.ghost-button'))
-      .find((x) => x.textContent.trim() === 'Neue Ansicht');
-      return !!b && b.form.getAttribute('action') === 'index.php'; })()`), 'classic: Knopf „Neue Ansicht“ -> index.php');
-    // Erst wenn die Liste (samt Demo-Stand) da ist, kennt die Frage den Modus.
-    await page.waitFor(`(document.querySelector('[data-keys-list]')?.textContent || '').includes('Umstellung')`, 10000);
-    const barkBefore = barkLog(backend).length;
-    await page.click('[data-command-alarm]');
-    await page.waitFor(`!!document.querySelector('.arm-confirm button.danger')`);
-    await page.click('.arm-confirm button.danger');
-    await page.waitFor(`(() => { const r = document.querySelector('[data-alarm-result]');
-      return !!r && !r.hidden && r.textContent.includes('REAL ALARM') && !r.textContent.includes('wird gesendet'); })()`, 60000);
-    const sent = barkLog(backend).slice(barkBefore).filter((e) => e.key === KEY);
-    assert(sent.length >= 1 && sent[0].fields.level === 'critical',
-      'classic: REAL ALARM erreicht die Attrappe: ' + JSON.stringify(sent) + ' – Ergebnis: ' + await text(page, '[data-alarm-result]'));
-    await shot(page, 'classic');
+    await page.waitFor(`!!document.querySelector('#app .tabbar')`, 10000);
+    assert(await page.eval(`location.pathname.endsWith('/index.php')`), 'classic.php im Browser -> index.php, war ' + await page.eval('location.pathname'));
 
     // ---- Abmelden in den Einstellungen -> Anmeldeseite, Cookie ungültig -------
-    await page.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
     await open(page, `${base}/index.php#/einstellungen`);
     await page.waitFor(`!!document.querySelector('#set-logout button')`, 10000);
     const before = await sessionCookie(page, base);
@@ -206,7 +172,8 @@ export default async function ({ browser, base, backend, assert, shot }) {
     const oldStatus = await fetch(`${base}/dashboard_api.php?action=status`, { headers: { cookie: `${COOKIE}=${before.value}` } });
     assert(oldStatus.status === 401, 'altes Cookie gilt nicht mehr, war HTTP ' + oldStatus.status);
     const classicAfter = await fetch(`${base}/classic.php`, { redirect: 'manual', headers: { cookie: `${COOKIE}=${before.value}` } });
-    assert(classicAfter.status === 302, 'classic.php nach dem Abmelden -> Anmeldung, war ' + classicAfter.status);
+    assert(classicAfter.status === 302 && /(^|\/)index\.php$/.test(classicAfter.headers.get('location') || ''),
+      'classic.php nach dem Abmelden -> index.php, war ' + classicAfter.status + ' ' + classicAfter.headers.get('location'));
 
     // ---- Design „Hell“ schon auf der Anmeldeseite (kein main.js dort) ---------
     await page.eval(`localStorage.setItem('fwAlarm.theme', 'light')`);
@@ -246,6 +213,5 @@ export default async function ({ browser, base, backend, assert, shot }) {
     assert(problems.length === 0, 'keine Konsolenfehler:\n' + problems.join('\n'));
   } finally {
     try { await page.eval(`localStorage.removeItem('fwAlarm.theme')`); } catch { /* Seite evtl. weg */ }
-    if (keyId !== null) await admin.post({ action: 'keys_delete', id: String(keyId) });
   }
 }

@@ -206,7 +206,7 @@ function pairs() {
     add(theme, 'page', 'Einstellungen: Segment in Gruppe', '--text', [...CARD('page'), '--seg-track'], AA, SET_GROUP);
     add(theme, 'page', 'Einstellungen: Segment in Gruppe aktiv', '--text', [...CARD('page'), '--seg-track', '--seg-on'], AA, SET_GROUP);
     add(theme, 'page', 'Einstellungen: Auswahl-Wert/Erklärung/Zusatz', '--text-2', CARD('page'));
-    add(theme, 'page', 'Einstellungen: Abmelden/Alte Ansicht', '--accent-text', CARD('page'));
+    add(theme, 'page', 'Einstellungen: Abmelden', '--accent-text', CARD('page'));
     add(theme, 'page', 'Einstellungen: Haken (Symbol)', '--accent-text', CARD('page'), LARGE);
     add(theme, 'page', 'Einstellungen: Warnung in Zeile', '--warn-text', CARD('page'));
     add(theme, 'page', 'Einstellungen: Liste beschädigt in Zeile', '--crit-text', CARD('page'));

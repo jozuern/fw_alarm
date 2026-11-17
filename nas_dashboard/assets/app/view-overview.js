@@ -335,13 +335,13 @@
   // ---- Seite --------------------------------------------------------------------
   // Jeder Teil hat seine eigene Fehlergrenze: Stürzt eine Anzeige ab (Status,
   // Hinweise, Prüfliste, rechte Spalte, Ergebnis), bleibt „Auslösen“ stehen;
-  // stürzt „Auslösen“ selbst ab, nennt der Ersatz die alte Ansicht.
+  // stürzt „Auslösen“ selbst ab, sagt der Ersatz das ausdrücklich.
   // Feste keys: Rückt „Auslösen“ nach oben, verschiebt Preact den Block
   // (eine Rückmeldung darin bleibt stehen), statt ihn neu aufzubauen.
   function Part({ text, children }) {
     return html`<${ui.Boundary} inline=${true} text=${text}>${children}</${ui.Boundary}>`;
   }
-  const ACTIONS_BROKEN = '„Auslösen“ konnte nicht angezeigt werden. Manuell alarmieren geht über die alte Ansicht (classic.php, Knopf „REAL ALARM“).';
+  const ACTIONS_BROKEN = '„Auslösen“ konnte nicht angezeigt werden – bitte neu laden.';
 
   FW.views.Overview = function Overview({ wide }) {
     const raise = ui.useDerived((d) => !!d.verdict.raiseActions);

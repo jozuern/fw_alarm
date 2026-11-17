@@ -149,8 +149,7 @@ $authed = resume_dashboard_session();
 $csrf = $authed ? ensure_csrf() : '';
 
 // Ausgabe: Angemeldet die App-Hülle der Oberfläche, sonst die Anmeldeseite
-// (beides in lib/shell.php). Die bisherige Oberfläche liegt vorübergehend
-// als classic.php daneben.
+// (beides in lib/shell.php). classic.php leitet nur noch hierher um.
 if ($authed) {
     $role = dashboard_role();
     $user = (string)($_SESSION['user'] ?? '');

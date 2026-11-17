@@ -179,11 +179,14 @@ export default async function ({ browser, base, backend, assert, shot }) {
     assert(await pressedSeg(page, '#set-theme') === 'Dunkel', 'Design: Dunkel gewählt');
     assert(await page.eval(`!!document.querySelector('#set-alert .switch')`), 'Hinweis im Browser (Chrome kann Notification)');
     assert((await text(page, '#set-account')).includes('admin'), 'Konto: admin');
-    assert(await page.eval(`document.querySelector('#set-classic a')?.getAttribute('href') === 'classic.php'`), '„Alte Ansicht öffnen“ → classic.php');
+    // Konto: nur noch Anmeldung und Abmelden - keine „Alte Ansicht“ mehr.
+    const accountRows = await page.eval(`Array.from(document.querySelectorAll('.set-g-account .row')).map((r) => r.id)`);
+    assert(JSON.stringify(accountRows) === JSON.stringify(['set-account', 'set-logout']), 'Konto-Zeilen: ' + JSON.stringify(accountRows));
+    assert(await page.eval(`!document.querySelector('a[href="classic.php"]') && !/alte Ansicht/i.test(document.querySelector('main').textContent)`), 'kein Link auf die alte Ansicht');
     const heads = await page.eval(`Array.from(document.querySelectorAll('main .group-head')).map((h) => h.textContent.trim())`);
     assert(JSON.stringify(heads) === JSON.stringify(['Empfänger', 'Box', 'Dieses Gerät', 'Konto']), 'Gruppen: ' + JSON.stringify(heads));
     assert(await page.eval(`document.documentElement.scrollWidth <= innerWidth`), 'kein waagrechtes Scrollen');
-    for (const sel of ['#set-notify .row-main', '#set-theme .seg', '#set-alert .switch', '#set-logout .row-main', '#set-classic .row-main']) {
+    for (const sel of ['#set-notify .row-main', '#set-theme .seg', '#set-alert .switch', '#set-logout .row-main']) {
       const h = await hitHeight(page, sel);
       assert(h >= 44, `Tippfläche ${sel}: ${h} px`);
     }

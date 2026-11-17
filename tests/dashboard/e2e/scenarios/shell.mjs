@@ -284,8 +284,10 @@ export default async function ({ browser, base, backend, assert, shot }) {
 
   // ---- Notfälle beim Start: nie eine leere Seite ohne Ausweg ----------------
   // Absichtliche Fehler: Ihre Konsolenmeldungen zählen hier nicht.
-  const exits = `(() => { const hrefs = Array.from(document.querySelectorAll('#app a')).map((a) => a.getAttribute('href'));
-    return hrefs.includes('index.php') && hrefs.includes('classic.php'); })()`;
+  // Einziger Ausweg ist „Neu laden“ - die alte Ansicht gibt es nicht mehr.
+  const exits = `(() => { const app = document.getElementById('app');
+    const hrefs = Array.from(app.querySelectorAll('a')).map((a) => a.getAttribute('href'));
+    return JSON.stringify(hrefs) === '["index.php"]' && !/alte Ansicht/i.test(app.textContent); })()`;
   const broken = await browser.newPage();
   await broken.send('Network.enable');
   await broken.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
@@ -326,7 +328,7 @@ export default async function ({ browser, base, backend, assert, shot }) {
   assert(await broken.eval(`!!document.querySelector('.ov-alarm') && !document.querySelector('.ov-alarm').disabled && !!document.querySelector('.status-card')`), 'Alarm-Knopf und Status-Karte bleiben');
   assert(await broken.eval(`(() => { const c = document.querySelector('.boundary-card');
     const hrefs = Array.from(c.querySelectorAll('a')).map((a) => a.getAttribute('href'));
-    return hrefs.includes('index.php') && hrefs.includes('classic.php'); })()`), 'Ersatz mit Neu laden und alter Ansicht');
+    return JSON.stringify(hrefs) === '["index.php"]' && !/alte Ansicht/i.test(c.textContent); })()`), 'Ersatz nur mit „Neu laden“');
   await broken.eval(`document.querySelector('.boundary-card').scrollIntoView({ block: 'center' })`);
   await shot(broken, 'part-error');
   await broken.eval('FW.ui.Row = window.__Row');

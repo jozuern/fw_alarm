@@ -597,14 +597,12 @@
   // Ein Fehler in EINEM Teil darf nicht die ganze Oberfläche leeren: um jede
   // Ansicht eine Grenze (main.js), auf der Übersicht zusätzlich um jeden Teil
   // - so bleibt „Auslösen“ stehen, wenn z.B. die Prüfliste abstürzt. Jede
-  // Ersatzanzeige bietet einen Ausweg: „Neu laden“ (zur Übersicht) und die
-  // alte Ansicht (classic.php), über die sich ebenfalls alarmieren lässt.
-  // Gleiche Ziele wie die Ersatzanzeige in lib/shell.php und main.js.
+  // Ersatzanzeige bietet einen Ausweg: „Neu laden“ (zur Übersicht).
+  // Gleiches Ziel wie die Ersatzanzeige in lib/shell.php und main.js.
   // inline: kleiner Kasten in der Seite statt einer ganzen Seite.
   function FallbackLinks() {
     return html`<div class="fallback-links">
       <a class="btn btn-tinted btn-block" href="index.php">Neu laden</a>
-      <a class="btn btn-tinted btn-block" href="classic.php">Alte Ansicht (classic.php)</a>
     </div>`;
   }
 

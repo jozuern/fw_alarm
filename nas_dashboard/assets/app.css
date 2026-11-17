@@ -323,8 +323,8 @@ button {
 
 /* Ersatzanzeige in #app (lib/shell.php): steht da, bis main.js die App
    zeichnet - meist nur einen Augenblick, dann nur „wird geladen…“ in Grau.
-   Lädt ein Skript nicht, erscheinen nach 2 s Hinweis und Ausweg (Neu laden,
-   alte Ansicht); bei reduzierter Bewegung ebenso (nur die Dauer schrumpft).
+   Lädt ein Skript nicht, erscheinen nach 2 s Hinweis und Ausweg (Neu laden);
+   bei reduzierter Bewegung ebenso (nur die Dauer schrumpft).
    .is-error: die Meldung von main.js, wenn der Start scheitert - sofort. */
 .boot {
   max-width: 420px;
@@ -1703,7 +1703,7 @@ a.band-inner:focus-visible {
 }
 
 /* Ersatz einer Ansicht bzw. eines Teils der Übersicht (ui.Fallback): Satz
-   und Ausweg (Neu laden, alte Ansicht). */
+   und Ausweg (Neu laden). */
 .boundary {
   margin: 0 4px 16px;
   color: var(--text-2);
@@ -2704,7 +2704,7 @@ a.band-inner:focus-visible {
   margin: 8px 0 0;
 }
 
-/* Aktionen in der Konto-Gruppe (Abmelden, Alte Ansicht) in Akzentfarbe. */
+/* Aktionen in der Konto-Gruppe (Abmelden) in Akzentfarbe. */
 .set-action .row-label {
   color: var(--accent-text);
 }

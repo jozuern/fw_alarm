@@ -281,7 +281,6 @@
     return html`<${ui.Group} header="Konto" class="set-g-account">
       <${ui.Row} id="set-account" label="Angemeldet als" value=${`${user || '–'} · ${readOnly ? 'nur lesen' : 'Admin'}`}/>
       <${ui.Row} id="set-logout" class="set-action" label="Abmelden" chevron=${false} onClick=${logout}/>
-      <${ui.Row} id="set-classic" class="set-action" label="Alte Ansicht öffnen" sub="die bisherige Oberfläche – solange es sie noch gibt" href="classic.php"/>
     </${ui.Group}>`;
   }
 

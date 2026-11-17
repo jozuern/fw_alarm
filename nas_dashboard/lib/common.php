@@ -1170,8 +1170,7 @@ function read_command_log_tail(array $config, int $limit = 25): array
 // sehen darf und WELCHE Felder überhaupt an den Browser gehen (Whitelist).
 // Ein neues Ereignis braucht einen Eintrag hier (sonst liefert log_view es
 // nicht aus) und einen Text in assets/app/logic.js (describeLogEntry) - sonst
-// nichts. (Die eingefrorene alte Ansicht classic.php zeigt neue Ereignisse
-// ohne eigenen Text an.)
+// nichts.
 //   cat    Filter "Alarme/Empfänger/System": 'alarm' | 'keys' | 'system' |
 //          'command' (= 'alarm', wenn es um einen ALARM-Befehl geht - also
 //          einen Demo-Alarm über die Box -, sonst 'system'). Ohne diesen

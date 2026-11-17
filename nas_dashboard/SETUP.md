@@ -75,8 +75,7 @@ config.example.php -> config.php
 `index.php`**. `index.php` bindet `lib/shell.php` ein – käme sie zuerst, fände
 eine neue `index.php` kurz die alte bzw. fehlende Hülle, und die Seite bliebe
 leer oder zeigte einen PHP-Fehler. Bleibt nach einem Update trotzdem etwas
-hängen: Die Übersicht bietet dann selbst „Neu laden“ und die alte Ansicht an
-(siehe Abschnitt 7).
+hängen: Die Übersicht bietet dann selbst „Neu laden“ an (siehe Abschnitt 7).
 
 ### Datenordner (`data_dir`)
 
@@ -410,23 +409,16 @@ Design (Dunkel/Hell/System) und „Hinweis im Browser bei Störung“ stellt jed
 Gerät unter Einstellungen → „Dieses Gerät“ für sich ein (gespeichert im
 Browser, nicht auf dem NAS).
 
-### Alte Ansicht (`classic.php`)
+### Ausweg und alte Adresse (`classic.php`)
 
-Für eine Übergangszeit gibt es die bisherige Oberfläche noch unter
-`classic.php` (Einstellungen → Konto → „Alte Ansicht öffnen“) – falls in der
-neuen etwas klemmt. Sie ist eingefroren (`assets/classic/`), nutzt dieselbe
-Anmeldung und dieselben Daten und wird nach einigen Wochen entfernt; bis dahin
-gehören `classic.php` und `assets/classic/` beim Kopieren aufs NAS mit dazu.
-Oben rechts führt „Neue Ansicht“ zurück.
+Startet die Oberfläche nicht oder stürzt ein Teil ab, zeigt sie selbst „Neu
+laden“ an – nie eine leere Seite.
 
-**Direkte Notfall-Adresse:** `https://…/fw_alarm/classic.php` – am besten
-auch als Lesezeichen. Sie geht unabhängig davon, ob die neue Oberfläche
-startet (auch dort lässt sich manuell alarmieren). Startet die neue
-Oberfläche nicht oder stürzt ein Teil ab, zeigt sie selbst „Neu laden“ und
-„Alte Ansicht (classic.php)“ an – nie eine leere Seite.
+Die alte Ansicht ist entfernt: `classic.php` leitet nur noch auf `index.php`
+um, damit alte Lesezeichen weiter ankommen.
 
-Mit der Umstellung entfallen `next.php`, `assets/app.js` und
-`assets/style.css`. Ein Kopieren aufs NAS löscht sie nicht – nach dem Update
+Entfallen sind `next.php`, `assets/app.js`, `assets/style.css` und der Ordner
+`assets/classic/`. Ein Kopieren aufs NAS löscht sie nicht – nach dem Update
 dort von Hand entfernen.
 
 ## Design

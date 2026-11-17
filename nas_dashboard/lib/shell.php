@@ -148,16 +148,15 @@ function render_app_page(array $config, string $csrf, string $role, string $user
 <?php // Ersatzanzeige, bis main.js die App zeichnet (meist nur einen Augenblick).
       // Lädt ein Skript nicht (oder bricht ab), bleibt sie stehen - statt
       // einer leeren schwarzen Seite ohne Alarm-Knopf: Hinweis und Links
-      // erscheinen nach kurzer Zeit (app.css, .boot), „Neu laden“ und die
-      // alte Ansicht gehen auch ohne JavaScript. Gleiche Ziele wie
-      // showBootError() in main.js und ui.Fallback. ?>
+      // erscheinen nach kurzer Zeit (app.css, .boot), „Neu laden“ geht auch
+      // ohne JavaScript. Gleiches Ziel wie showBootError() in main.js und
+      // ui.Fallback. ?>
 <div id="app">
   <div class="boot">
     <p class="boot-title">Alarm-Wächter wird geladen…</p>
-    <p class="boot-help">Bleibt diese Seite so stehen, bitte neu laden. Klappt es weiter nicht: die alte Ansicht öffnen – auch dort lässt sich alarmieren.</p>
+    <p class="boot-help">Bleibt diese Seite so stehen, bitte neu laden.</p>
     <div class="boot-links">
       <a class="btn btn-tinted btn-block" href="index.php">Neu laden</a>
-      <a class="btn btn-tinted btn-block" href="classic.php">Alte Ansicht (classic.php)</a>
     </div>
   </div>
 </div>

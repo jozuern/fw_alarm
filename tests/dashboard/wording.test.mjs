@@ -14,13 +14,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
 const L = loadScripts(['nas_dashboard/assets/app/logic.js']).FW.logic;
 
-// Alles, was ausgeliefert wird - ohne die eingefrorene alte Oberfläche
-// (classic.php, assets/classic/) und ohne die Vendor-Bibliothek.
+// Alles, was ausgeliefert wird - ohne die Vendor-Bibliothek.
 const dash = path.join(root, 'nas_dashboard');
 const sources = [
   ...fs.readdirSync(path.join(dash, 'assets', 'app')).filter((f) => f.endsWith('.js')).map((f) => `assets/app/${f}`),
   ...fs.readdirSync(path.join(dash, 'api')).filter((f) => f.endsWith('.php')).map((f) => `api/${f}`),
-  'lib/common.php', 'lib/shell.php', 'cron/check_offline.php', 'dashboard_api.php', 'index.php',
+  'lib/common.php', 'lib/shell.php', 'cron/check_offline.php', 'dashboard_api.php', 'index.php', 'classic.php',
 ].map((f) => `nas_dashboard/${f}`);
 
 // Zeilen, die nur Kommentar sind, zählen nicht (dort darf die Geschichte stehen).

@@ -557,8 +557,7 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   (7) `heartbeat_ok=0` zählt
   nur als Fehler, wenn `last_heartbeat` nicht `nie` ist — Schwellen für
   `box_health` stehen doppelt (`cron/check_offline.php` und
-  `assets/app/logic.js`; solange es sie gibt, auch die eingefrorene
-  `assets/classic/app.js`), alle Stellen anpassen.
+  `assets/app/logic.js`), beide Stellen anpassen.
   Der Kurzbefehl-Link leitet Browser nach dem Umschalten per 303 auf
   `mute.php?done=…` um (ohne Token, schaltet nichts), damit Neu-Laden nicht
   erneut schaltet. NICHT einstellbar ist, was die Firmware selbst sendet
@@ -660,8 +659,8 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   kommen aus `dashboard_cookie_options()`; Logout löscht auch
   das Cookie; die Status-Antwort liefert das aktuelle CSRF-Token mit, damit
   ein alter Tab nach Neu-Login nicht am veralteten Token scheitert;
-  eine Sitzung gibt es NUR für Angemeldete: `index.php`, `dashboard_api.php`
-  und `classic.php` setzen sie über `resume_dashboard_session()` fort (nur
+  eine Sitzung gibt es NUR für Angemeldete: `index.php` und
+  `dashboard_api.php` setzen sie über `resume_dashboard_session()` fort (nur
   wenn ein Sitzungs-Cookie mitkommt; eine nicht angemeldete Sitzung wird
   sofort verworfen, ohne Lösch-Cookie – das überschriebe bei einer
   verspäteten Anfrage das Cookie einer Neuanmeldung), angelegt wird sie erst
@@ -840,12 +839,11 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   `public-base`, `mute-max`). Home-Bildschirm-App: `manifest.json` +
   `assets/icons/` (+ `apple-touch-icon.png`) + Apple-meta-Tags
   (`black-translucent`), bewusst KEIN Service Worker (das Notfall-Werkzeug
-  lädt immer frisch). `classic.php` + `assets/classic/` = die eingefrorene
-  alte Oberfläche als VORÜBERGEHENDER Rückfall (Link in Einstellungen →
-  Konto; ohne Anmeldung → `index.php`, Abmelden postet an `index.php`) –
-  nicht weiterentwickeln, wird nach einigen Wochen in einer eigenen Aufgabe
-  entfernt. Die Kurzbefehl-Seite (`mute_page()` in `api/mute.php`) nutzt
-  `app.css` mit dem Rahmen der Anmeldeseite.
+  lädt immer frisch). Die alte Oberfläche ist entfernt: `classic.php` leitet
+  nur noch mit 302 auf `index.php` um (alte Lesezeichen; ohne Sitzung und
+  ohne Cookie), `assets/classic/` gibt es nicht mehr. Die Kurzbefehl-Seite
+  (`mute_page()` in `api/mute.php`) nutzt `app.css` mit dem Rahmen der
+  Anmeldeseite.
   Aufbau (bewusst so, nicht „aufräumen“): vier Bereiche Übersicht/Empfänger/
   Verlauf/Einstellungen – unter 900 px Tab-Leiste unten, ab 900 px
   Seitenleiste; Adressen per Hash (`#/uebersicht`, `#/empfaenger/3`,
@@ -935,14 +933,14 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Sekundentakt für „veraltet“ hängt daran). Abgemeldet mit Ergebnis:
   „Neu anmelden“ in Status- und Ergebnis-Karte (erst nach dem Versand).
   **Nie ohne Ausweg**: `#app` enthält in `lib/shell.php` eine statische
-  Ersatzanzeige („wird geladen…“, nach 2 s „Neu laden“ und „Alte Ansicht
-  (classic.php)“), die `main.js` erst vor dem ersten Zeichnen leert; fehlt
+  Ersatzanzeige („wird geladen…“, nach 2 s „Neu laden“), die `main.js` erst
+  vor dem ersten Zeichnen leert; fehlt
   ein Baustein (Preact, Store, UI, Übersicht), zeigt `main.js` statt der App
-  eine Meldung mit denselben Links (ohne Preact gebaut). Fehlergrenzen
-  (`ui.Boundary`/`ui.Fallback`, immer mit beiden Links): um die ganze App,
+  eine Meldung mit demselben Link (ohne Preact gebaut). Fehlergrenzen
+  (`ui.Boundary`/`ui.Fallback`, immer mit „Neu laden“): um die ganze App,
   um jede Ansicht und auf der Übersicht um jeden Teil – stürzt z.B. die
-  Prüfliste ab, bleibt „Auslösen“ bedienbar. `classic.php` hat oben „Neue
-  Ansicht“ zurück zu `index.php`. „Automatisch wieder laut nach“ fragt beim
+  Prüfliste ab, bleibt „Auslösen“ bedienbar.
+  „Automatisch wieder laut nach“ fragt beim
   Verkürzen nach, wenn dadurch Stumme sofort laut würden
   (`logic.muteShortenImpact()`, Regel wie `mute_is_stale()`).
   Eine überfällige, nicht gespeicherte

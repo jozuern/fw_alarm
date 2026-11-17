@@ -6,8 +6,8 @@
   // Fehlt ein Baustein (Datei nicht geladen, Skriptfehler beim Laden), bliebe
   // sonst eine leere schwarze Seite - ohne Alarm-Knopf und ohne Ausweg (die
   // Home-Bildschirm-App hat keinen Neu-laden-Knopf). Dann statt der App eine
-  // schlichte Meldung mit „Neu laden“ und der alten Ansicht (classic.php),
-  // gebaut ohne Preact. Dieselbe Meldung bei einem Fehler in boot() (unten).
+  // schlichte Meldung mit „Neu laden“, gebaut ohne Preact. Dieselbe Meldung
+  // bei einem Fehler in boot() (unten).
   // Aufbau wie die Ersatzanzeige in lib/shell.php (Klassen .boot*).
   function showBootError(reason) {
     if (root.console && root.console.error) root.console.error('Alarm-Wächter: Start abgebrochen –', reason);
@@ -28,10 +28,9 @@
     const box = make('div', 'boot is-error');
     box.setAttribute('role', 'alert');
     box.appendChild(make('p', 'boot-title', 'Die Oberfläche konnte nicht starten.'));
-    box.appendChild(make('p', 'boot-help', 'Bitte neu laden. Klappt es weiter nicht: die alte Ansicht öffnen – auch dort lässt sich alarmieren.'));
+    box.appendChild(make('p', 'boot-help', 'Bitte neu laden.'));
     const links = make('div', 'boot-links');
     links.appendChild(link('index.php', 'Neu laden'));
-    links.appendChild(link('classic.php', 'Alte Ansicht (classic.php)'));
     box.appendChild(links);
     el.textContent = '';
     el.appendChild(box);
