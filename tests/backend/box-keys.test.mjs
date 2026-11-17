@@ -1,11 +1,12 @@
 // Empfängerliste für die Box (api/keys.php): Klartext-Format, was die Box
 // NICHT bekommt (Namen, Tokens, Telefon), Stumm-Zustand, Demo-Modus,
-// Bereinigung wie in der Firmware, Rückgriff auf die Sicherung - und dass
-// Versionen und ids nie rückwärts laufen. Die Box speichert, was hier kommt,
-// und alarmiert danach genau diese Keys.
+// Grenzen der Liste - und dass Versionen und ids nie rückwärts laufen. Die
+// Box speichert, was hier kommt, und alarmiert danach genau diese Keys.
+// (Von Hand verdorbene Listen, der Rückgriff auf die Sicherung und die
+// Versionen danach gelten nur für PHP: php-storage.test.mjs.)
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
-import { box, now, session, startBackend } from './harness.mjs';
+import { box, session, startBackend } from './harness.mjs';
 
 let backend;
 let admin;
@@ -130,8 +131,8 @@ describe('Stumm-Zustand (Arbeitsmodus)', () => {
   it('eine überfällige Stummschaltung kommt als laut - unter einer NEUEN Version', async () => {
     const anna = await admin.addKey('Anna', 'annakey00001');
     await post({ action: 'keys_mute', id: anna.id, muted: '1' });
-    backend.data.edit('alarm_keys.json', (d) => { d.keys[0].muted_at = now() - 43300; });
-    const before = backend.data.read('alarm_keys.json').version;
+    await backend.state.ageMute(anna.id, 43300);
+    const before = await backend.state.listVersion();
     const r = await b.keys();
     assert.equal(r.kv.version, String(before + 1));
     assert.deepEqual(rows(r.kv), [['annakey00001', '0', '0']]);
@@ -140,8 +141,8 @@ describe('Stumm-Zustand (Arbeitsmodus)', () => {
   it('dauerhaft stumm bleibt stumm, egal wie alt', async () => {
     const anna = await admin.addKey('Anna', 'annakey00001');
     await post({ action: 'keys_set_mute_permanent', id: anna.id, permanent: '1' });
-    backend.data.edit('alarm_keys.json', (d) => { d.keys[0].muted_at = now() - 900000; });
-    const before = backend.data.read('alarm_keys.json').version;
+    await backend.state.ageMute(anna.id, 900000);
+    const before = await backend.state.listVersion();
     const r = await b.keys();
     assert.equal(r.kv.version, String(before));
     assert.deepEqual(rows(r.kv), [['annakey00001', '1', '0']]);
@@ -178,42 +179,9 @@ describe('Demo-Modus', () => {
     assert.equal((await admin.post({ action: 'keys_delete', id: anna.id })).ok, false);
     assert.deepEqual(rows((await b.keys()).kv).map((x) => x[0]), ['annakey00001']);
   });
-
-  it('ein unplausibler Demo-Key alarmiert lieber alle als niemanden', async () => {
-    const anna = await admin.addKey('Anna', 'annakey00001');
-    await admin.addKey('Bert', 'bertkey00001');
-    await post({ action: 'demo_set', enabled: '1', id: anna.id });
-    backend.data.edit('demo_mode.json', (d) => { d.key = 'x y'; });
-    assert.equal((await b.keys()).kv.count, '2');
-    assert.equal((await admin.get('status')).demo.enabled, false, 'dann zeigt auch das Dashboard nicht "Demo"');
-  });
 });
 
 describe('Bereinigung wie in der Firmware', () => {
-  const entry = (id, key, extra = {}) => ({ id, label: `E${id}`, key, added_at: 1, mute_token: `tok${String(id).padStart(9, '0')}`, ...extra });
-
-  it('nur gültige Keys, keine doppelten, höchstens 10 - in der Reihenfolge der Liste', async () => {
-    const keys = [
-      entry(1, 'validkey00001'),
-      entry(2, 'x'),                    // zu kurz
-      entry(3, 'has space01'),          // ungültiges Zeichen
-      entry(4, 'validkey00001'),        // doppelt
-      'kein Objekt',
-      entry(5, ' validkey00005 '),      // Leerzeichen außen herum zählen nicht
-    ];
-    for (let i = 6; i <= 16; i++) keys.push(entry(i, `validkey${String(i).padStart(5, '0')}`));
-    backend.data.write('alarm_keys.json', { next_id: 17, version: 7, keys });
-    const r = await b.keys();
-    assert.equal(r.status, 200);
-    assert.equal(r.kv.version, '7');
-    assert.equal(r.kv.count, '10');
-    assert.deepEqual(rows(r.kv).map((x) => x[0]), [
-      'validkey00001', 'validkey00005', 'validkey00006', 'validkey00007', 'validkey00008',
-      'validkey00009', 'validkey00010', 'validkey00011', 'validkey00012', 'validkey00013',
-    ]);
-    assert.equal((await b.poll()).status, 200, 'auch der Poll verkraftet den kaputten Eintrag');
-  });
-
   it('das Dashboard nimmt höchstens 10 Empfänger, keinen Key doppelt und nur gültige', async () => {
     for (let i = 1; i <= 10; i++) await admin.addKey(`E${i}`, `validkey${String(i).padStart(5, '0')}`);
     assert.equal((await admin.post({ action: 'keys_add', label: 'Elf', key: 'validkey00011' })).ok, false);
@@ -233,72 +201,7 @@ describe('Bereinigung wie in der Firmware', () => {
   });
 });
 
-describe('Kaputte Liste: Rückgriff auf die Sicherung', () => {
-  // Nach zwei Änderungen hält die Sicherung den Stand der ersten.
-  async function twoSaves() {
-    const anna = await admin.addKey('Anna', 'annakey00001');
-    const bert = await admin.addKey('Bert', 'bertkey00001');
-    return { anna, bert, v: await version() };
-  }
-
-  it('unlesbare Liste: die Box bekommt den Stand der Sicherung', async () => {
-    const { v } = await twoSaves();
-    backend.data.corrupt('alarm_keys.json');
-    const r = await b.keys();
-    assert.equal(r.status, 200);
-    assert.equal(r.kv.version, String(v - 1));
-    assert.deepEqual(rows(r.kv).map((x) => x[0]), ['annakey00001']);
-  });
-
-  it('falsche Struktur ("keys": false) zählt wie unlesbar', async () => {
-    const { v } = await twoSaves();
-    backend.data.write('alarm_keys.json', { next_id: 9, version: 99, keys: false });
-    const r = await b.keys();
-    assert.equal(r.kv.version, String(v - 1));
-    assert.equal(r.kv.count, '1');
-  });
-
-  it('verschwundene Liste: ebenfalls die Sicherung', async () => {
-    const { v } = await twoSaves();
-    backend.data.remove('alarm_keys.json');
-    assert.equal((await b.keys()).kv.version, String(v - 1));
-  });
-
-  it('Liste UND Sicherung unlesbar: leere Liste mit Version 0 (die Box verwirft sie und behält ihre), das Dashboard sagt es', async () => {
-    await twoSaves();
-    backend.data.corrupt('alarm_keys.json');
-    backend.data.corrupt('alarm_keys.json.bak');
-    const r = await b.keys();
-    assert.equal(r.status, 200);
-    assert.equal(r.text, 'ok=1\nnonce=k1\nversion=0\ncount=0\n');
-    assert.equal((await b.poll()).kv.keys_version, '0');
-    const list = await admin.get('keys_list');
-    assert.equal(list.ok, false);
-    assert.equal(list.code, 'keys_corrupt');
-    // Und niemand fängt mit einer leeren Liste neu an.
-    const add = await admin.post({ action: 'keys_add', label: 'Neu', key: 'neukey000001' });
-    assert.equal(add.ok, false);
-  });
-});
-
 describe('Versionen und ids laufen nie rückwärts', () => {
-  it('nach dem Rückgriff auf die Sicherung bekommt die nächste Änderung eine NEUE Version und id', async () => {
-    await admin.addKey('Anna', 'annakey00001');            // Version 1, id 1
-    const bert = await admin.addKey('Bert', 'bertkey00001');   // Version 2, id 2
-    const v = await version();
-    backend.data.corrupt('alarm_keys.json');               // Sicherung: Version 1, nur Anna
-    const cara = await admin.addKey('Cara', 'carakey00001');
-    assert.equal(await version(), v + 1, 'nicht noch einmal die Version, die die Box mit anderem Inhalt kennt');
-    assert.ok(cara.id > bert.id, 'nicht die id des zuletzt Angelegten');
-    assert.deepEqual(rows((await b.keys()).kv).map((x) => x[0]), ['annakey00001', 'carakey00001']);
-  });
-
-  it('nach Verlust des Datenordners zählt die Version weiter, die die Box zuletzt gemeldet hat', async () => {
-    await b.status({ keys_version: '41' });
-    await admin.addKey('Anna', 'annakey00001');
-    assert.equal(await version(), 42);
-  });
-
   it('gelöschte ids werden nicht neu vergeben', async () => {
     const anna = await admin.addKey('Anna', 'annakey00001');
     const bert = await admin.addKey('Bert', 'bertkey00001');

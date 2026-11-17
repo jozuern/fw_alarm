@@ -25,7 +25,7 @@ die Chrome-Szenarien (`tests/dashboard/e2e/run.mjs`, README unter `tests/dashboa
 |---|---|
 | `box-status.test.mjs` | Status-Push: Token, gespeicherte Felder, Relaisalarm und Neustart im Verlauf, veraltete Pushs, fremde Boards |
 | `box-poll-ack.test.mjs` | Befehle: Klartext-Antwort, Auslieferung höchstens einmal, Quittung, Verfall, Nummern, Sicherungen des Demo-Alarms, Aufräumen im Poll |
-| `box-keys.test.mjs` | Empfängerliste für die Box: Format, Stumm, Demo, Bereinigung, Sicherung, Versionen und ids |
+| `box-keys.test.mjs` | Empfängerliste für die Box: Format, Stumm, Demo, Grenzen der Liste, Versionen und ids |
 | `alive.test.mjs` | Lebenszeichen für den Außen-Wächter |
 | `mute-link.test.mjs` | Kurzbefehl-Link: Text und Browser-Seite, Vorschauen, Bremse, dauerhaft stumm |
 | `watchdog.test.mjs` | Wächter: Box offline/wieder da, Selbsttest, Erinnerungen, Außen-Wächter, wie Meldungen rausgehen |
@@ -37,21 +37,24 @@ die Chrome-Szenarien (`tests/dashboard/e2e/run.mjs`, README unter `tests/dashboa
 | `dashboard-settings.test.mjs` | Einstellung „Automatisch wieder laut nach“: Stufen, Wert aus der Konfiguration, Verlauf |
 | `dashboard-notify.test.mjs` | Meldungen an den Admin: Liste, Einstellen, Probe-Meldung, Meldungen bei der Anmeldung |
 | `dashboard-log.test.mjs` | Verlauf im Dashboard: freigegebene Felder, Filter, Menge, rotierte Datei |
+| `php-storage.test.mjs` | Nur PHP (unter einer anderen Fassung übersprungen): was allein an PHPs Ablage hängt (Sperren, kaputte Dateien, `.bak`, `health_check_url`, Wächter als eigener Prozess) und was die Go-Fassung bewusst anders regelt – die Fälle stehen unverändert so da wie in ihrer Herkunftsdatei |
 
 ## Regeln für neue Tests
 
 - **Nur Beobachtbares prüfen:** HTTP-Antwort, Bark-Attrappe (`backend.bark`),
-  Antworten der Dashboard-API (`session()`), Dateien im Datenordner
-  (`backend.data`). Nie interne Namen der Implementierung.
-- **Keine echte Wartezeit:** „Seit 20 Minuten offline“ entsteht durch einen
-  geänderten Zeitstempel in der Laufzeitdatei (`backend.data.edit(...)`),
-  nicht durch Warten.
-- **Speichern scheitern lassen:** `backend.data.block('name')` legt an die
-  Stelle der Datei einen Ordner – das wirkt auf jedem System (ein
-  Schreibschutz per `chmod` wirkt unter Windows und als root nicht).
-- **Langer Verlauf:** `backend.data.appendLog([...])` hängt Einträge roh an
-  `commands.log` an (mit `'commands.log.1'` als zweitem Argument an die
-  rotierte Datei) – statt hunderter Aktionen.
+  Antworten der Dashboard-API (`session()`), gespeicherter Zustand über
+  `backend.state` (Liste der Helfer oben in `harness.mjs`). Nie interne Namen
+  der Implementierung. Die Dateien von PHP (`backend.data`) fassen nur noch
+  `php-*.test.mjs` an.
+- **Sagen, was man will – jeder Helfer mit `await`:** „Seit 20 Minuten
+  offline“ entsteht durch `await backend.state.ageBoxStatus(1200)`, nicht
+  durch Warten; Merker des Wächters über `ageMark`/`setMarks`, Stummschaltungen
+  über `ageMute`, der laufende Befehl über `ageCommand`/`setCommand`.
+- **Speichern scheitern lassen:** `backend.storage.fail('selftest' | 'durable'
+  | 'history' | 'volatile')` und `repair(...)`; was das bei PHP heißt, steht
+  über `PHP_STORAGE` in `harness.mjs`.
+- **Langer Verlauf:** `backend.state.seedLog([...])` legt Einträge roh in den
+  Verlauf (`{ rotated: true }` = die ältere Datei) – statt hunderter Aktionen.
 - **Anmelden:** `session(backend, READER)` für die API, `rawLogin(...)` für die
   rohe Antwort des Anmeldeformulars (Weiterleitung, Cookie, Fehlerseite).
 - **Meldungen nach der Antwort:** Der Server verschickt manches erst, nachdem
@@ -73,9 +76,10 @@ die Chrome-Szenarien (`tests/dashboard/e2e/run.mjs`, README unter `tests/dashboa
 
 ## Eine andere Server-Fassung prüfen
 
-`FW_BACKEND` wählt den Treiber in `harness.mjs` (heute nur `php`). Ein Treiber
-liefert `kind`, `base`, `dataDir`, `configure()`, `reset()`, `runWatchdog()`,
-`stop()` – und `sessionsDir`, wenn seine Sitzungen im Prüfstand liegen;
-alles andere (Attrappe, Helfer, Tests) bleibt gleich. `FW_BACKEND_SRC=<Ordner>`
+`FW_BACKEND` wählt den Treiber in `harness.mjs` (heute nur `php`; im Test als
+`BACKEND_KIND`). Ein Treiber liefert `kind`, `base`, `dataDir`, `configure()`,
+`reset()`, `runWatchdog()`, `stop()`, die Absichts-Helfer `state`, `storage`
+und `words` – und `sessionsDir`, wenn seine Sitzungen im Prüfstand liegen;
+alles andere (Attrappe, übrige Helfer, Tests) bleibt gleich. `FW_BACKEND_SRC=<Ordner>`
 prüft eine Kopie von `nas_dashboard/` statt des Repo-Stands – z.B. eine
 absichtlich verfälschte, um zu sehen, dass die Tests anschlagen.

@@ -1,7 +1,8 @@
 // Status-Push der Box (api/status.php): Anmeldung mit dem Maschinen-Token,
 // was gespeichert wird, Relaisalarme und Neustarts im Verlauf, veraltete
 // Pushs, fremde Boards. Jede Regel hier muss auch eine neue Server-Version
-// erfüllen - mit der alten UND der neuen Firmware.
+// erfüllen - mit der alten UND der neuen Firmware. (Was bei klemmendem
+// Datenordner passiert, gilt nur für PHP: php-storage.test.mjs.)
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import {
@@ -23,7 +24,7 @@ beforeEach(async () => {
 const relayAlarms = async () => (await admin.log('alarm')).filter((e) => e.event === 'relay_alarm');
 const restarts = async () => (await admin.log('system')).filter((e) => e.event === 'box_restart');
 // Den gespeicherten Stand "s Sekunden alt" machen (als wäre so lange nichts gekommen).
-const ageStatus = (seconds) => backend.data.edit('latest_status.json', (d) => { d.seen_at = now() - seconds; });
+const ageStatus = (seconds) => backend.state.ageBoxStatus(seconds);
 
 describe('Anmeldung mit dem Maschinen-Token', () => {
   it('ohne gültiges Token: 403 FORBIDDEN, nichts gespeichert', async () => {
@@ -38,7 +39,7 @@ describe('Anmeldung mit dem Maschinen-Token', () => {
       assert.equal(r.status, 403);
       assert.equal(r.text, 'FORBIDDEN');
     }
-    assert.equal(backend.data.read('latest_status.json'), null);
+    assert.equal(await backend.state.boxStatus(), null);
   });
 
   it('der Hash in der Konfiguration darf groß geschrieben sein und Leerzeichen haben', async () => {
@@ -65,7 +66,7 @@ describe('Status-Push', () => {
 
   it('speichert die Felder ohne das Token; das Dashboard zeigt sie ohne Absender-Adresse', async () => {
     await b.status({ rssi: '-70', relay: 'closed' });
-    const stored = backend.data.read('latest_status.json');
+    const stored = await backend.state.boxStatus();
     assert.equal(stored.rssi, '-70');
     assert.equal(stored.device_id, 'fw-box-1');
     assert.equal('token' in stored, false);
@@ -90,25 +91,25 @@ describe('Status-Push', () => {
 
   it('nach offline_after_seconds ohne Push gilt die Box als offline', async () => {
     await b.status();
-    ageStatus(181);
+    await ageStatus(181);
     assert.equal((await admin.get('status')).offline, true);
-    ageStatus(170);
+    await ageStatus(170);
     assert.equal((await admin.get('status')).offline, false);
   });
 
   it('während einer laufenden Alarm-Zustellung erst nach 10 min offline', async () => {
     await b.status({ alarm_pending: '1' });
-    ageStatus(400);
+    await ageStatus(400);
     assert.equal((await admin.get('status')).offline, false);
-    ageStatus(601);
+    await ageStatus(601);
     assert.equal((await admin.get('status')).offline, true);
   });
 
   it('über die Brücke gekommen? Es zählt die Kopfzeile X-FW-Bridge, kein Feld', async () => {
     await b.status({}, { 'X-FW-Bridge': '1' });
-    assert.equal(backend.data.read('latest_status.json').via_bridge, '1');
+    assert.equal((await backend.state.boxStatus()).via_bridge, '1');
     await b.status({ via_bridge: '1' });
-    assert.equal(backend.data.read('latest_status.json').via_bridge, '0');
+    assert.equal((await backend.state.boxStatus()).via_bridge, '0');
   });
 
   it('kürzt Werte auf 300 Zeichen, säubert Feldnamen, nimmt höchstens 40 Felder', async () => {
@@ -116,7 +117,7 @@ describe('Status-Push', () => {
     for (let i = 0; i < 60; i++) fields[`f${i}`] = String(i);
     const r = await postForm(`${backend.base}/api/status.php`, fields);
     assert.equal(r.status, 200);
-    const stored = backend.data.read('latest_status.json');
+    const stored = await backend.state.boxStatus();
     assert.equal(stored.lang.length, 300);
     assert.equal(stored.werd, '1');
     const own = Object.keys(stored).filter((k) => !['seen_at', 'remote_addr', 'via_bridge'].includes(k));
@@ -131,30 +132,6 @@ describe('Status-Push', () => {
     assert.equal(st.status.rssi, '-66');
     assert.equal('alarm_seq' in st.status, false);
     assert.equal(st.offline, false);
-  });
-
-  it('lässt sich die Sperre des Datenordners nicht öffnen: HTTP 500 mit lesbarem Hinweis, ohne Pfad', async () => {
-    backend.data.block('status.lock');
-    try {
-      const r = await b.status();
-      assert.equal(r.status, 500);
-      assert.equal(r.text, 'Fehler: Datenordner nicht beschreibbar (Rechte des Web-Benutzers auf dem Server prüfen).');
-      assert.match(r.headers.get('content-type'), /^text\/plain/);
-    } finally {
-      backend.data.unblock('status.lock');
-    }
-    assert.equal((await b.status()).text, 'OK\n', 'danach geht es wieder');
-  });
-
-  it('lässt sich der Status nicht speichern: HTTP 500 WRITE_FAILED statt eines falschen OK', async () => {
-    backend.data.block('latest_status.json');
-    try {
-      const r = await b.status();
-      assert.equal(r.status, 500);
-      assert.equal(r.text, 'WRITE_FAILED\n');
-    } finally {
-      backend.data.unblock('latest_status.json');
-    }
   });
 });
 
@@ -227,10 +204,10 @@ describe('Veralteter Push', () => {
     await b.status({ uptime_s: '5000', last_alarm: 'nie' });
     // Der jüngere Push ist schon gespeichert (Ankunft 30 s "in der Zukunft" des
     // jetzt eintreffenden, mit längerer Laufzeit).
-    backend.data.edit('latest_status.json', (d) => { d.seen_at = now() + 30; });
+    await ageStatus(-30);
     const late = await b.status({ uptime_s: '4000', rssi: '-99', last_alarm: 'ALT', alarm_seq: '9', reset_reason: 'panic' });
     assert.equal(late.text, 'OK\n');
-    const stored = backend.data.read('latest_status.json');
+    const stored = await backend.state.boxStatus();
     assert.equal(stored.uptime_s, '5000');
     assert.equal(stored.rssi, '-61');
     assert.deepEqual(await relayAlarms(), []);
@@ -241,7 +218,7 @@ describe('Veralteter Push', () => {
 describe('Neustart der Box', () => {
   it('nach einem Absturz (kleinere Laufzeit, reset_reason panic): Eintrag im Verlauf', async () => {
     await b.status({ uptime_s: '5000' });
-    ageStatus(100);
+    await ageStatus(100);
     await b.status({ uptime_s: '20', reset_reason: 'panic' });
     const found = await restarts();
     assert.equal(found.length, 1);
@@ -251,9 +228,9 @@ describe('Neustart der Box', () => {
   it('Watchdog und Spannungseinbruch zählen ebenfalls, ein normales Einschalten nicht', async () => {
     await b.status({ uptime_s: '5000' });
     for (const reason of ['task_wdt', 'int_wdt', 'wdt', 'brownout', 'poweron', 'software', 'external']) {
-      ageStatus(100);
+      await ageStatus(100);
       await b.status({ uptime_s: '5000' });
-      ageStatus(100);
+      await ageStatus(100);
       await b.status({ uptime_s: '20', reset_reason: reason });
     }
     assert.deepEqual((await restarts()).map((e) => e.reason).reverse(), ['task_wdt', 'int_wdt', 'wdt', 'brownout']);
@@ -261,14 +238,14 @@ describe('Neustart der Box', () => {
 
   it('Absturz-Schleife, bei der die Laufzeit nicht sinkt: erkannt am Startzeitpunkt', async () => {
     await b.status({ uptime_s: '12' });
-    ageStatus(100);
+    await ageStatus(100);
     await b.status({ uptime_s: '13', reset_reason: 'task_wdt' });
     assert.equal((await restarts()).length, 1);
   });
 
   it('eine seit Wochen laufende Box ist nach einer Uhr-Korrektur des Servers NICHT neu gestartet', async () => {
     await b.status({ uptime_s: '5000' });
-    ageStatus(100);
+    await ageStatus(100);
     // Laufzeit 50 s weiter, der Server sieht aber 100 s Abstand: Der errechnete
     // Startzeitpunkt springt um 50 s - gestartet sein kann sie trotzdem nicht.
     await b.status({ uptime_s: '5050', reset_reason: 'panic' });
@@ -277,14 +254,14 @@ describe('Neustart der Box', () => {
 
   it('ein anderes Board ist kein Neustart der Box', async () => {
     await b.status({ uptime_s: '5000' });
-    ageStatus(100);
+    await ageStatus(100);
     await box(backend, { device_id: 'bastel-1' }).status({ uptime_s: '20', reset_reason: 'panic' });
     assert.deepEqual(await restarts(), []);
   });
 
   it('die Meldung an den Admin gibt es nur, wenn sie eingeschaltet ist', async () => {
     await b.status({ uptime_s: '5000' });
-    ageStatus(100);
+    await ageStatus(100);
     let mark = backend.bark.mark();
     await b.status({ uptime_s: '20', reset_reason: 'panic' });
     await settle();
@@ -292,7 +269,7 @@ describe('Neustart der Box', () => {
 
     assert.equal((await admin.post({ action: 'notify_set', type: 'box_restart', key: 'enabled', value: '1' })).ok, true);
     await b.status({ uptime_s: '5000' });
-    ageStatus(100);
+    await ageStatus(100);
     mark = backend.bark.mark();
     const pushed = await b.status({ uptime_s: '20', reset_reason: 'panic' });
     assert.equal(pushed.text, 'OK\n');
@@ -303,14 +280,14 @@ describe('Neustart der Box', () => {
 
     // Ein normaler Neustart wird nur mit der Auswahl "jedem Neustart" gemeldet.
     await b.status({ uptime_s: '5000' });
-    ageStatus(100);
+    await ageStatus(100);
     mark = backend.bark.mark();
     await b.status({ uptime_s: '20', reset_reason: 'poweron' });
     await settle();
     assert.deepEqual(backend.bark.since(mark), []);
     assert.equal((await admin.post({ action: 'notify_set', type: 'box_restart', key: 'scope', value: 'all' })).ok, true);
     await b.status({ uptime_s: '5000' });
-    ageStatus(100);
+    await ageStatus(100);
     mark = backend.bark.mark();
     await b.status({ uptime_s: '20', reset_reason: 'poweron' });
     const [normal] = await waitFor(() => backend.bark.to(STATUS_KEY, mark), 'Meldung nach dem Einschalten');
@@ -328,7 +305,7 @@ describe('Welche Box zählt (box_device_id)', () => {
     assert.equal(second.status, 200);
     assert.equal(second.text, 'OK\n');
 
-    const stored = backend.data.read('latest_status.json');
+    const stored = await backend.state.boxStatus();
     assert.equal(stored.device_id, 'fw-box-1');
     assert.equal(stored.rssi, '-61');
     assert.deepEqual(await relayAlarms(), []);
@@ -340,7 +317,7 @@ describe('Welche Box zählt (box_device_id)', () => {
   it('verstummt die echte Box, bleibt sie trotz pushendem Bastel-Board offline', async () => {
     await backend.configure({ box_device_id: 'fw-box-1' });
     await b.status();
-    ageStatus(600);
+    await ageStatus(600);
     await box(backend, { device_id: 'bastel-1' }).status();
     assert.equal((await admin.get('status')).offline, true);
   });
@@ -356,7 +333,7 @@ describe('Welche Box zählt (box_device_id)', () => {
   it('schweigt eins von mehreren Boards, warnt das Dashboard vor einem verdeckten Ausfall', async () => {
     await b.status();
     await box(backend, { device_id: 'bastel-1' }).status();
-    backend.data.edit('devices_seen.json', (d) => { d['fw-box-1'].seen_at = now() - 900; });
+    await backend.state.ageDevice('fw-box-1', 900);
     const hint = (await admin.get('status')).device_hint;
     assert.match(hint, /^ACHTUNG/);
     assert.match(hint, /fw-box-1/);

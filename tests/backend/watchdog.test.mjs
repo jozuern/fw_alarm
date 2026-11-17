@@ -3,7 +3,9 @@
 // Dashboard danach zeigt. Box offline/wieder da, Selbsttest des Datenordners,
 // Erinnerungen (Demo-Modus, Stumme), die wählbaren Arten, der Außen-Wächter
 // und die Einstellungen "Meldungen an mich". Jede Regel hier muss auch eine
-// neue Server-Version erfüllen.
+// neue Server-Version erfüllen. (Texte und Folgen des Selbsttests von PHP,
+// health_check_url, der kaputte Demo-Zustand und "der nächste Lauf versucht
+// es erneut" gelten nur für PHP: php-storage.test.mjs.)
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import {
@@ -28,14 +30,15 @@ const run = () => backend.runWatchdog();
 const parts = (out) => out.split(' | ');
 const says = (out, word) => parts(out).some((p) => p === word || p.startsWith(`${word} `));
 // Den gespeicherten Stand "s Sekunden alt" machen (als wäre so lange nichts gekommen).
-const ageStatus = (seconds) => backend.data.edit('latest_status.json', (d) => { d.seen_at = now() - seconds; });
+const ageStatus = (seconds) => backend.state.ageBoxStatus(seconds);
 // Die Box hat sich gemeldet und schweigt seitdem (Schwelle des Wächters ab Werk: 600 s).
 const silentBox = async (seconds = 700, headers = {}) => {
   await b.status({}, headers);
-  ageStatus(seconds);
+  await ageStatus(seconds);
 };
-// Im Gedächtnis des Wächters eine Zeit zurückdrehen (statt wirklich zu warten).
-const editState = (fn) => backend.data.edit('watchdog_state.json', fn);
+// Im Gedächtnis des Wächters eine Zeit zurückdrehen (statt wirklich zu warten):
+// der Merker name ist s Sekunden alt.
+const ageMark = (name, seconds) => backend.state.ageMark(name, seconds);
 // Eine Einstellung unter "Meldungen an mich" setzen (type = Art oder 'global').
 const notifySet = async (type, key, value) => {
   const r = await admin.post({ action: 'notify_set', type, key, value: String(value) });
@@ -51,10 +54,9 @@ const mutePermanent = (id) => post({ action: 'keys_set_mute_permanent', id, perm
 const demoOn = (id) => post({ action: 'demo_set', enabled: '1', id });
 const demoOff = () => post({ action: 'demo_set', enabled: '0' });
 // Alle Stummschaltungen "s Sekunden alt" machen.
-const ageMutes = (seconds) => backend.data.edit('alarm_keys.json', (d) => {
-  for (const k of d.keys) if (k.muted) k.muted_at = now() - seconds;
-});
-const storedKey = (id) => backend.data.read('alarm_keys.json').keys.find((k) => k.id === id);
+const ageMutes = (seconds) => backend.state.ageMute('all', seconds);
+// Ein Empfänger, wie gespeichert (nicht wie das Dashboard ihn zeigt).
+const storedKey = (id) => backend.state.recipient(id);
 const systemLog = async (event) => (await admin.log('system')).filter((e) => e.event === event);
 const watchdogStatus = async () => (await admin.get('status')).watchdog;
 // Meldungen an den Admin (Status-Key) seit der Marke.
@@ -65,26 +67,26 @@ const text = (message) => {
   assert.match(message.fields.body, STAMP);
   return message.fields.body.replace(STAMP, '');
 };
-// Der Selbsttest des Datenordners scheitert: Die Probe-Datei lässt sich nicht schreiben.
-const breakDataDir = () => backend.data.block('health_probe.json');
-const repairDataDir = () => backend.data.unblock('health_probe.json');
+// Der Selbsttest des Speichers scheitert (bzw. geht wieder).
+const breakDataDir = () => backend.storage.fail('selftest');
+const repairDataDir = () => backend.storage.repair('selftest');
 const withWatcher = (more = {}) => backend.configure({ watcher_token_sha256: sha256(WATCHER_TOKEN), ...more });
-const watcherSeen = (secondsAgo) => backend.data.write('watcher_seen.json',
-  { seen_at: now() - secondsAgo, bark_failed_at: 0 });
+// Der Außen-Wächter hat zuletzt vor s Sekunden angeklopft.
+const watcherSeen = (secondsAgo) => backend.state.setWatcher({ seenAgo: secondsAgo });
 
 describe('Start und Grundlagen', () => {
   it('ohne bark_key_status: DISABLED – eine überfällige Stummschaltung beendet der Lauf trotzdem', async () => {
     const anna = await admin.addKey('Anna', 'annakey00001');
     await mute(anna.id);
-    ageMutes(43300);
+    await ageMutes(43300);
     await backend.configure({ bark_key_status: '' });
     const mark = backend.bark.mark();
     const out = await run();
     assert.match(out, /^DISABLED/);
 
-    // Aus der Datei gelesen - die Empfängerliste im Dashboard würde die
+    // Wie gespeichert gelesen - die Empfängerliste im Dashboard würde die
     // Rückschaltung beim Anzeigen sonst selbst erledigen.
-    assert.equal(storedKey(anna.id).muted, false);
+    assert.equal((await storedKey(anna.id)).muted, false);
     const [info] = backend.bark.to('annakey00001', mark);
     assert.equal(info.fields.title, 'Alarmton wieder LAUT');
     assert.deepEqual(toAdmin(mark), []);
@@ -95,7 +97,7 @@ describe('Start und Grundlagen', () => {
     const mark = backend.bark.mark();
     const out = await run();
     assert.ok(says(out, 'NO_DATA'), out);
-    const lastRun = backend.data.read('watchdog_state.json').last_run_at;
+    const lastRun = (await backend.state.marks()).last_run_at;
     assert.ok(Math.abs(lastRun - now()) <= 5, 'last_run_at = jetzt');
     const wd = await watchdogStatus();
     assert.equal(wd.configured, true);
@@ -121,7 +123,7 @@ describe('Box offline und wieder da', () => {
     assert.ok(says(out, 'OK'), out);
     assert.deepEqual(backend.bark.since(mark), [], 'unter der Schwelle');
 
-    ageStatus(700);
+    await ageStatus(700);
     out = await run();
     assert.ok(parts(out).includes('NOTIFIED_OFFLINE'), out);
     const sent = backend.bark.since(mark);
@@ -177,27 +179,6 @@ describe('Box offline und wieder da', () => {
     assert.equal(backend.bark.since(mark).length, 1);
   });
 
-  it('nimmt Bark die Meldung nicht an: SEND_FAILED, nichts gilt als gemeldet – der nächste Lauf versucht es erneut', async () => {
-    await silentBox();
-    await backend.configure({ bark_key_status: 'failstatus001' });   // Attrappe antwortet 500
-    let out = await run();
-    assert.ok(says(out, 'SEND_FAILED'), out);
-    assert.ok(backend.bark.to('failstatus001').length >= 1);
-    assert.deepEqual(await systemLog('box_offline'), []);
-    let wd = await watchdogStatus();
-    assert.ok(wd.last_send_failed_at > wd.last_send_ok_at, 'das Dashboard erfährt: Der Wächter kann nicht melden');
-    assert.ok(Math.abs(wd.last_send_failed_at - now()) <= 5);
-
-    await backend.configure({});
-    const mark = backend.bark.mark();
-    out = await run();
-    assert.ok(parts(out).includes('NOTIFIED_OFFLINE'), out);
-    assert.equal(toAdmin(mark).length, 1);
-    assert.equal((await systemLog('box_offline')).length, 1);
-    wd = await watchdogStatus();
-    assert.ok(wd.last_send_ok_at >= wd.last_send_failed_at);
-  });
-
   it('Erinnerung "weiterhin OFFLINE" nur, wenn eingestellt – mit demselben Text wie die erste Meldung', async () => {
     await silentBox();
     const mark = backend.bark.mark();
@@ -205,16 +186,16 @@ describe('Box offline und wieder da', () => {
     const [first] = toAdmin(mark);
 
     // Ab Werk (0 = nie): auch nach langer Zeit keine Erinnerung.
-    editState((d) => { d.offline_reminded_at = now() - 30 * 86400; });
+    await ageMark('offline_reminded_at', 30 * 86400);
     let out = await run();
     assert.ok(parts(out).includes('STILL_OFFLINE (bereits gemeldet)'), out);
     assert.equal(toAdmin(mark).length, 1);
 
     await notifySet('box_offline', 'repeat_hours', 1);
-    editState((d) => { d.offline_reminded_at = now() - 3500; });
+    await ageMark('offline_reminded_at', 3500);
     out = await run();
     assert.ok(says(out, 'STILL_OFFLINE'), out);
-    editState((d) => { d.offline_reminded_at = now() - 3700; });
+    await ageMark('offline_reminded_at', 3700);
     out = await run();
     assert.ok(says(out, 'OFFLINE_REMINDED'), out);
     const sent = toAdmin(mark);
@@ -310,7 +291,7 @@ describe('Box offline und wieder da', () => {
     await silentBox(700);
     const mark = backend.bark.mark();
     assert.ok(says(await run(), 'OK'));
-    ageStatus(3700);
+    await ageStatus(3700);
     assert.ok(parts(await run()).includes('NOTIFIED_OFFLINE'));
     assert.match(text(toAdmin(mark)[0]), /^Kein Status vom ESP32 seit 62 min\. /);
   });
@@ -327,7 +308,7 @@ describe('Box offline und wieder da', () => {
     assert.ok(says(await run(), 'OK'));
 
     // Der Ausfall ist abgeschlossen: Der nächste wird wieder gemeldet.
-    ageStatus(700);
+    await ageStatus(700);
     mark = backend.bark.mark();
     assert.ok(parts(await run()).includes('NOTIFIED_OFFLINE'));
     assert.equal(toAdmin(mark)[0].fields.title, 'Alarm-Box OFFLINE');
@@ -346,7 +327,7 @@ describe('Box offline und wieder da', () => {
   it('über die Brücke und der Außen-Wächter schweigt seit über 9 min: vermutlich das NAS, nicht die Box', async () => {
     await withWatcher();
     await silentBox(700, { 'X-FW-Bridge': '1' });
-    watcherSeen(600);
+    await watcherSeen(600);
     const mark = backend.bark.mark();
     const out = await run();
     assert.ok(parts(out).includes('NOTIFIED_OFFLINE'), out);
@@ -359,22 +340,10 @@ describe('Box offline und wieder da', () => {
     assert.doesNotMatch(body, /NICHT ausgeloest/);
   });
 
-  it('über die Brücke, der Außen-Wächter meldet sich aber noch: es bleibt bei der Warnung vor dem Ausfall der Box', async () => {
-    await withWatcher();
-    await silentBox(700, { 'X-FW-Bridge': '1' });
-    watcherSeen(500);
-    const mark = backend.bark.mark();
-    await run();
-    const body = text(toAdmin(mark)[0]);
-    assert.match(body, /Der Relaisalarm wuerde gerade NICHT ausgeloest/);
-    assert.match(body, /Die Box meldet sich noch ueber das NAS zu Hause/);
-    assert.doesNotMatch(body, /vermutlich liegt es aber am NAS/);
-  });
-
   it('nicht über die Brücke: ein stummer Außen-Wächter ändert den Text nicht', async () => {
     await withWatcher();
     await silentBox(700);
-    watcherSeen(600);
+    await watcherSeen(600);
     const mark = backend.bark.mark();
     await run();
     const body = text(toAdmin(mark)[0]);
@@ -384,69 +353,28 @@ describe('Box offline und wieder da', () => {
 });
 
 describe('Selbsttest des Datenordners', () => {
-  it('ab dem zweiten Fehlschlag in Folge "Dashboard DEFEKT", danach einmal "Dashboard wieder OK"', async () => {
-    breakDataDir();
-    const mark = backend.bark.mark();
-    let out = await run();
-    assert.match(out, /^WEB_FAIL \(1\) Datenordner nicht beschreibbar/);
-    assert.deepEqual(backend.bark.since(mark), []);
-
-    out = await run();
-    assert.ok(says(out, 'WEB_FAIL_NOTIFIED'), out);
-    let sent = backend.bark.since(mark);
-    assert.equal(sent.length, 1);
-    assert.equal(sent[0].key, STATUS_KEY);
-    assert.equal(sent[0].fields.title, 'Dashboard DEFEKT');
-    assert.equal(sent[0].fields.level, 'passive');
-    const body = text(sent[0]);
-    assert.match(body, /^Datenordner nicht beschreibbar/);
-    assert.match(body, /Login und Status-Pushs der Box scheitern!/);
-    assert.match(body, /Bark-Alarme der Box laufen davon unabhaengig weiter\./);
-    assert.match(body, /sudo chown -R \S+ \S+$/);
-    const failed = await systemLog('nas_web_failed');
-    assert.equal(failed.length, 1);
-    assert.match(failed[0].detail, /^Datenordner nicht beschreibbar/);
-
-    // Weiter gestört: gezählt, aber nicht bei jedem Lauf erneut gemeldet.
-    out = await run();
-    assert.match(out, /^WEB_FAIL \(3\) /);
-    assert.equal(backend.bark.since(mark).length, 1);
-
-    repairDataDir();
-    out = await run();
-    assert.ok(says(out, 'WEB_RECOVERED'), out);
-    sent = backend.bark.since(mark);
-    assert.equal(sent.length, 2);
-    assert.equal(sent[1].fields.title, 'Dashboard wieder OK');
-    assert.match(text(sent[1]), /^Der Datenordner ist wieder beschreibbar \(Stoerung ca\. \d+ min\)\.$/);
-    assert.equal((await systemLog('nas_web_recovered')).length, 1);
-    assert.equal((await systemLog('nas_web_failed')).length, 1);
-
-    out = await run();
-    assert.ok(says(out, 'WEB_OK'), out);
-    assert.equal(backend.bark.since(mark).length, 2);
-  });
-
+  // Texte der Meldungen, die Schuld an der Box-Stille und der Außen-Wächter
+  // während der Störung gelten nur für PHP: php-storage.test.mjs.
   it('ein einzelner Fehlschlag meldet nichts – die Zählung beginnt nach einem guten Lauf von vorn', async () => {
     const mark = backend.bark.mark();
-    breakDataDir();
+    await breakDataDir();
     assert.match(await run(), /^WEB_FAIL \(1\) /);
-    repairDataDir();
+    await repairDataDir();
     assert.ok(says(await run(), 'WEB_OK'));
-    breakDataDir();
+    await breakDataDir();
     assert.match(await run(), /^WEB_FAIL \(1\) /);
     assert.deepEqual(backend.bark.since(mark), []);
     assert.deepEqual(await systemLog('nas_web_failed'), []);
   });
 
   it('hält die Störung an, erinnert der Wächter nach 24 h erneut', async () => {
-    breakDataDir();
+    await breakDataDir();
     await run();
     const mark = backend.bark.mark();
     await run();
-    editState((d) => { d.web_fail_notified_at = now() - 86000; });
+    await ageMark('web_fail_notified_at', 86000);
     assert.ok(says(await run(), 'WEB_FAIL'));
-    editState((d) => { d.web_fail_notified_at = now() - 86500; });
+    await ageMark('web_fail_notified_at', 86500);
     assert.ok(says(await run(), 'WEB_FAIL_NOTIFIED'));
     assert.deepEqual(toAdmin(mark).map((m) => m.fields.title), ['Dashboard DEFEKT', 'Dashboard DEFEKT']);
     assert.equal((await systemLog('nas_web_failed')).length, 1, 'im Verlauf steht die Störung einmal');
@@ -454,7 +382,7 @@ describe('Selbsttest des Datenordners', () => {
 
   it('Art abgeschaltet: OHNE_PUSH und ein Eintrag im Verlauf – nach dem Einschalten wird "Dashboard DEFEKT" nachgeholt', async () => {
     await notifySet('nas_web', 'enabled', 0);
-    breakDataDir();
+    await breakDataDir();
     await run();
     const mark = backend.bark.mark();
     let out = await run();
@@ -473,102 +401,16 @@ describe('Selbsttest des Datenordners', () => {
 
   it('ging "Dashboard DEFEKT" nie raus, gibt es auch kein "wieder OK" – nur den Eintrag im Verlauf', async () => {
     await notifySet('nas_web', 'enabled', 0);
-    breakDataDir();
+    await breakDataDir();
     await run();
     await run();
     await notifySet('nas_web', 'enabled', 1);
-    repairDataDir();
+    await repairDataDir();
     const mark = backend.bark.mark();
     await run();
     assert.deepEqual(backend.bark.since(mark), []);
     assert.equal((await systemLog('nas_web_recovered')).length, 1);
     assert.ok(says(await run(), 'WEB_OK'));
-  });
-
-  it('scheitert der Selbsttest und die Box schweigt: "Box OFFLINE" nennt den Server als Ursache – auch in der Erinnerung', async () => {
-    await silentBox();
-    breakDataDir();
-    const mark = backend.bark.mark();
-    const out = await run();
-    assert.ok(parts(out).includes('NOTIFIED_OFFLINE'), out);
-    const [first] = toAdmin(mark);
-    assert.equal(first.fields.title, 'Alarm-Box OFFLINE');
-    const body = text(first);
-    assert.match(body, /^Kein Status vom ESP32 seit 12 min - Ursache ist aber vermutlich der Server, nicht die Box: /);
-    assert.match(body, /Datenordner nicht beschreibbar/);
-    assert.doesNotMatch(body, /Strom\/WLAN\/Box pruefen/);
-    assert.doesNotMatch(body, /NICHT ausgeloest/);
-
-    await notifySet('box_offline', 'repeat_hours', 1);
-    editState((d) => { d.offline_reminded_at = now() - 3700; });
-    await run();
-    const reminder = toAdmin(mark).find((m) => m.fields.title === 'Alarm-Box weiterhin OFFLINE');
-    assert.ok(reminder, 'Erinnerung verschickt');
-    assert.match(text(reminder), /Ursache ist aber vermutlich der Server/);
-  });
-
-  it('solange der Selbsttest so scheitert, wird der Außen-Wächter nicht beurteilt – seine Stille zählt erst ab dem Ende der Störung', async () => {
-    await withWatcher();
-    watcherSeen(4000);   // länger her als die Frist von 1 Std
-    breakDataDir();
-    const mark = backend.bark.mark();
-    let out = await run();
-    assert.ok(says(out, 'WATCHER_UNKNOWN'), out);
-    assert.deepEqual(backend.bark.since(mark), []);
-
-    repairDataDir();
-    out = await run();
-    assert.ok(says(out, 'WATCHER_OK'), out);
-    assert.deepEqual(backend.bark.since(mark), [], 'kein voreiliges "meldet sich nicht"');
-    assert.deepEqual(await systemLog('watcher_silent'), []);
-
-    // Die Frist läuft ab dem Ende der Störung.
-    editState((d) => { d.watcher_unknown_at = now() - 3700; });
-    out = await run();
-    assert.ok(says(out, 'WATCHER_SILENT_NOTIFIED'), out);
-    assert.equal(toAdmin(mark)[0].fields.title, 'Aussen-Waechter meldet sich nicht');
-  });
-});
-
-describe('Selbsttest über health_check_url (heutige Bauweise)', () => {
-  it('falsche Adresse (HTTP 404): "Selbsttest falsch eingerichtet" – der Server gilt deshalb nicht als Ursache', async () => {
-    await withWatcher({ health_check_url: `${backend.base}/api/gibtsnicht.php` });
-    await silentBox();
-    const mark = backend.bark.mark();
-    let out = await run();
-    assert.match(out, /^WEB_FAIL \(1\) Selbsttest falsch eingerichtet \(HTTP 404/);
-    assert.ok(parts(out).includes('NOTIFIED_OFFLINE'), out);
-    assert.ok(says(out, 'WATCHER_OK'), out);   // der Außen-Wächter wird weiter beurteilt
-    const offline = text(toAdmin(mark)[0]);
-    assert.match(offline, /Strom\/WLAN\/Box pruefen!/);
-    assert.match(offline, /Der Relaisalarm wuerde gerade NICHT ausgeloest/);
-    assert.doesNotMatch(offline, /vermutlich der Server/);
-
-    out = await run();
-    assert.ok(says(out, 'WEB_FAIL_NOTIFIED'), out);
-    const defekt = toAdmin(mark).find((m) => m.fields.title === 'Dashboard DEFEKT');
-    assert.ok(defekt, 'Meldung "Dashboard DEFEKT" verschickt');
-    const body = text(defekt);
-    assert.match(body, /^Selbsttest falsch eingerichtet \(HTTP 404/);
-    assert.match(body, /Status-Pushs der Box sind davon vermutlich nicht betroffen/);
-    assert.doesNotMatch(body, /scheitern!/);
-    assert.doesNotMatch(body, /chown/);
-  });
-
-  it('Webserver nicht erreichbar: die Meldung sagt es und rät, die Dienste zu prüfen', async () => {
-    await backend.configure({ health_check_url: 'http://127.0.0.1:1/api/health.php' });
-    const mark = backend.bark.mark();
-    let out = await run();
-    assert.match(out, /^WEB_FAIL \(1\) Webserver nicht erreichbar/);
-    out = await run();
-    assert.ok(says(out, 'WEB_FAIL_NOTIFIED'), out);
-    const [sent] = toAdmin(mark);
-    assert.equal(sent.fields.title, 'Dashboard DEFEKT');
-    const body = text(sent);
-    assert.match(body, /^Webserver nicht erreichbar/);
-    assert.match(body, /Login und Status-Pushs der Box scheitern!/);
-    assert.match(body, /Auf dem Server pruefen: systemctl status/);
-    assert.doesNotMatch(body, /chown/);
   });
 });
 
@@ -581,7 +423,7 @@ describe('Erinnerungen', () => {
     assert.ok(says(out, 'DEMO_ACTIVE'), out);
     assert.deepEqual(backend.bark.since(mark), []);
 
-    backend.data.edit('demo_mode.json', (d) => { d.changed_at = now() - 14500; });
+    await backend.state.ageDemo(14500);
     out = await run();
     assert.ok(says(out, 'DEMO_REMINDED'), out);
     let sent = backend.bark.since(mark);
@@ -597,7 +439,7 @@ describe('Erinnerungen', () => {
     assert.ok(says(out, 'DEMO_ACTIVE'), out);
     assert.equal(backend.bark.since(mark).length, 1);
 
-    editState((d) => { d.demo_reminded_at = now() - 86500; });
+    await ageMark('demo_reminded_at', 86500);
     out = await run();
     assert.ok(says(out, 'DEMO_REMINDED'), out);
     assert.equal(backend.bark.since(mark).length, 2);
@@ -610,7 +452,7 @@ describe('Erinnerungen', () => {
     assert.equal(backend.bark.since(mark).length, 2);
     // ... und wird nach ihren eigenen 4 Std erinnert, obwohl die letzte
     // Erinnerung (der alten Sitzung) noch keinen Tag her ist.
-    backend.data.edit('demo_mode.json', (d) => { d.changed_at = now() - 14500; });
+    await backend.state.ageDemo(14500);
     out = await run();
     assert.ok(says(out, 'DEMO_REMINDED'), out);
     sent = backend.bark.since(mark);
@@ -621,7 +463,7 @@ describe('Erinnerungen', () => {
   it('wieder LIVE: keine Demo-Erinnerung mehr', async () => {
     const phone = await admin.addKey('Test-Handy', 'demokey00001');
     await demoOn(phone.id);
-    backend.data.edit('demo_mode.json', (d) => { d.changed_at = now() - 14500; });
+    await backend.state.ageDemo(14500);
     assert.ok(says(await run(), 'DEMO_REMINDED'));
     await demoOff();
     const mark = backend.bark.mark();
@@ -648,7 +490,7 @@ describe('Erinnerungen', () => {
     assert.ok(parts(out).includes('MUTED_ACTIVE (1)'), out);
     assert.equal(backend.bark.since(mark).length, 1);
 
-    editState((d) => { d.mute_reminded_at = now() - 86500; });
+    await ageMark('mute_reminded_at', 86500);
     out = await run();
     assert.ok(says(out, 'MUTE_REMINDED'), out);
     assert.equal(backend.bark.since(mark).length, 2);
@@ -688,7 +530,7 @@ describe('Erinnerungen', () => {
 
     out = await run();
     assert.ok(parts(out).includes('PERMANENT_MUTED (1)'), out);
-    editState((d) => { d.permanent_mute_reminded_at = now() - 6 * 86400; });
+    await ageMark('permanent_mute_reminded_at', 6 * 86400);
     out = await run();
     assert.ok(parts(out).includes('PERMANENT_MUTED (1)'), out);
     assert.equal(backend.bark.since(mark).length, 1);
@@ -702,7 +544,7 @@ describe('Erinnerungen', () => {
     assert.equal(sent.length, 2);
     assert.equal(text(sent[1]), '1 Empfaenger im Arbeitsmodus (Alarme ohne Ton): Joerg.');
 
-    editState((d) => { d.permanent_mute_reminded_at = now() - 7 * 86400 - 100; });
+    await ageMark('permanent_mute_reminded_at', 7 * 86400 + 100);
     out = await run();
     assert.ok(says(out, 'PERMANENT_MUTE_REMINDED'), out);
     assert.ok(parts(out).includes('MUTED_ACTIVE (1)'), out);
@@ -719,19 +561,19 @@ describe('Erinnerungen', () => {
     const versionBefore = (await admin.keys()).version;
 
     // Noch nicht überfällig: bleibt stumm.
-    ageMutes(43000);
+    await ageMutes(43000);
     let mark = backend.bark.mark();
     await run();
-    assert.equal(storedKey(anna.id).muted, true);
+    assert.equal((await storedKey(anna.id)).muted, true);
     assert.deepEqual(backend.bark.to('annakey00001', mark), []);
 
-    ageMutes(43300);
+    await ageMutes(43300);
     mark = backend.bark.mark();
     const out = await run();
-    // Aus der Datei gelesen - die Empfängerliste im Dashboard würde die
+    // Wie gespeichert gelesen - die Empfängerliste im Dashboard würde die
     // Rückschaltung beim Anzeigen sonst selbst erledigen.
-    assert.equal(storedKey(anna.id).muted, false);
-    assert.equal(storedKey(paula.id).muted, true);
+    assert.equal((await storedKey(anna.id)).muted, false);
+    assert.equal((await storedKey(paula.id)).muted, true);
     const info = backend.bark.to('annakey00001', mark);
     assert.equal(info.length, 1);
     assert.equal(info[0].fields.title, 'Alarmton wieder LAUT');
@@ -754,24 +596,6 @@ describe('Erinnerungen', () => {
     assert.equal(unmuted.length, 1);
     assert.equal(unmuted[0].label, 'Anna');
     assert.equal(unmuted[0].source, 'auto');
-  });
-
-  it('beschädigter Demo-Zustand: der Lauf schreibt LIVE fest und erhöht die Listen-Version', async () => {
-    const phone = await admin.addKey('Test-Handy', 'demokey00001');
-    await demoOn(phone.id);
-    const before = await admin.get('status');
-    assert.equal(before.demo.enabled, true);
-
-    backend.data.corrupt('demo_mode.json');
-    const mark = backend.bark.mark();
-    const out = await run();
-    assert.equal(backend.data.read('demo_mode.json').enabled, false);
-    assert.doesNotMatch(out, /DEMO_/);
-    const after = await admin.get('status');
-    assert.equal(after.demo.enabled, false);
-    assert.ok(after.nas_keys_version > before.nas_keys_version, 'die Box holt sich die volle Liste');
-    assert.equal((await systemLog('demo_repaired')).length, 1);
-    assert.deepEqual(backend.bark.since(mark), []);
   });
 });
 
@@ -799,7 +623,7 @@ describe('Wählbare Arten (ab Werk aus)', () => {
     out = await run();
     assert.ok(parts(out).includes('HEALTH_ISSUES (1)'), out);
     assert.equal(backend.bark.since(mark).length, 1);
-    editState((d) => { d.health_notified_at = now() - 86500; });
+    await ageMark('health_notified_at', 86500);
     assert.ok(says(await run(), 'HEALTH_NOTIFIED'));
     assert.equal(backend.bark.since(mark).length, 2);
   });
@@ -875,10 +699,10 @@ describe('Außen-Wächter', () => {
     const mark = backend.bark.mark();
     let out = await run();
     assert.ok(says(out, 'WATCHER_OK'), out);
-    assert.ok(Math.abs(backend.data.read('watchdog_state.json').watcher_watch_since - now()) <= 5);
+    assert.ok(Math.abs((await backend.state.marks()).watcher_watch_since - now()) <= 5);
     assert.deepEqual(backend.bark.since(mark), []);
 
-    editState((d) => { d.watcher_watch_since = now() - 3700; });
+    await ageMark('watcher_watch_since', 3700);
     out = await run();
     assert.ok(says(out, 'WATCHER_SILENT_NOTIFIED'), out);
     const sent = backend.bark.since(mark);
@@ -894,13 +718,13 @@ describe('Außen-Wächter', () => {
 
   it('gemeldet, dann über 1 Std stumm: eine Meldung – nach dem nächsten Aufruf von alive.php "wieder da"', async () => {
     await withWatcher();
-    watcherSeen(3500);
+    await watcherSeen(3500);
     const mark = backend.bark.mark();
     let out = await run();
     assert.ok(says(out, 'WATCHER_OK'), out);
     assert.deepEqual(backend.bark.since(mark), []);
 
-    watcherSeen(3700);
+    await watcherSeen(3700);
     out = await run();
     assert.ok(says(out, 'WATCHER_SILENT_NOTIFIED'), out);
     let sent = backend.bark.since(mark);
@@ -935,7 +759,7 @@ describe('Außen-Wächter', () => {
 
   it('Frist nach der Meldung hochgesetzt, kein neuer Aufruf: KEIN "wieder da"', async () => {
     await withWatcher();
-    watcherSeen(3700);
+    await watcherSeen(3700);
     await run();
     await notifySet('outside_watcher', 'silent_after_s', 7200);
     const mark = backend.bark.mark();
@@ -947,12 +771,12 @@ describe('Außen-Wächter', () => {
 
   it('bleibt er stumm, erinnert der Wächter ab Werk alle 3 Tage: "weiterhin stumm"', async () => {
     await withWatcher();
-    watcherSeen(3700);
+    await watcherSeen(3700);
     const mark = backend.bark.mark();
     await run();
-    editState((d) => { d.watcher_notified_at = now() - 71 * 3600; });
+    await ageMark('watcher_notified_at', 71 * 3600);
     assert.ok(parts(await run()).includes('WATCHER_SILENT (bereits gemeldet)'));
-    editState((d) => { d.watcher_notified_at = now() - 73 * 3600; });
+    await ageMark('watcher_notified_at', 73 * 3600);
     assert.ok(says(await run(), 'WATCHER_SILENT_NOTIFIED'));
     assert.deepEqual(toAdmin(mark).map((m) => m.fields.title),
       ['Aussen-Waechter meldet sich nicht', 'Aussen-Waechter weiterhin stumm']);
@@ -962,7 +786,7 @@ describe('Außen-Wächter', () => {
   it('Art abgeschaltet: OHNE_PUSH und ein Eintrag im Verlauf – nach dem Einschalten wird nachgeholt', async () => {
     await withWatcher();
     await notifySet('outside_watcher', 'enabled', 0);
-    watcherSeen(3700);
+    await watcherSeen(3700);
     const mark = backend.bark.mark();
     let out = await run();
     assert.ok(says(out, 'WATCHER_SILENT_NOTIFIED'), out);
@@ -1064,23 +888,5 @@ describe('Wie gemeldet wird (Einstellungen "Meldungen an mich")', () => {
     out = await run();
     assert.ok(parts(out).includes('STILL_OFFLINE (bereits gemeldet)'), out);
     assert.equal(backend.bark.to('deputykey001', mark).length, 1);
-  });
-
-  it('ein eingetragener, aber unbrauchbarer Status-Key ist ein Fehlschlag (SEND_FAILED), kein "abgeschaltet"', async () => {
-    await backend.configure({ bark_key_status: 'https://x' });
-    await silentBox();
-    const mark = backend.bark.mark();
-    const out = await run();
-    assert.ok(says(out, 'SEND_FAILED'), out);
-    assert.ok(!says(out, 'OHNE_PUSH'), out);
-    assert.deepEqual(backend.bark.since(mark), []);
-    assert.deepEqual(await systemLog('box_offline'), []);
-    const wd = await watchdogStatus();
-    assert.ok(wd.last_send_failed_at > wd.last_send_ok_at);
-
-    // Mit einem brauchbaren Key holt der nächste Lauf die Meldung nach.
-    await backend.configure({});
-    assert.ok(parts(await run()).includes('NOTIFIED_OFFLINE'));
-    assert.equal(toAdmin(mark).length, 1);
   });
 });

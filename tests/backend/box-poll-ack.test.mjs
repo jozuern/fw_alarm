@@ -1,13 +1,14 @@
 // Befehle an die Box (api/poll.php, api/ack.php): Klartext-Protokoll mit
 // gespiegelter Nonce, Auslieferung höchstens einmal, Quittung, Verfall und
 // Abbruch, Nummern über Datenverlust hinweg, die Sicherungen des Demo-Alarms
-// - und was der Poll nebenbei aufräumt (überfällige Stummschaltungen,
-// kaputter Demo-Zustand). Der Poll ist der Takt der Box: Antwortet er falsch,
-// alarmiert sie mit einer alten Liste oder gar nicht mehr über das Dashboard.
+// - und was der Poll nebenbei aufräumt (überfällige Stummschaltungen; den
+// kaputten Demo-Zustand gibt es nur bei PHP: php-storage.test.mjs). Der Poll
+// ist der Takt der Box: Antwortet er falsch, alarmiert sie mit einer alten
+// Liste oder gar nicht mehr über das Dashboard.
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import {
-  MACHINE_TOKEN, box, now, postForm, request, session, startBackend, waitFor,
+  MACHINE_TOKEN, box, postForm, request, session, startBackend, waitFor,
 } from './harness.mjs';
 
 let backend;
@@ -23,8 +24,8 @@ beforeEach(async () => {
 
 const enqueue = (type, extra = {}) => admin.post({ action: 'enqueue', type, ...extra });
 const command = async () => (await admin.get('status')).command;
-const stored = () => backend.data.read('command_state.json').current;
-const editCommand = (fn) => backend.data.edit('command_state.json', (d) => fn(d.current));
+// Der laufende Befehl, wie gespeichert (nicht wie das Dashboard ihn zeigt).
+const stored = () => backend.state.command();
 const events = async (filter) => (await admin.log(filter)).map((e) => e.event);
 const none = (nonce, version) => `ok=1\nnonce=${nonce}\nid=0\ntype=NONE\nkeys_version=${version}\n`;
 
@@ -118,10 +119,10 @@ describe('TEST-Befehl: Auslieferung höchstens einmal', () => {
     await enqueue('TEST');
     await b.poll();
     await b.ack({ id: 1, result: 'executed' });
-    editCommand((c) => { c.acked_at = 12345; });
+    await backend.state.setCommand({ acked_at: 12345 });
     const again = await b.ack({ id: 1, result: 'executed' });
     assert.equal(again.text, 'OK\n');
-    assert.equal(stored().acked_at, 12345);
+    assert.equal((await stored()).acked_at, 12345);
     assert.equal((await events('system')).filter((e) => e === 'acked').length, 1);
   });
 
@@ -149,7 +150,7 @@ describe('TEST-Befehl: Auslieferung höchstens einmal', () => {
   it('die verspätete Quittung eines abgelösten Befehls kennt noch dessen Typ', async () => {
     await enqueue('TEST');
     await b.poll();
-    editCommand((c) => { c.delivered_at = now() - 130; });
+    await backend.state.ageCommand('delivered', 130);
     assert.equal((await enqueue('TEST')).command.id, 2);
     await b.ack({ id: 1, result: 'executed' });
     const late = (await admin.log('system')).filter((e) => e.event === 'late_ack');
@@ -182,7 +183,7 @@ describe('Sperren beim Anlegen', () => {
     const blocked = await enqueue('TEST');
     assert.equal(blocked.ok, false);
     assert.match(blocked.message, /Bestätigung steht noch aus/);
-    editCommand((c) => { c.delivered_at = now() - 121; });
+    await backend.state.ageCommand('delivered', 121);
     assert.equal((await enqueue('TEST')).ok, true);
   });
 
@@ -222,7 +223,7 @@ describe('Abbrechen und Verfallen', () => {
 
   it('nach 300 s ohne Abholung verfällt der Befehl - die Box bekommt ihn nicht mehr', async () => {
     await enqueue('TEST');
-    editCommand((c) => { c.created_at = now() - 301; });
+    await backend.state.ageCommand('created', 301);
     assert.equal((await b.poll()).kv.type, 'NONE');
     assert.equal((await command()).state, 'expired');
     assert.ok((await events('system')).includes('expired'));
@@ -231,20 +232,20 @@ describe('Abbrechen und Verfallen', () => {
 
   it('er verfällt auch ohne pollende Box, sobald das Dashboard nachsieht', async () => {
     await enqueue('TEST');
-    editCommand((c) => { c.created_at = now() - 301; });
+    await backend.state.ageCommand('created', 301);
     assert.equal((await command()).state, 'expired');
-    assert.equal(stored().state, 'expired', 'gespeichert, nicht nur angezeigt');
+    assert.equal((await stored()).state, 'expired', 'gespeichert, nicht nur angezeigt');
   });
 
   it('kurz vor Ablauf wird noch ausgeliefert; die Frist ist einstellbar', async () => {
     await enqueue('TEST');
-    editCommand((c) => { c.created_at = now() - 290; });
+    await backend.state.ageCommand('created', 290);
     assert.equal((await b.poll()).kv.type, 'TEST');
     await b.ack({ id: 1 });
 
     await backend.configure({ pending_command_ttl_seconds: 60 });
     await enqueue('TEST');
-    editCommand((c) => { c.created_at = now() - 61; });
+    await backend.state.ageCommand('created', 61);
     assert.equal((await b.poll()).kv.type, 'NONE');
   });
 });
@@ -313,7 +314,7 @@ describe('Demo-Alarm über die Box (ALARM-Befehl)', () => {
     assert.equal((await enqueue('ALARM', expect)).ok, false, 'meldet zwei Empfänger');
 
     await confirm();
-    backend.data.edit('latest_status.json', (d) => { d.seen_at = now() - 181; });
+    await backend.state.ageBoxStatus(181);
     assert.equal((await enqueue('ALARM', expect)).ok, false, 'Status veraltet');
 
     await confirm();
@@ -345,7 +346,7 @@ describe('Demo-Alarm über die Box (ALARM-Befehl)', () => {
     const { anna, confirm } = await demoReady();
     // Der bestätigte Demo-Stand ist älter als "jetzt" (sonst fiele ein
     // Wechsel in derselben Sekunde nicht auf).
-    backend.data.edit('demo_mode.json', (d) => { d.changed_at = now() - 100; });
+    await backend.state.ageDemo(100);
     assert.equal((await enqueue('ALARM', { expect_demo: String(anna.id) })).ok, true);
     await admin.post({ action: 'demo_set', enabled: '0' });
     await admin.post({ action: 'demo_set', enabled: '1', id: anna.id });
@@ -382,7 +383,7 @@ describe('Demo oder Relais? Quelle eines Alarms bei alter Firmware (ohne alarm_s
 
   it('Auslieferung länger als 60 s her und keine Quittung: Relais', async () => {
     const { confirm } = await deliveredDemoAlarm();
-    editCommand((c) => { c.delivered_at = now() - 61; });
+    await backend.state.ageCommand('delivered', 61);
     await confirm({ last_alarm: '16.11.2026 12:00:00' });
     assert.deepEqual((await relayAlarms()).map((e) => e.source), ['relay']);
   });
@@ -390,9 +391,9 @@ describe('Demo oder Relais? Quelle eines Alarms bei alter Firmware (ohne alarm_s
   it('quittiert als ausgeführt: bis 300 s nach der Auslieferung Demo, danach Relais', async () => {
     const { confirm } = await deliveredDemoAlarm();
     await b.ack({ id: 1, result: 'executed' });
-    editCommand((c) => { c.delivered_at = now() - 200; });
+    await backend.state.ageCommand('delivered', 200);
     await confirm({ last_alarm: 'A' });
-    editCommand((c) => { c.delivered_at = now() - 301; });
+    await backend.state.ageCommand('delivered', 301);
     await confirm({ last_alarm: 'B' });
     assert.deepEqual((await relayAlarms()).map((e) => [e.info, e.source]), [['B', 'relay'], ['A', 'remote']]);
   });
@@ -414,19 +415,21 @@ describe('Demo oder Relais? Quelle eines Alarms bei alter Firmware (ohne alarm_s
 });
 
 describe('Der Poll räumt auf', () => {
-  const muteAged = async (label, key, seconds, extra = {}) => {
+  // Ein Empfänger, seit s Sekunden stumm (permanent: "dauerhaft stumm").
+  const muteAged = async (label, key, seconds, { permanent = false } = {}) => {
     const entry = await admin.addKey(label, key);
     assert.equal((await admin.post({ action: 'keys_mute', id: entry.id, muted: '1' })).ok, true);
-    backend.data.edit('alarm_keys.json', (d) => {
-      Object.assign(d.keys.find((k) => k.id === entry.id), { muted_at: now() - seconds }, extra);
-    });
+    if (permanent) {
+      assert.equal((await admin.post({ action: 'keys_set_mute_permanent', id: entry.id, permanent: '1' })).ok, true);
+    }
+    await backend.state.ageMute(entry.id, seconds);
     return entry;
   };
   const entryOf = async (id) => (await admin.keys()).keys.find((k) => k.id === id);
 
   it('eine überfällige Stummschaltung (über 12 h) endet mit dem nächsten Poll - neue Version sofort in der Antwort', async () => {
     const anna = await muteAged('Anna', 'annakey00001', 43300);
-    const before = backend.data.read('alarm_keys.json').version;
+    const before = await backend.state.listVersion();
     const mark = backend.bark.mark();
 
     const polled = await b.poll();
@@ -447,8 +450,8 @@ describe('Der Poll räumt auf', () => {
 
   it('innerhalb der Frist und bei "dauerhaft stumm" bleibt es still', async () => {
     const anna = await muteAged('Anna', 'annakey00001', 43000);
-    const bert = await muteAged('Bert', 'bertkey00001', 90000, { mute_permanent: true });
-    const before = backend.data.read('alarm_keys.json').version;
+    const bert = await muteAged('Bert', 'bertkey00001', 90000, { permanent: true });
+    const before = await backend.state.listVersion();
     assert.equal((await b.poll()).kv.keys_version, String(before));
     assert.equal((await entryOf(anna.id)).muted, true);
     const permanent = await entryOf(bert.id);
@@ -470,29 +473,6 @@ describe('Der Poll räumt auf', () => {
     assert.equal((await admin.post({ action: 'settings_set', key: 'mute_max_seconds', value: '7200' })).ok, true);
     await b.poll();
     assert.equal((await entryOf(anna.id)).muted, false, '2 h aus dem Dashboard');
-  });
-
-  it('ein kaputter Demo-Zustand wird auf LIVE repariert - mit neuer Listen-Version', async () => {
-    const { version } = await demoReady();
-    backend.data.corrupt('demo_mode.json');
-    const polled = await b.poll();
-    assert.equal(polled.kv.keys_version, String(version + 1));
-    assert.equal((await admin.get('status')).demo.enabled, false);
-    assert.ok((await events('system')).includes('demo_repaired'));
-    assert.equal((await b.keys()).kv.count, '2', 'die Box bekommt wieder die volle Liste');
-    // Einmal repariert, bleibt es dabei.
-    assert.equal((await b.poll()).kv.keys_version, String(version + 1));
-  });
-
-  it('auch ein verschwundener Demo-Zustand (Sicherung noch da) wird repariert', async () => {
-    const { anna } = await demoReady();
-    await admin.post({ action: 'demo_set', enabled: '0' });
-    await admin.post({ action: 'demo_set', enabled: '1', id: anna.id });
-    const version = (await admin.keys()).version;
-    backend.data.remove('demo_mode.json');
-    assert.equal(backend.data.exists('demo_mode.json.bak'), true);
-    assert.equal((await b.poll()).kv.keys_version, String(version + 1));
-    assert.ok((await events('system')).includes('demo_repaired'));
   });
 
   it('ohne je einen Demo-Zustand gibt es nichts zu reparieren', async () => {
