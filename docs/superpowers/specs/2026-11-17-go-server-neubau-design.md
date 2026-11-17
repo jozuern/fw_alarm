@@ -61,7 +61,9 @@ der neuen Vorgabe entfällt der Grund dafür.
   Timer nennen. Die Firmware darf seit dem 17.11. geändert werden (geflasht
   werden kann erst in ca. 4 Wochen); sie bekommt danach einen eigenen,
   kleinen Entwurf (§12a).
-- Keine neuen Funktionen (Passkeys folgen danach, in Go).
+- Keine neuen Funktionen (Passkeys folgen danach, in Go). Einzige Ausnahme:
+  die Probe-Sperre (§10) – sie dient allein dazu, dass beim Umschalten kein
+  Alarm an jemand anderen als den Admin gehen kann.
 - Keine Datenbank, kein Docker, kein npm, kein Web-Framework.
 - Keine neuen Adressen: Die Pfade behalten ihr `.php` (§4).
 
@@ -503,7 +505,8 @@ Ohne eigenen Wächter-Prozess braucht es andere Netze:
 `/etc/fw-alarm/config.toml` (root:fwalarm 0640), TOML mit Kommentaren,
 dieselben Schlüsselnamen wie `config.php` (die Texte der Oberfläche nennen
 sie). Neu: `state_dir`, `listen`, `control_socket`,
-`check_interval_seconds`. Entfallen: `data_dir`, `health_check_url`.
+`check_interval_seconds`, dazu die Probe-Sperre `send_guard_keys` und
+`send_guard_until` (§10). Entfallen: `data_dir`, `health_check_url`.
 Unbekannte Schlüssel sind ein Fehler. „Fehlerhaft“ ist eine Datei nur, wenn
 sie sich nicht lesen lässt, einen Syntaxfehler, einen unbekannten Schlüssel,
 einen Wert vom falschen Typ oder eine unbekannte Zeitzone hat. Alles andere
@@ -729,6 +732,35 @@ ein weitergegebener Kurzbefehl-Link; ein verlorenes, angemeldetes Handy;
 fremde Seiten, die im Browser des Admins Anfragen auslösen; ein anderer
 lokaler Benutzer auf der VM; Fehler in Fremdbibliotheken.
 
+**Kein Test erreicht ein echtes Handy** (Vorgabe des Nutzers vom 17.11.2026:
+„under no circumstance can a real alarm trigger to ANYONE but me“). Vier
+Regeln, jede für sich ausreichend:
+
+1. **Echte Bark-Keys gibt es nur auf dem laufenden Server.** Auf dem PC und
+   bei GitHub sind die Keys erfunden, und Bark ist eine Attrappe. In jeder
+   KOPIE echter Daten (Gleichlauf auf dem PC, Probe auf der VM) werden vor
+   dem ersten Start alle Bark-Keys durch erfundene ersetzt; der Schritt
+   prüft selbst, dass keiner übrig ist, und es gibt keinen Schalter, ihn zu
+   überspringen.
+2. Die Probe auf der VM kann Bark zusätzlich gar nicht erreichen
+   (geschlossener Port, von der Unit erzwungen, dazu eine Netz-Regel der
+   Unit – vor dem Einlesen echter Daten auf der VM ausprobiert).
+3. **Probe-Sperre:** Solange in der Konfiguration `send_guard_keys` und ein
+   `send_guard_until` in der Zukunft stehen, sendet der Server an KEINEN
+   anderen Key – durchgesetzt in der einen Funktion, durch die jeder
+   Versand geht (Alarm, Entwarnung, Test-Push, Infos, Meldungen), also
+   unabhängig davon, was Empfängerliste und Demo-Modus gerade ergeben. Der
+   neue Server startet beim Umschalten mit dieser Sperre auf den Key des
+   Admins (90 min). Damit eine vergessene oder vertippte Sperre nie einen
+   echten Alarm von Hand blockiert: Sie endet von selbst, eine Zeit mehr als
+   3 Stunden voraus macht die Konfiguration fehlerhaft (wird nicht
+   angenommen), `fw-alarm health` und die Antwort eines Alarms nennen sie.
+   Die Box alarmiert unabhängig davon immer selbst.
+4. Auf dem laufenden System wird nichts ausgelöst, was sendet – außer dem
+   einen gemeinsamen Demo-Alarm beim Umschalten, und der erst, nachdem der
+   Server selbst gemeldet hat, wen ein Alarm jetzt erreichte (`fw-alarm
+   health`: Demo-Modus, genau ein Empfänger, der Nutzer).
+
 **Maßnahmen**
 
 - Geheimnisse (Maschinen- und Wächter-Token, Passwörter, Sitzungs-IDs,
@@ -838,14 +870,15 @@ sie).
    Kopie bekommen dieselben Anfragen; verglichen werden die Antworten und
    was an die Bark-Attrappe ging (Empfänger, Lautstärke, `call`) – auch
    Formulare mit ungewöhnlichen Feldnamen. Einmal mit dem künstlichen
-   Ordner, einmal **auf dem PC mit einer Kopie der echten Daten** (Bark
-   zeigt auf die Attrappe; die Kopie liegt außerhalb des Repos und wird
-   danach gelöscht).
+   Ordner, einmal **auf dem PC mit einer Kopie der echten Daten** (vorher
+   werden alle Bark-Keys in der Kopie durch erfundene ersetzt, Bark zeigt
+   auf die Attrappe; die Kopie liegt außerhalb des Repos und wird danach
+   gelöscht).
 8. Die sieben Chrome-Szenarien und `tests/dashboard/*.test.mjs` gegen Go.
 9. Sicherheits-Durchsicht (eigene Sitzung).
 10. **Probe auf der VM** vor dem Umschalten: Go auf einem zweiten Port mit
-    einer Übernahme der echten Daten und einem Bark-Ziel, das nichts
-    annimmt – erzwungen, nicht nur eingetragen: Die Probe-Unit darf nur
+    einer Übernahme der echten Daten – mit ersetzten Bark-Keys (§10) – und
+    einem Bark-Ziel, das nichts annimmt – erzwungen, nicht nur eingetragen: Die Probe-Unit darf nur
     Adressen des eigenen Rechners erreichen und startet nicht, wenn in
     ihrer Konfiguration etwas anderes als der geschlossene Port steht. Dort wird geprüft, was der PC nicht kann: die Unit (Start,
     Stopp, Neustart), der Watchdog (ein angehaltener Prozess wird nach 3 min
@@ -905,9 +938,13 @@ sie).
       von `cloudflared` nachsehen, ob in der Lücke ein Aufruf von
       `api/mute.php` scheiterte, und nachfassen.
    8. Nur harmlose Prüfungen (Status der Box, TEST-Befehl, eigener
-      Kurzbefehl-Link, ein Prüf-Lauf); alle melden sich neu an. Dann,
-      gemeinsam: Demo-Modus auf den Nutzer selbst, **ein Alarm und eine
-      Entwarnung nur an ihn**, zurück auf LIVE.
+      Kurzbefehl-Link, ein Prüf-Lauf); alle melden sich neu an. Der Server
+      läuft dabei unter der Probe-Sperre (§10): Er kann an niemanden außer
+      dem Admin senden. Dann, gemeinsam: Demo-Modus auf den Nutzer selbst;
+      `fw-alarm health` muss „Demo-Modus, genau ein Empfänger: der Nutzer“
+      melden – erst dann **ein Alarm und eine Entwarnung nur an ihn**,
+      zurück auf LIVE. Als Letztes wird die Probe-Sperre bewusst aufgehoben
+      (sonst endet sie 90 min nach dem Umschalten von selbst).
 
    **Rückweg – nur am Abend des Umschaltens.** Danach wird nach vorn
    repariert: Je länger Go läuft, desto mehr fehlt in den alten Daten, und
@@ -1049,6 +1086,9 @@ hinzu.
     unter der vorhandenen Art „Dashboard defekt“ (§7).
 17. GitHub prüft bei jedem Push mit (§10) – vom Nutzer mir überlassen
     („you decide whats best“, 17.11.2026).
+18. Probe-Sperre und ersetzte Bark-Keys in jeder Kopie echter Daten (§10) –
+    auf die Vorgabe des Nutzers vom 17.11.2026, dass bei Proben unter keinen
+    Umständen jemand anderes als er alarmiert werden kann.
 
 ## 16. Durchsicht vom 17.11.2026
 
@@ -1097,4 +1137,9 @@ eingearbeitet:
 | `stored` in `alive.php` | §4.4 |
 | GitHub prüfte erst vor der Probe auf der VM | §10 (Push nach jeder Aufgabe) |
 | `--install-only`, alte Skripte nach dem Umschalten | §13 |
+
+Nach der Durchsicht, auf Vorgabe des Nutzers am selben Abend hinzugekommen:
+§10 „Kein Test erreicht ein echtes Handy“ (ersetzte Bark-Keys in jeder Kopie
+echter Daten, Probe-Sperre beim Umschalten, Abfrage „wen erreichte ein Alarm
+jetzt“ vor dem gemeinsamen Demo-Alarm).
 
