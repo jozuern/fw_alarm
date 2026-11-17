@@ -752,5 +752,5 @@ Risiko. Nochmals: **Zusatz, kein Ersatz** für die offizielle Melder-Alarmierung
 Das Repository enthält **keine Geheimnisse** – WLAN-Zugang, Bark-Keys, Tokens und
 Passwort-Hashes stehen ausschließlich in den lokalen, per `.gitignore`
 ausgeschlossenen Dateien `config.h` bzw. `config.php` und – beim Außen-Wächter –
-in `/etc/fw-alarm-watch.conf` auf der VM. Lege dir diese aus den mitgelieferten
-`*.example*`-Vorlagen an.
+in dessen `fw-alarm-watch.conf` auf dem Rechner, der ihn ausführt. Lege dir diese
+aus den mitgelieferten `*.example*`-Vorlagen an.

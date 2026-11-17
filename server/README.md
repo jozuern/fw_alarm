@@ -293,4 +293,7 @@ schalten – das erhöht die Version der Liste, und die Box holt sie sicher neu.
 Ein Rückzug hieße: Brücke anhalten (`bridge_hold.php`), die Daten aus einer
 Sicherung in den Datenordner des NAS kopieren, die alten Dashboard-Dateien
 aus Git (`bf1a7c8`) samt einer `config.php` wieder einspielen, DSM-Aufgabe
-`check_offline.php` wieder anlegen.
+`check_offline.php` wieder anlegen. Auf dem NAS selbst liegen seit dem
+Aufräumen (11/2026) weder alte Daten noch eine `config.php`: Beides kommt aus
+einer Sicherung, und in der `config.php` von dort stehen die Pfade der VM
+(`data_dir`, `health_check_url`) – die müssen auf das NAS umgestellt werden.

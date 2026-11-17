@@ -67,9 +67,11 @@ Dazu von Hand:
 
 Vom alten Dashboard **bleiben** auf dem NAS, weil die Bestätigungsseite des
 Mute-Links sie relativ lädt: `assets/app.css`, `assets/favicon.svg`,
-`assets/app/theme-boot.js`. Außerdem bleibt der alte Datenordner
-(`/volume1/web_packages/fw_alarm_data`) als eingefrorene Rückfall-Kopie;
-dort liegt auch das Halt-Protokoll.
+`assets/app/theme-boot.js`. Alles andere vom alten Dashboard (auch die alte
+`config.php`) ist seit 11/2026 gelöscht. Der alte Datenordner
+(`/volume1/web_packages/fw_alarm_data`) ist leer, **muss aber bleiben**: Dort
+schreibt die Brücke ihr Halt-Protokoll (`held_log`), und sie legt den Ordner
+nicht selbst an – ohne ihn gingen im Halt abgewiesene Mute-Aufrufe verloren.
 
 ## Reihenfolge beim Ausrollen
 
@@ -146,12 +148,12 @@ Zugriffsprotokoll des Servers stehen `status.php`/`poll.php` 24 h lang ohne
 `bridge=1`):
 
 - vom NAS löschen: `api/status.php`, `api/poll.php`, `api/ack.php`,
-  `api/keys.php` und die Reste des alten Dashboards (`lib/common.php`,
-  `lib/shell.php`, `assets/vendor/`, `assets/classic/`, `manifest.json`,
-  aus `assets/app/` alles außer `theme-boot.js`);
+  `api/keys.php` (die Reste des alten Dashboards sind schon seit 11/2026
+  weg);
 - es bleiben: `api/mute.php`, `lib/bridge.php`, `bridge_config.php`,
   `index.php`, `classic.php`, `dashboard_api.php`, `assets/app.css`,
-  `assets/favicon.svg`, `assets/app/theme-boot.js`.
+  `assets/favicon.svg`, `assets/app/theme-boot.js` und der leere Ordner
+  `fw_alarm_data` für das Halt-Protokoll.
 
 `api/mute.php` bleibt dauerhaft: Alte Links laufen von selbst aus, neu
 kopierte zeigen auf `alarm.tunero.dev`.
