@@ -5,13 +5,12 @@
 // Seite, Box-Details mit aufklappbaren Erklärungen, Design (Hell/Dunkel),
 // „Hinweis im Browser bei Störung“ (Notification-Attrappe), Konto, PC-Breite
 // und Lese-Rolle.
-// Die Sandbox behält ihre Daten: Meldungs- und App-Einstellungen werden als
-// Datei gesichert und am Ende genau so zurückgeschrieben; die eigenen
+// Jeder Lauf startet mit leeren Daten: Meldungs- und App-Einstellungen werden
+// trotzdem als Datei gesichert und am Ende zurückgeschrieben; die eigenen
 // Empfänger (Keys „seta…“/„setb…“) löscht das Szenario wieder, Demo aus.
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
 import { apiSession } from '../cdp.mjs';
-import { pushBox, readData, editData, setStatusAge, barkLog, winPath } from '../sandbox.mjs';
+import { pushBox, readData, editData, setStatusAge, barkLog } from '../sandbox.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const q = (s) => JSON.stringify(s);
@@ -80,8 +79,8 @@ async function failAction(page, action) {
 }
 
 // Laufzeitdatei im data_dir roh sichern (null = gab es nicht) bzw. zurückschreiben.
-function backupFile(sandbox, name) {
-  const p = join(winPath(sandbox), 'data', `${name}.json.php`);
+function backupFile(backend, name) {
+  const p = backend.data.path(name);
   return { p, raw: existsSync(p) ? readFileSync(p, 'utf8') : null };
 }
 function restoreFile(b) {
@@ -111,7 +110,7 @@ const NOTIFICATION_STUB = `(() => {
 })()`;
 const STANDALONE_STUB = `Object.defineProperty(Navigator.prototype, 'standalone', { get: () => true, configurable: true })`;
 
-export default async function ({ browser, base, sandbox, assert, shot }) {
+export default async function ({ browser, base, backend, assert, shot }) {
   const admin = await apiSession(base, 'admin', 'test');
   const u = Date.now().toString(36);
   const list = () => admin.get('keys_list');
@@ -119,7 +118,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
   const typeOf = async (key) => (await notify()).types.find((t) => t.key === key);
   const optOf = async (type, key) => (await typeOf(type)).options.find((o) => o.key === key).value;
   const globalOf = async (key) => (await notify()).global.find((o) => o.key === key).value;
-  const backups = [backupFile(sandbox, 'notify_settings'), backupFile(sandbox, 'app_settings')];
+  const backups = [backupFile(backend, 'notify_settings.json'), backupFile(backend, 'app_settings.json')];
   const muteBefore = (await admin.get('settings_list')).settings.mute_max_seconds.value;
   const ids = {};
 
@@ -132,7 +131,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     return added[0].id;
   };
   const removeOwn = async () => {
-    for (const k of ((readData(sandbox, 'alarm_keys') || { keys: [] }).keys || []).filter(own)) {
+    for (const k of ((readData(backend, 'alarm_keys.json') || { keys: [] }).keys || []).filter(own)) {
       await admin.post({ action: 'keys_delete', id: String(k.id) });
     }
   };
@@ -160,7 +159,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     ids.anna = await add('Anna', 'seta' + u);
     ids.ben = await add('Ben', 'setb' + u);
     assert((await admin.post({ action: 'keys_mute', id: String(ids.ben), muted: '1' })).ok, 'Ben stumm');
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     const n0 = await notify();
     const on0 = n0.types.filter((t) => t.enabled).length;
 
@@ -282,11 +281,11 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert((await optOf('box_restart', 'level')) === 'active', 'Server unverändert normal');
     await shot(page, 'mobile-type');
     // Probe: Doppeltipp schickt genau EINE Meldung an den Status-Key.
-    const mark = barkLog(sandbox).length;
+    const mark = barkLog(backend).length;
     await page.eval(`(() => { const b = document.querySelector('#set-probe button'); b.click(); b.click(); })()`);
     await page.waitFor(`(document.querySelector('#set-probe .msg')?.textContent || '').includes('Probe gesendet')`, 15000);
     await sleep(500);
-    const probes = barkLog(sandbox).slice(mark);
+    const probes = barkLog(backend).slice(mark);
     assert(probes.length === 1 && probes[0].key === 'statuskey0001', 'genau eine Probe an statuskey0001: ' + JSON.stringify(probes));
     assert(await page.eval(`!document.querySelector('#set-probe button').disabled`), 'Probe-Knopf wieder frei');
 
@@ -321,7 +320,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     // Verkürzen, während Anna schon 5 Std stumm ist: Sie würde sofort laut
     // (und bekäme eine Nachricht) - erst nachfragen, mit Namen.
     assert((await admin.post({ action: 'keys_mute', id: String(ids.anna), muted: '1' })).ok, 'Anna stumm');
-    editData(sandbox, 'alarm_keys', (d) => { d.keys.find((k) => k.id === ids.anna).muted_at = Math.floor(Date.now() / 1000) - 5 * 3600; });
+    editData(backend, 'alarm_keys.json', (d) => { d.keys.find((k) => k.id === ids.anna).muted_at = Math.floor(Date.now() / 1000) - 5 * 3600; });
     await page.eval('FW.store.refreshKeys()');
     await page.waitFor(`(FW.store.getState().keys?.keys || []).some((k) => k.id === ${ids.anna} && k.muted && Date.now() / 1000 - k.muted_at > 4 * 3600)`, 5000);
     await page.click('.set-choice[data-value="14400"]');
@@ -369,7 +368,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     // Box meldet sich gerade (online), hat aber noch die LIVE-Liste: Nach dem
     // Einschalten muss erst die Warnung stehen, dass ein Relaisalarm noch an
     // ALLE ginge - „übernommen“ erst nach ihrem nächsten Status.
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     await page.click('.confirm .btn-danger');
     await page.waitFor(`!!document.querySelector('.demo-band') && (document.querySelector('.set-demo-state')?.textContent || '').includes('DEMO-MODUS')`, 8000);
     assert((await list()).demo.enabled === true, 'Server: Demo an');
@@ -378,7 +377,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     const pendingSync = await text(page, '.set-demo-sync');
     assert(pendingSync.includes('ein Relaisalarm würde noch an ALLE gehen!'), 'Warnung „noch an ALLE“: ' + pendingSync);
     await shot(page, 'mobile-demo-pending');
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     await page.eval('FW.store.refreshStatus()');
     await page.waitFor(`(document.querySelector('.set-demo-sync')?.textContent || '').includes('Die Box hat die Demo-Liste übernommen – du kannst jetzt gefahrlos testen.')`, 8000);
     await shot(page, 'mobile-demo');
@@ -412,7 +411,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.waitFor(`(document.querySelector('#set-notify .row-value')?.textContent || '').includes('von')`, 10000);
 
     // ---- Box: Details & Diagnose -----------------------------------------------
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     await go(page, '#/einstellungen/box');
     await page.waitFor(`document.querySelectorAll('.box-row').length === 14`, 8000);
     assert(await text(page, 'main h1') === 'Box', 'Titel Box');
@@ -429,11 +428,11 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.click('.set-probe-window summary');
     await page.waitFor(`(document.querySelector('.set-probe-window')?.textContent || '').includes('18:55')`, 3000);
     // Box offline: gedimmt, mit dem Stand von wann.
-    setStatusAge(sandbox, 120);
+    setStatusAge(backend, 120);
     await page.eval('FW.store.refreshStatus()');
     await page.waitFor(`(document.querySelector('.set-box-stale')?.textContent || '').includes('letzter bekannter Stand von') && !!document.querySelector('#box-wifi.tone-unknown')`, 8000);
     await shot(page, 'mobile-box-offline');
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     await page.eval('FW.store.refreshStatus()');
     await page.waitFor(`!document.querySelector('.set-box-stale')`, 8000);
 
@@ -469,7 +468,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.eval('FW.store.refreshStatus()');
     // Tab versteckt, Box verstummt: genau EINE Benachrichtigung.
     await page.eval(`(() => { Object.defineProperty(document, 'hidden', { value: true, configurable: true }); document.dispatchEvent(new Event('visibilitychange')); })()`);
-    setStatusAge(sandbox, 120);
+    setStatusAge(backend, 120);
     await page.eval('FW.store.refreshStatus()');
     await page.waitFor(`window.__notes.length === 1`, 5000);
     const note1 = await page.eval(`({ title: window.__notes[0].title, body: window.__notes[0].body, tag: window.__notes[0].tag })`);
@@ -477,7 +476,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.eval('FW.store.refreshStatus()');
     await sleep(300);
     assert(await page.eval('window.__notes.length') === 1, 'gleicher Zustand: keine zweite Benachrichtigung');
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     await page.eval('FW.store.refreshStatus()');
     await page.waitFor(`window.__notes.length === 2`, 5000);
     const note2 = await page.eval(`window.__notes[1].body`);
@@ -555,7 +554,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
       note('Stumm-Dauer', await admin.post({ action: 'settings_set', key: 'mute_max_seconds', value: String(muteBefore) }));
       backups.forEach(restoreFile);
       await removeOwn();
-      await pushBox(base, admin);
+      await pushBox(backend, admin);
     } catch (e) {
       console.error('Aufräumen: ' + e.message);
     }

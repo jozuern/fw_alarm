@@ -4,10 +4,8 @@
 // (Tab versteckt, Moduswechsel, 409), Box offline auf kleinem iPhone, NAS
 // nicht erreichbar, Alarm-Zustände, TEST-Befehl, Lese-Rolle und die rechte
 // Spalte am PC.
-// Die Sandbox behält ihre Daten zwischen den Läufen: Das Szenario legt seine
-// drei Empfänger mit eindeutigen Keys an, nimmt vorhandene für die Dauer des
-// Laufs heraus (sonst stimmte „3 Empfänger“ nicht) und stellt sie am Ende
-// wieder her.
+// Jeder Lauf startet mit leeren Daten: Das Szenario legt seine drei Empfänger
+// mit eindeutigen Keys an (und stellt Vorhandenes, falls doch da, wieder her).
 import { apiSession } from '../cdp.mjs';
 import { pushBox, runWatchdog, readData, editData, setStatusAge, barkLog, sandboxServer } from '../sandbox.mjs';
 
@@ -54,7 +52,7 @@ async function cardInView(page) {
   await sleep(100);
 }
 
-export default async function ({ browser, base, sandbox, assert, shot }) {
+export default async function ({ browser, base, backend, assert, shot }) {
   const admin = await apiSession(base, 'admin', 'test');
   const u = Date.now().toString(36);
   // Key-Präfix fail = die Bark-Attrappe antwortet mit HTTP 500.
@@ -65,7 +63,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
   // liefert nur maskierte Keys, die Datei im data_dir die echten. Reste eines
   // abgebrochenen Laufs DIESES Szenarios werden nur entfernt, nicht wieder
   // angelegt (sonst würden sie von Lauf zu Lauf weitergereicht).
-  const stored = readData(sandbox, 'alarm_keys');
+  const stored = readData(backend, 'alarm_keys.json');
   const before = (stored && Array.isArray(stored.keys) ? stored.keys : [])
     .map((k) => ({ id: k.id, label: k.label, key: k.key, phone: k.phone || '' }));
   const leftover = (k) => ['Josh', 'Tom', 'Anna'].includes(k.label) && /^(josh|fail|anna)[0-9a-z]{6,}$/.test(k.key);
@@ -144,8 +142,8 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert((await list()).keys.length === 3, 'genau 3 Empfänger');
 
     // ---- Bereit: erst mit Hinweis (Wächter nie gelaufen), dann alles bereit
-    if (readData(sandbox, 'watchdog_state')) editData(sandbox, 'watchdog_state', (d) => { d.last_run_at = 0; });
-    await pushBox(base, admin);
+    if (readData(backend, 'watchdog_state.json')) editData(backend, 'watchdog_state.json', (d) => { d.last_run_at = 0; });
+    await pushBox(backend, admin);
     await page.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
     await page.login(base, 'admin', 'test');
     problems.length = 0;   // nur die neue Oberfläche zählt
@@ -158,8 +156,8 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert((await page.eval('document.title')).startsWith('🟡'), 'Tab-Titel gelb bei einem Hinweis');
     await shot(page, 'ready-hint');
 
-    runWatchdog(sandbox);
-    await pushBox(base, admin);
+    await runWatchdog(backend);
+    await pushBox(backend, admin);
     await page.waitFor(titleIs('Alles bereit'), 12000);
     await page.waitFor(`document.title.startsWith('🟢')`, 5000);
     const rows = await page.eval(`JSON.stringify(Array.from(document.querySelectorAll('.ov-checks .row')).map((r) => r.className.match(/chk-(\\w+)/)?.[1]))`);
@@ -188,7 +186,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.waitFor(`!!document.querySelector('.tabbar') && !document.querySelector('.ov-recent')`);
 
     // ---- Halten zum Senden ----------------------------------------------------
-    let mark = barkLog(sandbox).length;
+    let mark = barkLog(backend).length;
     await openConfirmVia(page, '.ov-alarm');
     const question = await text(page, '.confirm-text');
     assert(question.includes('3 Empfänger'), 'Frage nennt 3 Empfänger: ' + question);
@@ -199,7 +197,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await shot(page, 'confirm');
     await mouseHold(page, '.confirm .hold', 300);
     await sleep(700);
-    assert(barkLog(sandbox).length === mark, 'kurz gedrückt: nichts gesendet');
+    assert(barkLog(backend).length === mark, 'kurz gedrückt: nichts gesendet');
     assert(await page.eval(`!!document.querySelector('.confirm')`), 'kurz gedrückt: Bestätigung bleibt offen');
     await mouseHold(page, '.confirm .hold', 1600);
     await page.waitFor(`!document.querySelector('.confirm')`, 3000);
@@ -210,7 +208,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert(await text(page, '.result-retry') === 'Nur an Tom erneut senden', 'Nachsenden: ' + await text(page, '.result-retry'));
     const reached = await text(page, '.result-reached');
     assert(reached.includes('Josh') && reached.includes('Anna') && !reached.includes('Tom'), 'Erreicht: ' + reached);
-    let sent = barkLog(sandbox).slice(mark);
+    let sent = barkLog(backend).slice(mark);
     const to = (k) => sent.filter((e) => e.key === k);
     for (const k of Object.values(K)) {
       assert(to(k).length >= 1 && to(k).every((e) => e.fields.level === 'critical'), `level=critical an ${k}`);
@@ -221,14 +219,14 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await shot(page, 'result');
 
     // ---- Nachsendung nur an Tom -----------------------------------------------
-    mark = barkLog(sandbox).length;
+    mark = barkLog(backend).length;
     await openConfirmVia(page, '.result-retry');
     assert(await text(page, '.confirm-title') === 'Erneut senden?', 'Nachsende-Frage');
     assert((await text(page, '.confirm-text')).includes('NUR an: Tom'), 'Nachsende-Frage nennt Tom');
     assert(await text(page, '.confirm .hold > .hold-label') === 'Halten: erneut senden', 'Halten-Knopf der Nachsendung');
     await mouseHold(page, '.confirm .hold', 1600);
     await page.waitFor(`(document.querySelector('.result-title')?.textContent || '').includes('0 von 1 erreicht')`, 40000);
-    sent = barkLog(sandbox).slice(mark);
+    sent = barkLog(backend).slice(mark);
     const hit = [...new Set(sent.map((e) => e.key))];
     // Genau EIN Empfänger; die Attrappe antwortet 500, das NAS versucht es
     // deshalb bis zu bark_max_tries (3) Mal.
@@ -291,7 +289,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     // zurückgesetzt) - für die Seite heißt das „Antwort unklar“. Danach wie
     // nach einem Wechsel in die Telefon-App: Seite neu geladen.
     await page.waitFor(titleIs('Alles bereit'), 10000);
-    mark = barkLog(sandbox).length;
+    mark = barkLog(backend).length;
     fetchMode = 'fail-post';
     await page.send('Fetch.enable', { patterns: [{ urlPattern: '*dashboard_api.php*', requestStage: 'Request' }] });
     await openConfirmVia(page, '.ov-alarm');
@@ -299,7 +297,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.waitFor(cardHas('Antwort unklar'), 15000);
     fetchMode = null;
     await page.send('Fetch.disable');
-    assert(barkLog(sandbox).length === mark, 'abgebrochen: nichts gesendet');
+    assert(barkLog(backend).length === mark, 'abgebrochen: nichts gesendet');
     assert(await page.eval(`!document.querySelector('.result-retry')`), 'unklar: keine Nachsendung');
     assert(await page.eval(`localStorage.getItem('fwAlarm.sendPending') !== null`), 'Merker „ohne Ergebnis“ gesetzt');
     await page.goto('about:blank');
@@ -324,27 +322,27 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
 
     // ---- Tab versteckt: offene Bestätigung schließt, nichts geht raus ---------
     await page.waitFor(titleIs('Alles bereit'), 10000);
-    mark = barkLog(sandbox).length;
+    mark = barkLog(backend).length;
     await openConfirmVia(page, '.ov-alarm');
     await page.eval(`(() => { Object.defineProperty(document, 'hidden', { value: true, configurable: true });
       document.dispatchEvent(new Event('visibilitychange')); })()`);
     await page.waitFor(`!document.querySelector('.confirm')`, 3000);
     await page.eval(`(() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); })()`);
     await sleep(800);
-    assert(barkLog(sandbox).length === mark, 'versteckt: nichts gesendet');
+    assert(barkLog(backend).length === mark, 'versteckt: nichts gesendet');
     assert(await page.eval(`!document.querySelector('.confirm')`), 'zurück im Vordergrund: Bestätigung bleibt zu');
 
     // ---- Moduswechsel von einem anderen Gerät, während die Frage offen ist ---
     const other = await apiSession(base, 'admin', 'test');
-    mark = barkLog(sandbox).length;
+    mark = barkLog(backend).length;
     await openConfirmVia(page, '.ov-alarm');
     assert((await other.post({ action: 'demo_set', enabled: '1', id: String(ids.josh) })).ok, 'Demo ein (anderes Gerät)');
     await page.waitFor(`!document.querySelector('.confirm') && ${cardHas('Demo-/LIVE-Modus hat sich gerade geändert')}`, 7000);
-    assert(barkLog(sandbox).length === mark, 'Moduswechsel: nichts gesendet');
+    assert(barkLog(backend).length === mark, 'Moduswechsel: nichts gesendet');
     await cardInView(page);
     await shot(page, 'mode-changed');
     // Demo-Modus: Knöpfe nennen den Test-Empfänger, der Box-Alarm erscheint.
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     await page.waitFor(`document.querySelector('.ov-alarm')?.textContent.trim() === 'Demo-Alarm an Josh'
       && !!document.querySelector('.ov-box-alarm') && !!document.querySelector('.demo-band')`, 10000);
     await page.waitFor(`${titleIs('Demo-Modus')} && (document.querySelector('.demo-band')?.textContent || '').includes('Box hat übernommen')`, 10000);
@@ -354,9 +352,9 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
 
     // ---- 409: Modus wechselt zwischen Bestätigen und Senden -------------------
     assert((await admin.post({ action: 'demo_set', enabled: '0' })).ok, 'Demo aus');
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     await page.waitFor(`document.querySelector('.ov-alarm')?.textContent.trim() === 'Alarm an alle senden' && !document.querySelector('.demo-band')`, 10000);
-    mark = barkLog(sandbox).length;
+    mark = barkLog(backend).length;
     await openConfirmVia(page, '.ov-alarm');
     // Status und Empfängerliste kommen bis zum Senden nicht durch: Sonst holte
     // eine Abfrage den neuen Modus noch vor dem Halten ab - dann schlösse die
@@ -371,7 +369,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.waitFor(cardHas('NICHT gesendet'), 15000);
     await page.send('Network.setBlockedURLs', { urls: [] });
     assert(postStatus.includes(409), 'Server antwortet 409: ' + JSON.stringify(postStatus));
-    assert(barkLog(sandbox).length === mark, '409: nichts gesendet');
+    assert(barkLog(backend).length === mark, '409: nichts gesendet');
     await page.waitFor(`!!document.querySelector('.demo-band')`, 5000);
     assert(await page.eval(`!document.querySelector('.result-retry')`), '409: keine Nachsendung angeboten');
     await cardInView(page);
@@ -380,8 +378,8 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
 
     // ---- Box offline, kleines iPhone -----------------------------------------
     await page.viewport({ width: 320, height: 568, mobile: true, scale: 2 });
-    await pushBox(base, admin);
-    setStatusAge(sandbox, 600);
+    await pushBox(backend, admin);
+    setStatusAge(backend, 600);
     await page.waitFor(`${titleIs('Box offline')} && document.title.startsWith('🔴')`, 10000);
     await page.eval('scrollTo(0, 0)');
     assert(await page.eval(`!!document.querySelector('.status-card.is-crit')`), 'Status-Karte rot');
@@ -403,11 +401,11 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     // letzter Stand offline) - der Alarm-Knopf muss trotzdem über der
     // Tab-Leiste stehen.
     assert((await admin.post({ action: 'demo_set', enabled: '1', id: String(ids.josh) })).ok, 'Demo ein');
-    await pushBox(base, admin);
-    setStatusAge(sandbox, 600);
+    await pushBox(backend, admin);
+    setStatusAge(backend, 600);
     await page.waitFor(`${titleIs('Box offline')} && !!document.querySelector('.demo-band')`, 10000);
     await page.viewport({ width: 320, height: 568, mobile: true, scale: 2 });
-    await sandboxServer(sandbox, 'stop', 'site');
+    await sandboxServer(backend, 'stop');
     serverDown = true;
     await page.waitFor(`${titleIs('Server nicht erreichbar')} && !!document.querySelector('.status-card.is-crit') && !!document.querySelector('.demo-band')
       && !!document.querySelector('.bands .unsure-band.is-crit')`, 16000);
@@ -427,17 +425,17 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
     await page.eval('scrollTo(0, 0)');
     await shot(page, 'nas-red');
-    await sandboxServer(sandbox, 'start', 'site');
+    await sandboxServer(backend, 'start');
     serverDown = false;
     assert((await admin.post({ action: 'demo_set', enabled: '0' })).ok, 'Demo aus');
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     await page.waitFor(titleIs('Alles bereit') + ` && !document.querySelector('.bands')`, 15000);
     // Den Verlauf einmal laden (das Gerät merkt sich den Stand), zurück.
     await page.eval(`location.hash = '#/verlauf'`);
     await page.waitFor(`document.querySelectorAll('.log-row').length > 0 && !document.querySelector('.log-stale')`, 10000);
     await page.eval(`location.hash = '#/uebersicht'`);
     await page.waitFor(titleIs('Alles bereit'), 5000);
-    await sandboxServer(sandbox, 'stop', 'site');
+    await sandboxServer(backend, 'stop');
     serverDown = true;
     await page.waitFor(`${titleIs('Server nicht erreichbar')} && !!document.querySelector('.status-card.is-warn') && !!document.querySelector('.unsure-band:not(.is-crit)')`, 16000);
     const band = await text(page, '.unsure-band');
@@ -456,26 +454,26 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     await page.eval('scrollTo(0, 0)');
     await shot(page, 'nas-log');
     await page.eval(`location.hash = '#/uebersicht'`);
-    await sandboxServer(sandbox, 'start', 'site');
+    await sandboxServer(backend, 'start');
     serverDown = false;
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     await page.waitFor(titleIs('Alles bereit') + ` && !document.querySelector('.bands')`, 15000);
 
     // ---- Alarm-Zustände der Box ----------------------------------------------
-    await pushBox(base, admin, { alarm_pending: '1', key_progress: '1/3' });
+    await pushBox(backend, admin, { alarm_pending: '1', key_progress: '1/3' });
     await page.waitFor(`${titleIs('Alarm läuft')} && !!document.querySelector('.status-card.is-alarm')`, 10000);
     assert((await text(page, '.status-card')).includes('1/3'), 'Alarm läuft nennt „1/3“');
     assert(await actionsRaised(page), 'Alarm läuft: „Auslösen“ oben');
     await shot(page, 'alarm-running');
-    await pushBox(base, admin, { relay: 'closed', alarm_pending: '0', key_progress: '3/3', last_alarm: 'x' });
+    await pushBox(backend, admin, { relay: 'closed', alarm_pending: '0', key_progress: '3/3', last_alarm: 'x' });
     await page.waitFor(`${titleIs('Alarm ausgelöst')} && !!document.querySelector('.status-card.is-crit')`, 10000);
     assert(await actionsRaised(page), 'Alarm ausgelöst: „Auslösen“ oben');
     await shot(page, 'alarm-standing');
-    await pushBox(base, admin, { stuck_warned: '1', relay: 'closed' });
+    await pushBox(backend, admin, { stuck_warned: '1', relay: 'closed' });
     await page.waitFor(`${titleIs('Kontakt klemmt')} && !!document.querySelector('.status-card.is-warn')`, 10000);
     assert(!(await actionsRaised(page)), 'Kontakt klemmt (orange): „Auslösen“ an der normalen Stelle');
     await shot(page, 'stuck');
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     await page.waitFor(titleIs('Alles bereit'), 10000);
 
     // ---- TEST über die Box: Befehlszeile mit „Abbrechen“ ---------------------
@@ -522,7 +520,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     const headed = `Array.from(document.querySelectorAll('h1, h2, h3, h4, .group-head')).some((h) => h.textContent.trim() === 'Auslösen')`;
     assert(await page.eval(headed), 'Admin: Gruppe „Auslösen“ vorhanden');
     assert((await admin.post({ action: 'demo_set', enabled: '1', id: String(ids.josh) })).ok, 'Demo ein');
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     assert((await admin.post({ action: 'enqueue', type: 'TEST' })).ok, 'TEST angelegt (Admin)');
     await page.send('Network.clearBrowserCookies');
     await page.login(base, 'leser', 'test');
@@ -555,12 +553,12 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     // Fehlschläge werden gemeldet, ändern aber das Ergebnis des Laufs nicht.
     const note = (what, r) => { if (!r || !r.ok) console.error(`Aufräumen: ${what} fehlgeschlagen: ${JSON.stringify(r)}`); };
     try {
-      if (serverDown) await sandboxServer(sandbox, 'start', 'site');
+      if (serverDown) await sandboxServer(backend, 'start');
       note('Demo aus', await admin.post({ action: 'demo_set', enabled: '0' }));
       // Ein noch wartender TEST-Befehl (Lauf mittendrin abgebrochen) würde
       // den nächsten Lauf blockieren; ohne wartenden Befehl ist das ein No-op.
       await admin.post({ action: 'cancel' });
-      const now = readData(sandbox, 'alarm_keys');
+      const now = readData(backend, 'alarm_keys.json');
       const present = new Set((now && Array.isArray(now.keys) ? now.keys : []).map((k) => k.key));
       for (const k of before) {
         if (present.has(k.key) || leftover(k)) continue;
@@ -574,7 +572,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
         // Der letzte Empfänger der Liste darf bleiben (NAS lehnt das Löschen ab).
         if (i < ownIds.length - 1 || before.some((k) => !leftover(k))) note(`Empfänger ${id} löschen`, r);
       }
-      await pushBox(base, admin);
+      await pushBox(backend, admin);
     } catch (err) {
       console.error('Aufräumen unvollständig:', err.message);
     }

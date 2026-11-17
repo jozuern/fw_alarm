@@ -17,6 +17,9 @@ Sandbox von Hand: Jede Testdatei startet über `harness.mjs` ihr eigenes
 Dashboard (`php -S` auf einem freien Port, leerer Datenordner im Temp-Ordner)
 und eine Bark-Attrappe im Testprozess; am Ende wird alles entfernt
 (`FW_KEEP=1` lässt den Ordner zum Nachsehen liegen).
+Von Hand: `node tests/backend/serve.mjs [--port 8787]` startet dasselbe Dashboard
+und gibt die Adresse aus (bis Strg+C). Dieselbe Fassung (`FW_BACKEND`) fahren
+die Chrome-Szenarien (`tests/dashboard/e2e/run.mjs`, README unter `tests/dashboard/sandbox/`).
 
 | Datei | Was sie festhält |
 |---|---|

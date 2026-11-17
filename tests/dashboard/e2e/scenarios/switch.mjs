@@ -8,8 +8,8 @@
 // mehr. Dazu: Design „Hell“ greift schon auf der Anmeldeseite (ohne main.js),
 // die Seite geht ohne JavaScript, und die Bestätigungsseite der
 // Kurzbefehl-Links (api/mute.php) nutzt das neue Stylesheet.
-// Die Sandbox behält ihre Daten: Der eigene Empfänger („swtch…“) wird am Ende
-// wieder gelöscht, der Demo-Modus bleibt aus.
+// Jeder Lauf startet mit leeren Daten: Der eigene Empfänger („swtch…“) wird am
+// Ende wieder gelöscht, der Demo-Modus bleibt aus.
 import { apiSession } from '../cdp.mjs';
 import { pushBox, barkLog } from '../sandbox.mjs';
 
@@ -46,7 +46,7 @@ async function sessionCookie(page, base) {
   return cookies.find((c) => c.name === COOKIE) || null;
 }
 
-export default async function ({ browser, base, sandbox, assert, shot }) {
+export default async function ({ browser, base, backend, assert, shot }) {
   const admin = await apiSession(base, 'admin', 'test');
   const u = Date.now().toString(36);
   const KEY = 'swtch' + u;
@@ -160,7 +160,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     const added = await admin.post({ action: 'keys_add', label: 'Umstellung', key: KEY });
     assert(added.ok === true, 'keys_add: ' + JSON.stringify(added));
     keyId = (await admin.get('keys_list')).keys.find((k) => !known.has(k.id)).id;
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
 
     await page.viewport({ width: 1280, height: 900, mobile: false, scale: 1 });
     await open(page, `${base}/classic.php`);
@@ -179,13 +179,13 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
       return !!b && b.form.getAttribute('action') === 'index.php'; })()`), 'classic: Knopf „Neue Ansicht“ -> index.php');
     // Erst wenn die Liste (samt Demo-Stand) da ist, kennt die Frage den Modus.
     await page.waitFor(`(document.querySelector('[data-keys-list]')?.textContent || '').includes('Umstellung')`, 10000);
-    const barkBefore = barkLog(sandbox).length;
+    const barkBefore = barkLog(backend).length;
     await page.click('[data-command-alarm]');
     await page.waitFor(`!!document.querySelector('.arm-confirm button.danger')`);
     await page.click('.arm-confirm button.danger');
     await page.waitFor(`(() => { const r = document.querySelector('[data-alarm-result]');
       return !!r && !r.hidden && r.textContent.includes('REAL ALARM') && !r.textContent.includes('wird gesendet'); })()`, 60000);
-    const sent = barkLog(sandbox).slice(barkBefore).filter((e) => e.key === KEY);
+    const sent = barkLog(backend).slice(barkBefore).filter((e) => e.key === KEY);
     assert(sent.length >= 1 && sent[0].fields.level === 'critical',
       'classic: REAL ALARM erreicht die Attrappe: ' + JSON.stringify(sent) + ' – Ergebnis: ' + await text(page, '[data-alarm-result]'));
     await shot(page, 'classic');

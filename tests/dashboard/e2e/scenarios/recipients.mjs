@@ -4,10 +4,9 @@
 // Stumm-Lautstärke, Telefon, Kurzbefehl-Links, Umbenennen, Key ersetzen und
 // Löschen; eine Live-Aktualisierung mitten in einer Eingabe; zehn Empfänger
 // mit langen Namen auf dem kleinsten iPhone; Lese-Rolle.
-// Die Sandbox behält ihre Daten zwischen den Läufen: Vorhandene Empfänger
-// werden für die Dauer des Laufs herausgenommen und am Ende wieder angelegt;
-// alles, was das Szenario anlegt (Keys „lena0000001“ und „rcp…“), löscht es
-// wieder - auch Reste eines abgebrochenen Laufs.
+// Jeder Lauf startet mit leeren Daten; Vorhandene Empfänger würden für die
+// Dauer des Laufs herausgenommen und am Ende wieder angelegt, alles, was das
+// Szenario anlegt (Keys „lena0000001“ und „rcp…“), löscht es wieder.
 import { apiSession } from '../cdp.mjs';
 import { pushBox, readData, barkLog } from '../sandbox.mjs';
 
@@ -112,7 +111,7 @@ async function phoneHitRows(page, where) {
 // Genau 40 Zeichen (Höchstlänge des Namens).
 const longName = (i) => `Maximiliane-Sophie Brandmeister-Oberhof ${i}`.slice(0, 39) + String(i % 10);
 
-export default async function ({ browser, base, sandbox, assert, shot }) {
+export default async function ({ browser, base, backend, assert, shot }) {
   const admin = await apiSession(base, 'admin', 'test');
   const other = await apiSession(base, 'admin', 'test');
   const u = Date.now().toString(36);
@@ -120,7 +119,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
   const list = () => admin.get('keys_list');
   const entry = async (id) => (await list()).keys.find((k) => k.id === id);
   // Vorhandene Empfänger mit vollem Key merken (die API liefert nur maskierte).
-  const stored = readData(sandbox, 'alarm_keys');
+  const stored = readData(backend, 'alarm_keys.json');
   const initial = stored && Array.isArray(stored.keys) ? stored.keys : [];
   const before = initial.filter((k) => !own(k)).map((k) => ({ id: k.id, label: k.label, key: k.key, phone: k.phone || '' }));
   const ids = {};
@@ -157,7 +156,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
       assert(r.ok, `Empfänger ${k.label} herausnehmen: ` + JSON.stringify(r));
     }
     assert((await list()).keys.length === 1, 'genau 1 Empfänger');
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
 
     await page.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
     await page.login(base, 'admin', 'test');
@@ -195,21 +194,21 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert((await entry(ids.lena)).phone === '+49 171 2345678', 'Telefon gespeichert');
     await page.waitFor(`!!document.querySelector('#rcp-${ids.lena}')`, 5000);
     assert(await pillOf(page, ids.lena) === 'Laut', 'Lena in der Liste: Pille Laut');
-    let mark = barkLog(sandbox).length;
+    let mark = barkLog(backend).length;
     await page.click('.rcp-add-test');
     await waitConfirm(page);
     assert(await text(page, '.confirm-text') === testPushText('Lena'), 'Test-Push-Frage: ' + await text(page, '.confirm-text'));
     await page.click('.confirm .btn-danger');
     await page.waitFor(`(document.querySelector('.rcp-msg-addtest')?.textContent || '').includes('gesendet')`, 15000);
     await sleep(500);
-    const pushed = barkLog(sandbox).slice(mark);
+    const pushed = barkLog(backend).slice(mark);
     assert(pushed.length === 1 && pushed[0].key === LENA_KEY && pushed[0].fields.level === 'active',
       'genau ein Test-Push level=active an Lena: ' + JSON.stringify(pushed));
     await page.click('.rcp-add-done');
     await page.waitFor(`!document.querySelector('.rcp-add-form') && !document.querySelector('.rcp-add-test')`);
     // Die Box hat die neue Liste noch nicht: erst „übernimmt …“, nach dem Push grün.
     await page.waitFor(`!!document.querySelector('.rcp-sync.is-pending')`, 8000);
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     await page.waitFor(`!!document.querySelector('.rcp-sync.is-ok')`, 8000);
 
     // ---- Person: Laut / Stumm / Dauerhaft, Regler ---------------------------
@@ -429,7 +428,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     const demoId = ten.find((id, k) => (count + k) % 3 === 2);
     assert((await list()).keys.length === 10, 'genau 10 Empfänger');
     assert((await admin.post({ action: 'demo_set', enabled: '1', id: String(demoId) })).ok, 'Demo ein');
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     await page.viewport({ width: 320, height: 568, mobile: true, scale: 2 });
     await page.eval('FW.store.refreshAll()');
     await page.waitFor(`document.querySelectorAll('.rcp-list .rcp-row').length === 10 && !!document.querySelector('#rcp-${demoId} .rcp-demo-pill')`, 10000);
@@ -493,7 +492,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     // die erste Status-Antwort mit zurückgestellter Uhr übernehmen, die
     // zweite mit der echten (die Messung läuft weiter, der Stand ist frisch).
     await page.eval('FW.store.stop()');
-    await pushBox(base, admin, { keys_version: '1' });
+    await pushBox(backend, admin, { keys_version: '1' });
     await page.eval(`(async () => { const real = Date.now; Date.now = () => real() - 61000;
       try { await FW.store.refreshStatus(); } finally { Date.now = real; }
       await FW.store.refreshStatus(); })()`);
@@ -501,7 +500,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     const warnSync = await text(page, '.rcp-sync');
     await page.eval('FW.store.start()');
     assert(warnSync.includes('Box hat die Änderung noch nicht übernommen (seit 1 Min)'), 'Abgleich orange: ' + warnSync);
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
     await page.waitFor(`!!document.querySelector('.rcp-sync.is-ok')`, 8000);
 
     // ---- Lese-Rolle ----------------------------------------------------------
@@ -535,11 +534,11 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     // zurück, dann den Rest der eigenen. Fehlschläge werden gemeldet, ändern
     // aber das Ergebnis des Laufs nicht.
     const note = (what, r) => { if (!r || !r.ok) console.error(`Aufräumen: ${what} fehlgeschlagen: ${JSON.stringify(r)}`); };
-    const ownLeft = () => (readData(sandbox, 'alarm_keys') || { keys: [] }).keys.filter(own);
+    const ownLeft = () => (readData(backend, 'alarm_keys.json') || { keys: [] }).keys.filter(own);
     try {
       note('Demo aus', await admin.post({ action: 'demo_set', enabled: '0' }));
       for (const k of ownLeft().slice(1)) note(`Empfänger ${k.label} löschen`, await admin.post({ action: 'keys_delete', id: String(k.id) }));
-      const now = readData(sandbox, 'alarm_keys');
+      const now = readData(backend, 'alarm_keys.json');
       const present = new Set((now && Array.isArray(now.keys) ? now.keys : []).map((k) => k.key));
       for (const k of before) {
         if (present.has(k.key)) continue;
@@ -551,7 +550,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
         const r = await admin.post({ action: 'keys_delete', id: String(k.id) });
         if (before.length) note(`Empfänger ${k.label} löschen`, r);
       }
-      await pushBox(base, admin);
+      await pushBox(backend, admin);
     } catch (err) {
       console.error('Aufräumen unvollständig:', err.message);
     }

@@ -230,7 +230,7 @@ $o = json_decode((string)@file_get_contents(__DIR__ . '/config.test.json'), true
 return array_replace($c, is_array($o) ? $o : []);
 `;
 
-async function startPhp(root, bark) {
+async function startPhp(root, bark, options = {}) {
   const { bin, flags } = php();
   const site = join(root, 'site');
   const dataDir = join(root, 'data');
@@ -247,7 +247,7 @@ async function startPhp(root, bark) {
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(join(site, 'config.php'), CONFIG_PHP);
 
-  const port = await freePort();
+  const port = options.port || await freePort();
   const base = `http://127.0.0.1:${port}`;
   const baseConfig = {
     machine_token_sha256: sha256(MACHINE_TOKEN),
@@ -266,36 +266,53 @@ async function startPhp(root, bark) {
   writeConfig({});
 
   let log = '';
-  const child = spawn(bin, [...flags, '-S', `127.0.0.1:${port}`, '-t', site],
-    { cwd: site, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  let child = null;
+  let exited = null;
+  let alive = false;
   const keep = (chunk) => { log = (log + chunk).slice(-200000); };
-  child.stdout.on('data', keep);
-  child.stderr.on('data', keep);
-  const exited = new Promise((resolve) => child.on('exit', resolve));
-  const killOnExit = () => { try { child.kill(); } catch { /* schon beendet */ } };
+  const killOnExit = () => { try { child?.kill(); } catch { /* schon beendet */ } };
   process.on('exit', killOnExit);
 
-  // Warten, bis der Server antwortet.
-  let up = false;
-  for (let i = 0; i < 100 && !up; i++) {
-    try {
-      await fetch(`${base}/manifest.json`, { signal: AbortSignal.timeout(1000) });
-      up = true;
-    } catch {
-      if (child.exitCode !== null) break;
-      await sleep(100);
+  // Startet den Server (auf demselben Port) und wartet, bis er antwortet.
+  const startServer = async () => {
+    if (alive) return;
+    const mine = spawn(bin, [...flags, '-S', `127.0.0.1:${port}`, '-t', site],
+      { cwd: site, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    child = mine;
+    alive = true;
+    mine.stdout.on('data', keep);
+    mine.stderr.on('data', keep);
+    exited = new Promise((resolve) => mine.on('exit', () => { alive = false; resolve(); }));
+    let up = false;
+    for (let i = 0; i < 100 && !up; i++) {
+      try {
+        await fetch(`${base}/manifest.json`, { signal: AbortSignal.timeout(1000) });
+        up = true;
+      } catch {
+        if (!alive) break;
+        await sleep(100);
+      }
     }
-  }
-  if (!up) {
+    if (!up) {
+      killOnExit();
+      throw new Error(`PHP-Server startet nicht (Port ${port}):\n${log}`);
+    }
+  };
+  // Hält den Server an; der Datenordner bleibt unberührt.
+  const stopServer = async () => {
+    if (!alive) return;
     killOnExit();
-    throw new Error(`PHP-Server startet nicht (Port ${port}):\n${log}`);
-  }
+    await exited;
+  };
+  await startServer();
 
   return {
     kind: 'php',
     base,
     dataDir,
     serverLog: () => log,
+    startServer,
+    stopServer,
     // Konfiguration = Standard des Prüfstands + overrides (nicht aufsummiert).
     async configure(overrides = {}) {
       writeConfig(overrides);
@@ -319,14 +336,17 @@ async function startPhp(root, bark) {
     },
     async stop() {
       process.off('exit', killOnExit);
-      killOnExit();
-      await exited;
+      await stopServer();
     },
   };
 }
 
 // ============================ START =========================================
 // options.config: Abweichungen von der Standard-Konfiguration ab dem Start.
+// options.port: fester Port statt eines freien (Handarbeit, serve.mjs).
+// Treiber-Vertrag: base, dataDir, configure, runWatchdog, reset, stop sowie
+// stopServer()/startServer() (Server anhalten/wieder starten: gleicher Port,
+// Daten unberührt).
 export async function startBackend(options = {}) {
   const kind = process.env.FW_BACKEND || 'php';
   const drivers = { php: startPhp };
@@ -337,7 +357,7 @@ export async function startBackend(options = {}) {
   const bark = await startBarkMock();
   let driver;
   try {
-    driver = await drivers[kind](root, bark);
+    driver = await drivers[kind](root, bark, options);
   } catch (error) {
     await bark.stop();
     rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

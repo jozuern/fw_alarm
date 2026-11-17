@@ -1,9 +1,9 @@
 // Verlauf der neuen Oberfläche (index.php#/verlauf): Filter Alle/Alarme/
 // Empfänger/System, Suche über die geladenen Einträge, Tages-Abschnitte,
 // Zeilen mit Symbol-Kachel, „Ältere laden“, Vorwahl per #/verlauf?filter=alarm,
-// Lese-Rolle. Die Sandbox behält ihren Verlauf zwischen den Läufen: Das
-// Szenario erzeugt Ereignisse mit eindeutigem Namen (Lena<zufall>) und prüft
-// relativ dazu; seine Empfänger löscht es am Ende wieder.
+// Lese-Rolle. Jeder Lauf startet mit leeren Daten: Das Szenario legt für
+// „Ältere laden“ zuerst 60 ältere Ereignisse an, erzeugt dann Ereignisse mit
+// eindeutigem Namen (Lena<zufall>) und prüft relativ dazu.
 import { apiSession } from '../cdp.mjs';
 import { pushBox } from '../sandbox.mjs';
 
@@ -47,7 +47,7 @@ async function typeInto(page, sel, value) {
   } else await page.send('Input.insertText', { text: value });
 }
 
-export default async function ({ browser, base, sandbox, assert, shot }) {
+export default async function ({ browser, base, backend, assert, shot }) {
   const admin = await apiSession(base, 'admin', 'test');
   const u = Date.now().toString(36);
   const LENA = `Lena${u}`;
@@ -86,6 +86,9 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
 
   try {
     // ---- Ereignisse erzeugen ------------------------------------------------
+    // Ein leerer Prüfstand hat keinen Verlauf: ältere Einträge für „Ältere laden“ (mehr als zwei Seiten).
+    const seeded = Math.floor(Date.now() / 1000) - 7200;
+    backend.data.appendLog(Array.from({ length: 60 }, (_, i) => ({ event: 'key_added', by: 'admin', label: 'Alt' + i, key: 'kkkk...', log_at: seeded + i })));
     assert((await admin.post({ action: 'demo_set', enabled: '0' })).ok, 'Demo aus');
     await admin.post({ action: 'cancel' });
     await removeOwn();
@@ -104,7 +107,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     assert((await admin.post({ action: 'cancel' })).ok, 'TEST abgebrochen');
     const alarmRes = await admin.post({ action: 'alarm', expect_demo: '0' });
     assert(alarmRes.ok === true || alarmRes.status === 200, 'REAL ALARM gesendet: ' + JSON.stringify(alarmRes));
-    await pushBox(base, admin);
+    await pushBox(backend, admin);
 
     // ---- Mobil: Seite, Filter, Zeilen -----------------------------------------
     await page.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
@@ -245,8 +248,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
     try {
       note('Demo aus', await admin.post({ action: 'demo_set', enabled: '0' }));
       await admin.post({ action: 'cancel' });
-      await removeOwn();
-      await pushBox(base, admin);
+      await pushBox(backend, admin);
     } catch (e) {
       console.error('Aufräumen: ' + e.message);
     }

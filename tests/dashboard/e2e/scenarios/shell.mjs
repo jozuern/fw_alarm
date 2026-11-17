@@ -84,13 +84,13 @@ async function openTestConfirm(page, hold) {
 const fired = (page) => page.eval('window.__fired || 0');
 const confirmOpen = (page) => page.eval(`!!document.querySelector('.confirm')`);
 
-export default async function ({ browser, base, sandbox, assert, shot }) {
-  // Sandbox auf „Alles bereit“: LIVE-Modus, frischer Status-Push mit passender
+export default async function ({ browser, base, backend, assert, shot }) {
+  // Prüfstand auf „Alles bereit“: LIVE-Modus, frischer Status-Push mit passender
   // Listen-Version, der Cron-Wächter ist einmal gelaufen.
   const admin = await apiSession(base, 'admin', 'test');
   await admin.post({ action: 'demo_set', enabled: '0' });
-  await pushBox(base, admin);
-  runWatchdog(sandbox);
+  await pushBox(backend, admin);
+  await runWatchdog(backend);
 
   // Ohne Anmeldung zeigt index.php die Anmeldeseite statt der App-Hülle.
   const anon = await fetch(`${base}/index.php`, { redirect: 'manual' });
@@ -158,9 +158,9 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
   assert(parsed === JSON.stringify({ path: ['verlauf'], query: { filter: 'alarm', x: 'ü' } }), 'parseRoute: ' + parsed);
 
   // Badge + Titel bei einem Hinweis (schwaches WLAN), danach wieder grün.
-  await pushBox(base, admin, { rssi: '-85' });
+  await pushBox(backend, admin, { rssi: '-85' });
   await page.waitFor(`document.title.startsWith('🟡') && document.querySelector('.tabbar .badge')?.textContent.trim() === '1'`, 10000);
-  await pushBox(base, admin);
+  await pushBox(backend, admin);
   await page.waitFor(`document.title.startsWith('🟢') && !document.querySelector('.tabbar .badge')`, 10000);
 
   // ---- Halten zum Senden (über eine Bestätigung wie aus einer Ansicht) ------
@@ -225,7 +225,7 @@ export default async function ({ browser, base, sandbox, assert, shot }) {
   assert(await fired(page) === 4, 'Bestätigen-Knopf löst aus');
 
   // ---- PC-Breite -------------------------------------------------------------
-  await pushBox(base, admin);
+  await pushBox(backend, admin);
   await page.viewport({ width: 1280, height: 800, mobile: false, scale: 1 });
   await page.waitFor(`!!document.querySelector('.sidebar')`);
   assert(await page.eval(`!document.querySelector('.tabbar')`), 'breit: keine Tab-Leiste');
