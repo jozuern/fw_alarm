@@ -68,3 +68,6 @@ Thumbs.db
 
 # Lokale Logdateien (z.B. debug.log vom seriellen Mitlesen)
 *.log
+
+# Gebautes Programm der Go-Fassung (tools/test-go.sh)
+/bin/

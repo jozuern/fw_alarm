@@ -52,6 +52,53 @@ Kernprinzip im README betont und einzuhalten: **Zusatz, kein Ersatz** für den M
   `<IP der VM>`); die VM-Adresse für `deploy.sh` steht in der nicht
   versionierten `server/deploy.local`.
 
+## Go-Fassung (im Bau)
+
+Der Server des Dashboards wird als EIN Go-Programm `fw-alarm` neu gebaut –
+innen neu, außen gleich. Entwurf:
+`docs/superpowers/specs/2026-11-17-go-server-neubau-design.md`, Plan:
+`docs/superpowers/plans/2026-11-17-go-server-neubau.md`. **Auf dem Server
+läuft bis zum Umschalten weiter die PHP-Fassung** (`nas_dashboard/`, alles
+oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
+ändern.
+- Aufbau: Modul `fwalarm` (`go.mod`, Go-Version festgeschrieben);
+  `cmd/fw-alarm/` verteilt nur auf die Unterbefehle (einzige Stelle mit
+  `os.Exit`), alles andere liegt in `internal/` (`clock`, `bg`, `textde`,
+  `config`, `app`, weitere folgen laut Plan). Abhängigkeiten nur
+  Standardbibliothek plus `golang.org/x/crypto`, `x/sys`, `x/term` und
+  `github.com/BurntSushi/toml`, mitgeliefert in `vendor/` (gebaut wird mit
+  `-mod=vendor`, ohne CGO). `nas_dashboard/webassets.go` bettet die
+  Oberfläche ein; `server/deploy.sh` spielt diese Datei nicht ein.
+- Konfiguration: `config.toml`, Vorlage `server/go/config.example.toml` (sie
+  ist genau die Ausgabe von `config.Write` – Erklärungen nur dort ändern,
+  dann `FW_WRITE_EXAMPLE=1 go test ./internal/config -run
+  TestExampleIsWriteOutput`). Dieselben Schlüssel wie `config.php` ohne
+  `data_dir`/`health_check_url`, dazu `state_dir`, `listen`,
+  `control_socket`, `check_interval_seconds` und die Probe-Sperre
+  `send_guard_keys`/`send_guard_until`; fehlt ein Schlüssel, gilt der Wert,
+  den der PHP-Code dafür nimmt. Befehle bisher: `fw-alarm version`,
+  `fw-alarm check-config [--config <datei>]`, `fw-alarm hash-password`
+  (Argon2id).
+- Prüfen: `bash tools/check-go.sh` (gofmt, `go vet` für PC und
+  `linux/arm64`, staticcheck, govulncheck, `go test`) und
+  `bash tools/test-go.sh [dateien…]` (baut `bin/fw-alarm` und lässt
+  Server-Tests aus `tests/backend/` gegen Go laufen; ohne Angabe die Dateien
+  aus `tools/go-green.txt`). Go ist auf dem PC pro Benutzer installiert, die
+  Skripte finden es selbst. staticcheck ohne ST1005 (`staticcheck.conf`:
+  deutsche Fehlertexte beginnen mit Hauptwörtern). Kommentare deutsch mit
+  Umlauten, Bezeichner englisch.
+- **GitHub prüft jeden Push auf `main`** und einmal pro Woche
+  (`.github/workflows/ci.yml`): dieselben Go-Prüfungen plus
+  `go test -race` (läuft auf dem PC mangels C-Compiler nicht) und Bau für
+  `linux/arm64` und `windows/amd64`, dazu die Node-Tests unter
+  `tests/dashboard/`, `tests/server/` und `tests/watcher/`. Nur Leserechte,
+  keine Geheimnisse, kein Einspielen; die Aktionen sind an feste Stände
+  gebunden.
+- Zeilenenden (`.gitattributes`): Go-Dateien, `tools/*.sh`, `.github/` und
+  die eingebetteten Oberflächen-Dateien (`assets/app/`, `app.css`,
+  `manifest.json`) LF; `vendor/`, `testdata/` und
+  `tests/backend/fixtures/` bytegenau.
+
 ## Build / Flash / Monitor
 
 PlatformIO (CLI-Weg):

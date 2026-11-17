@@ -479,7 +479,11 @@ Station (Anleitung: `nas_dashboard/SETUP.md`) oder – so betreibt es dieses
 Projekt seit 11/2026 – auf einem kleinen Linux-Server hinter einem Cloudflare
 Tunnel (`server/README.md`). Im zweiten Fall bleibt das NAS als Brücke für die
 alte Adresse (`nas_bridge/README.md`) und als Außen-Wächter
-(`cloud_watcher/README.md`).
+(`cloud_watcher/README.md`). Der Server wird gerade als Go-Programm neu
+gebaut (`cmd/`, `internal/`); GitHub prüft bei jedem Push die Go-Fassung
+(gofmt, vet, staticcheck, govulncheck, Tests samt Race-Detektor) und die
+Node-Tests der Server-Seite (`.github/workflows/ci.yml`), auf dem PC tut
+dasselbe `bash tools/check-go.sh`.
 
 Funktionen:
 

@@ -32,7 +32,9 @@ writeFileSync(join(bin, 'ssh'), [
   'case "$cmd" in',
   '  "mktemp -d /tmp/fw-deploy."*) echo /tmp/fw-deploy.AbCdEfGhIj ;;',
   '  "tar -x -C "*) mkdir -p "$vm/stage" && tar -x -C "$vm/stage" ;;',
-  '  "sudo rsync "*) rm -rf "$vm/deployed" && cp -r "$vm/stage/nas_dashboard" "$vm/deployed" ;;',
+  '  "sudo rsync "*) rm -rf "$vm/deployed" && cp -r "$vm/stage/nas_dashboard" "$vm/deployed"',
+  // Die Ausnahmen (--exclude=/name) wie rsync: Was ausgenommen ist, kommt nicht an.
+  '    for x in $cmd; do case "$x" in --exclude=/*) rm -rf "$vm/deployed/${x#--exclude=/}" ;; esac; done ;;',
   '  "cd \'/srv/fw-alarm/app\' && sudo find "*)',
   // (Unter Windows schreibt sha256sum " *datei"; die VM ist Linux: zwei Leerzeichen.)
   '    cd "$vm/deployed" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sed "s/ \\*/  /" ;;',
@@ -194,8 +196,9 @@ test('ein unbrauchbares Ziel (FW_DEPLOY_HOST) wird abgelehnt, bevor die VM anges
 
 // --- im Repo: Zielordner-Schutz und der Sicherungs-Schritt von deploy.sh ----
 // Eigenes kleines Repo mit einer Kopie der beiden Skripte, einem lokalen
-// "origin" (kein Netz) und 12 Dateien unter nas_dashboard/.
-function makeRepo() {
+// "origin" (kein Netz) und 12 Dateien unter nas_dashboard/ – dazu extra:
+// weitere Dateien unter nas_dashboard/ (Name → Inhalt).
+function makeRepo(extra = {}) {
   const t = makeVm();
   const work = join(tmp, `repo${seq}`);
   const origin = join(tmp, `origin${seq}.git`);
@@ -204,6 +207,9 @@ function makeRepo() {
   for (let i = 1; i <= 12; i += 1) {
     const name = `datei${String(i).padStart(2, '0')}.php`;
     writeFileSync(join(work, 'nas_dashboard', i % 3 === 0 ? 'api' : '', name), `<?php // Datei ${i}\n`);
+  }
+  for (const [name, content] of Object.entries(extra)) {
+    writeFileSync(join(work, 'nas_dashboard', name), content);
   }
   for (const f of ['deploy.sh', 'backup.sh']) {
     if (existsSync(join(repo, 'server', f))) cpSync(join(repo, 'server', f), join(work, 'server', f));
@@ -243,6 +249,16 @@ test('deploy.sh sichert, bevor sich auf dem Server etwas ändert, und spielt dan
   const backupAt = calls.findIndex((c) => c.startsWith('sudo tar '));
   const changeAt = calls.findIndex((c) => c.startsWith('tar -x -C ') || c.startsWith('sudo rsync '));
   assert.ok(backupAt >= 0 && changeAt >= 0 && backupAt < changeAt, `Reihenfolge der Aufrufe:\n${calls.join('\n')}`);
+});
+
+test('deploy.sh spielt die Einbettung der Go-Fassung (webassets.go) nicht in den Webroot ein', () => {
+  const t = makeRepo({ 'webassets.go': 'package webassets\n' });
+  const r = run('server/deploy.sh', ['HEAD'], t, {}, t.work);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.ok(r.out.includes(`deployed ${t.sha}: 12 files, 0 mismatches`), r.out + r.err);
+  assert.equal(existsSync(join(t.vm, 'deployed', 'webassets.go')), false, 'webassets.go liegt im Webroot');
+  const rsync = readFileSync(t.sshLog, 'utf8').split('\n').find((c) => c.startsWith('sudo rsync '));
+  assert.match(rsync, /--exclude=\/webassets\.go /);
 });
 
 test('scheitert die Sicherung, wird trotzdem eingespielt – der Lauf endet aber mit Warnung und Fehlercode', () => {

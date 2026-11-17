@@ -13,3 +13,22 @@ nas_dashboard/assets/vendor/* -text
 # immer LF - sie laufen unter Linux/DSM (Bash, systemd, Nginx, PHP).
 server/** text eol=lf
 nas_bridge/** text eol=lf
+
+# Go-Fassung: Quelltexte, Werkzeuge und Workflow immer LF (gofmt verlangt es,
+# die Skripte laufen unter Bash). Ebenso alles, was das Programm einbettet:
+# Die Bytes bestimmen ?v= und ETag und müssen auf PC und GitHub gleich sein.
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+tools/*.sh text eol=lf
+.github/** text eol=lf
+internal/**/templates/** text eol=lf
+nas_dashboard/assets/app/** text eol=lf
+nas_dashboard/assets/app.css text eol=lf
+nas_dashboard/manifest.json text eol=lf
+
+# Bytes unverändert (zuletzt, damit es auch für *.go darin gilt): mitgelieferte
+# Module, Vergleichsdateien der Tests.
+vendor/** -text
+**/testdata/** -text
+tests/backend/fixtures/** -text

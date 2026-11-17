@@ -42,7 +42,7 @@ unter Compute → Instances lässt sie sich wieder starten.
 
 | Pfad | Inhalt | Besitzer / Rechte |
 |---|---|---|
-| `/srv/fw-alarm/app` | Webroot = `nas_dashboard/` ohne `SETUP.md`, `config.example.php`, `data/` | root, lesbar |
+| `/srv/fw-alarm/app` | Webroot = `nas_dashboard/` ohne `SETUP.md`, `config.example.php`, `data/`, `webassets.go` | root, lesbar |
 | `/srv/fw-alarm/app/config.php` | Konfiguration mit Geheimnissen – liegt **nur hier**, wird beim Einspielen nie angefasst | root:fwalarm 0640 |
 | `/srv/fw-alarm/data` | Laufzeitdaten (Empfängerliste, Verlauf, Zustände) | fwalarm 0750 |
 | `/srv/fw-alarm/sessions` | PHP-Sitzungen (eigener Ordner, sonst endete das 12-h-Login nach 24 min) | fwalarm 0700 |

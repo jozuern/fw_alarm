@@ -1,0 +1,70 @@
+# Prüfungen bei jedem Push auf main und einmal pro Woche.
+# Nur Leserechte, keine Geheimnisse, kein Einspielen, keine Artefakte.
+# Die Aktionen sind an feste Stände gebunden (Version dahinter als Kommentar).
+name: Prüfungen
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Werkzeuge
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+      - name: gofmt
+        run: |
+          out="$(gofmt -l cmd internal nas_dashboard)"
+          if [ -n "$out" ]; then echo "nicht gofmt-formatiert:"; echo "$out"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      - name: staticcheck
+        run: staticcheck ./...
+      - name: govulncheck
+        run: govulncheck ./...
+      - name: go test -race
+        run: go test -race -mod=vendor ./...
+      - name: Bauen für linux/arm64 und windows/amd64
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor -trimpath -o "$RUNNER_TEMP/linux-arm64/fw-alarm" ./cmd/fw-alarm
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -trimpath -o "$RUNNER_TEMP/windows-amd64/fw-alarm.exe" ./cmd/fw-alarm
+
+  node:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # Zwei Wortlaut-Tests führen PHP-Funktionen aus (bis Aufgabe 37).
+      - name: PHP
+        run: |
+          if ! php --version; then
+            sudo apt-get update
+            sudo apt-get install -y php-cli
+            php --version
+          fi
+      - name: Node-Tests
+        run: node --test "tests/dashboard/*.test.mjs" "tests/server/*.test.mjs" "tests/watcher/*.test.mjs"

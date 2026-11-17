@@ -13,7 +13,9 @@
 # 3 = eingespielt, aber die Sicherung ist gescheitert.
 #
 # Nie angefasst werden config.php (liegt nur auf der VM) und die Daten.
-# Nicht eingespielt werden SETUP.md, config.example.php und data/.
+# Nicht eingespielt werden SETUP.md, config.example.php, data/ und
+# webassets.go (bettet die Oberfläche in die Go-Fassung ein, gehört nicht in
+# den Webroot).
 # Eingespielt wird nur, was auf origin/main liegt (erst pushen).
 #
 # Ziel: Die Adresse der VM steht bewusst NICHT im (öffentlichen) Repo. Sie
@@ -54,7 +56,7 @@ if ! git merge-base --is-ancestor "$sha" origin/main; then
 fi
 
 # Was nicht auf den Server gehört (gleiche Liste wie die rsync-Ausnahmen unten).
-skip='^nas_dashboard/(config\.php|SETUP\.md|config\.example\.php|data/)'
+skip='^nas_dashboard/(config\.php|SETUP\.md|config\.example\.php|data/|webassets\.go)'
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -103,6 +105,7 @@ git -c core.autocrlf=false -c core.eol=lf archive --format=tar "$sha" nas_dashbo
 # Ausnahmen (config.php!) bleiben dabei unberührt.
 ssh_vm "sudo rsync -rlt --delete-after --delay-updates --chmod=D755,F644 \
     --exclude=/config.php --exclude=/SETUP.md --exclude=/config.example.php --exclude=/data/ \
+    --exclude=/webassets.go \
     '$remote_tmp/nas_dashboard/' '$app/' \
   && sudo systemctl reload php8.3-fpm \
   && printf '%s %s\n' '$sha' \"\$(date -Is)\" | sudo tee /srv/fw-alarm/deployed-rev >/dev/null \
