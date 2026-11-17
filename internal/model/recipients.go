@@ -160,10 +160,10 @@ func (s *State) Find(id int) *Recipient {
 // phpTrim entfernt, was PHPs trim() entfernt: " \t\n\r\0\x0B".
 func phpTrim(s string) string { return strings.Trim(s, " \t\n\r\x00\x0b") }
 
-// maskKey: nur die ersten 4 Bytes eines Keys plus "..." – Keys sind
-// Geheimnisse. Kopie von PHP mask_bark_key (dort substr, also Bytes); die
-// eigentliche Fassung ist bark.MaskKey, model importiert sie nicht.
-func maskKey(k string) string {
+// MaskKey: nur die ersten 4 Bytes eines Keys plus "..." – Keys sind
+// Geheimnisse (PHP: mask_bark_key, dort substr, also Bytes). Die einzige
+// Fassung dieser Regel; bark.MaskKey reicht nur hierher weiter.
+func MaskKey(k string) string {
 	if len(k) > 4 {
 		k = k[:4]
 	}

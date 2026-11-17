@@ -49,6 +49,12 @@ func TestInvalidListCannotBeSaved(t *testing.T) {
 		}, "Demo"},
 		{"Befehlsnummer gleich next_id", func(s *State) { s.Commands.Current.ID = s.Commands.NextID }, "Befehl"},
 		{"Befehlsnummer über next_id", func(s *State) { s.Commands.NextID = 2 }, "Befehl"},
+		{"Befehls-Typen nicht nach id geordnet", func(s *State) {
+			s.Commands.RecentTypes = []RecentType{{ID: 7, Type: "TEST"}, {ID: 6, Type: "ALARM"}}
+		}, "aufsteigend"},
+		{"Befehls-Typ doppelt", func(s *State) {
+			s.Commands.RecentTypes = []RecentType{{ID: 6, Type: "ALARM"}, {ID: 6, Type: "TEST"}}
+		}, "aufsteigend"},
 		{"mehr als 20 Befehls-Typen", func(s *State) {
 			s.Commands.RecentTypes = nil
 			for i := 1; i <= 21; i++ {

@@ -70,26 +70,44 @@ func TestDraftDoesNotTouchSnapshot(t *testing.T) {
 }
 
 // Ein Dokument mit fehlenden Listen und Tabellen schreibt [] bzw. {} –
-// nie null (der strenge Leser lehnte es ab) – und liest sich zurück.
+// nie null (der strenge Leser lehnte es ab) – und liest sich zurück. Das
+// einzige null sind die leeren Zeiger, die so gemeint sind.
 func TestMarshalNeverNull(t *testing.T) {
-	st := &State{Schema: Schema, Commands: Commands{NextID: 1}}
-	b := mustJSON(t, st)
-	if bytes.Contains(b, []byte("null")) && !bytes.Contains(b, []byte(`"current":null`)) {
-		t.Errorf("null geschrieben: %s", b)
+	noNull := func(name string, b []byte, meant ...string) {
+		t.Helper()
+		rest := b
+		for _, m := range meant {
+			if !bytes.Contains(rest, []byte(m)) {
+				t.Errorf("%s: %s fehlt: %s", name, m, b)
+			}
+			rest = bytes.Replace(rest, []byte(m), nil, 1)
+		}
+		if bytes.Contains(rest, []byte("null")) {
+			t.Errorf("%s: null geschrieben: %s", name, b)
+		}
 	}
+	b := mustJSON(t, &State{Schema: Schema, Commands: Commands{NextID: 1}})
+	noNull("State", b, `"current":null`)
 	if _, err := DecodeState(b); err != nil {
 		t.Errorf("nicht zurückzulesen: %v\n%s", err, b)
 	}
-	rt := &Runtime{Schema: Schema, Box: &BoxStatus{}}
-	b = mustJSON(t, rt)
+	b = mustJSON(t, &Runtime{Schema: Schema})
+	noNull("Runtime", b, `"box":null`, `"watcher":null`)
 	if _, err := DecodeRuntime(b); err != nil {
 		t.Errorf("Laufzeitdaten nicht zurückzulesen: %v\n%s", err, b)
 	}
+	b = mustJSON(t, &Runtime{Schema: Schema, Box: &BoxStatus{}, Watcher: &OutsideWatcher{}})
+	noNull("Runtime mit Status", b)
+	if _, err := DecodeRuntime(b); err != nil {
+		t.Errorf("Laufzeitdaten mit Status nicht zurückzulesen: %v\n%s", err, b)
+	}
 	b = mustJSON(t, &Sessions{Schema: Schema})
+	noNull("Sessions", b)
 	if _, err := DecodeSessions(b); err != nil {
 		t.Errorf("Sitzungen nicht zurückzulesen: %v\n%s", err, b)
 	}
 	b = mustJSON(t, Rescue{Schema: Schema})
+	noNull("Rescue", b)
 	if !bytes.Contains(b, []byte(`"recipients":[]`)) {
 		t.Errorf("Not-Kopie: %s", b)
 	}

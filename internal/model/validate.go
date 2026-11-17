@@ -51,5 +51,10 @@ func (s *State) Validate() error {
 	if n := len(s.Commands.RecentTypes); n > MaxRecentTypes {
 		return fmt.Errorf("%d gemerkte Befehls-Typen – höchstens %d", n, MaxRecentTypes)
 	}
+	for i := 1; i < len(s.Commands.RecentTypes); i++ {
+		if prev, cur := s.Commands.RecentTypes[i-1].ID, s.Commands.RecentTypes[i].ID; cur <= prev {
+			return fmt.Errorf("gemerkte Befehls-Typen nicht aufsteigend nach id (Eintrag %d: id %d nach id %d)", i+1, cur, prev)
+		}
+	}
 	return nil
 }

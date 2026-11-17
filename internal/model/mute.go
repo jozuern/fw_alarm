@@ -60,9 +60,9 @@ func ApplyMute(r *Recipient, muted bool, now time.Time) (permanentEnded bool) {
 // und schreibt je Betroffenem den Eintrag key_unmuted, wie PHP
 // expire_stale_mutes ihn schreibt. Liefert die Betroffenen im Stand VOR
 // dem Zurückschalten (wie PHP); ist nichts überfällig, ändert sich nichts.
-// Die von der Box gemeldete Version zählt hier nicht mehr: Sie hebt die
-// des Servers schon beim Status-Push an (Spec §7).
-func (s *State) ExpireStaleMutes(now time.Time, muteMax int) []Recipient {
+// boxVersion ist die keys_version des letzten Status-Pushs (0 = unbekannt):
+// Wie bei PHP bump_keys_version zählt sie bei jeder Erhöhung mit.
+func (s *State) ExpireStaleMutes(now time.Time, muteMax int, boxVersion int) []Recipient {
 	var expired []Recipient
 	for i := range s.Recipients {
 		r := &s.Recipients[i]
@@ -75,12 +75,12 @@ func (s *State) ExpireStaleMutes(now time.Time, muteMax int) []Recipient {
 	if len(expired) == 0 {
 		return nil
 	}
-	version := s.Bump(0)
+	version := s.Bump(boxVersion)
 	for _, r := range expired {
 		s.Log(NewEntry(EvKeyUnmuted, now, map[string]any{
 			"by":      "automatisch",
 			"label":   r.Label,
-			"key":     maskKey(r.Key),
+			"key":     MaskKey(r.Key),
 			"source":  "auto",
 			"version": version,
 		}))

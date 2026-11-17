@@ -74,7 +74,7 @@ func TestExpireStaleMutes(t *testing.T) {
 	t.Run("nichts überfällig: nichts ändert sich", func(t *testing.T) {
 		s := sampleState()
 		before := mustJSON(t, s)
-		if got := s.ExpireStaleMutes(t0, muteMax); len(got) != 0 {
+		if got := s.ExpireStaleMutes(t0, muteMax, 0); len(got) != 0 {
 			t.Errorf("%+v", got)
 		}
 		if !bytes.Equal(mustJSON(t, s), before) {
@@ -84,7 +84,7 @@ func TestExpireStaleMutes(t *testing.T) {
 	t.Run("ohne Grenze: nichts", func(t *testing.T) {
 		s := sampleState()
 		s.Recipients[1].MutedAt = 1
-		if got := s.ExpireStaleMutes(t0, 0); len(got) != 0 || !s.Recipients[1].Muted {
+		if got := s.ExpireStaleMutes(t0, 0, 0); len(got) != 0 || !s.Recipients[1].Muted {
 			t.Errorf("%+v", got)
 		}
 	})
@@ -93,7 +93,7 @@ func TestExpireStaleMutes(t *testing.T) {
 		s.Recipients[0].Muted, s.Recipients[0].MutedAt = true, t0.Unix()-5*3600
 		later := t0.Add(4 * time.Hour) // Anna 9 Std, Bert 5 Std stumm, Carl dauerhaft
 		outboxBefore := len(s.Outbox)
-		got := s.ExpireStaleMutes(later, muteMax)
+		got := s.ExpireStaleMutes(later, muteMax, 0)
 		if len(got) != 2 || got[0].ID != 3 || got[1].ID != 7 {
 			t.Fatalf("Betroffene: %+v", got)
 		}
@@ -129,8 +129,22 @@ func TestExpireStaleMutes(t *testing.T) {
 				t.Errorf("Eintrag %d: %v", i, e)
 			}
 		}
-		if again := s.ExpireStaleMutes(later, muteMax); len(again) != 0 || s.KeysVersion != 13 {
+		if again := s.ExpireStaleMutes(later, muteMax, 0); len(again) != 0 || s.KeysVersion != 13 {
 			t.Error("zweiter Lauf hat noch etwas geändert")
+		}
+	})
+	// Wie PHP bump_keys_version: Jede Erhöhung kennt die zuletzt von der Box
+	// gemeldete Version – auch die beim Zurückschalten.
+	t.Run("die Version der Box zählt mit", func(t *testing.T) {
+		s := sampleState()
+		s.KeysVersion = 5
+		later := t0.Add(4 * time.Hour) // nur Bert überfällig
+		got := s.ExpireStaleMutes(later, muteMax, 41)
+		if len(got) != 1 || s.KeysVersion != 42 {
+			t.Fatalf("%d Betroffene, Version %d statt 42", len(got), s.KeysVersion)
+		}
+		if e := s.Outbox[len(s.Outbox)-1]; e.Int("version") != 42 {
+			t.Errorf("Eintrag: %v", e)
 		}
 	})
 }

@@ -9,18 +9,23 @@ import (
 	"testing"
 )
 
-// Gültige Dokumente als Text – die Zeilen von TestStrictDecode verderben
-// sie an je einer Stelle.
+// Gültige Dokumente als Text – vollständig, jedes Feld vorhanden. Die
+// Zeilen von TestStrictDecode verderben sie an je einer Stelle.
 const (
+	recipientsBlock = `"recipients": [
+    { "id": 3, "key": "testkey-anna-01", "label": "Anna", "phone": "", "added_at": 0,
+      "muted": false, "muted_at": 0, "mute_volume": 0, "mute_permanent": false, "mute_token": "tokAnna0001" }
+  ],`
+	demoLine    = `"demo": { "enabled": false, "key_id": 0, "key": "", "label": "", "changed_at": 0, "by": "" },`
+	commandText = `{ "id": 7, "type": "TEST", "state": "pending", "created_at": 1, "created_by": "admin", "demo_changed_at": 0,
+    "delivered_at": 0, "delivered_to": "", "acked_at": 0, "acked_by": "", "ack_result": "", "ack_message": "",
+    "cancelled_at": 0, "cancelled_by": "", "cancel_reason": "", "expired_at": 0 }`
 	stateText = `{
   "schema": 1,
   "keys_version": 12,
   "next_id": 14,
-  "recipients": [
-    { "id": 3, "key": "testkey-anna-01", "label": "Anna", "phone": "", "added_at": 0,
-      "muted": false, "muted_at": 0, "mute_volume": 0, "mute_permanent": false, "mute_token": "tokAnna0001" }
-  ],
-  "demo": { "enabled": false, "key_id": 0, "key": "", "label": "", "changed_at": 0, "by": "" },
+  ` + recipientsBlock + `
+  ` + demoLine + `
   "settings": { "mute_max_seconds": 0 },
   "notify": { "global": {}, "types": { "box_offline": { "enabled": "1" } } },
   "commands": { "next_id": 8, "current": null, "recent_types": [ { "id": 7, "type": "TEST" } ] },
@@ -34,22 +39,30 @@ const (
   "alarms_seen": { "fw-box-1": { "last_alarm": "nie", "alarm_seq": "0", "at": 4 } },
   "devices": {},
   "watcher": null,
-  "watch": { "last_run_at": 0, "retry_after": {}, "pending": [] },
+  "watch": { "last_run_at": 0, "offline_notified": false, "offline_since": 0, "offline_seen_at": 0, "offline_reminded_at": 0,
+    "offline_push_pending": false, "web_fail_count": 0, "web_fail_since": 0, "web_fail_notified_at": 0, "web_push_pending": false,
+    "watcher_watch_since": 0, "watcher_silent_seen_at": 0, "watcher_notified_at": 0, "watcher_push_pending": false,
+    "demo_reminded_at": 0, "demo_reminded_for": 0, "mute_reminded_at": 0, "permanent_mute_reminded_at": 0,
+    "health_bad_runs": 0, "health_notified_at": 0, "weekly_report_at": 0, "last_send_ok_at": 0, "last_send_failed_at": 0,
+    "last_run_line": "", "retry_after": {}, "emergency_notified_at": 0, "config_broken_notified_at": 0, "pending": [] },
   "throttle": { "login": {}, "mute": {} },
   "outbox": []
 }`
-	sessionsText = `{
+	sessionObject = `{ "user": "admin", "role": "admin", "csrf": "c", "auth_stamp": "s", "created_at": 1, "last_seen": 2 }`
+	sessionsText  = `{
   "schema": 1,
-  "sessions": { "abc": { "user": "admin", "role": "admin", "csrf": "c", "auth_stamp": "s", "created_at": 1, "last_seen": 2 } }
+  "sessions": { "abc": ` + sessionObject + ` }
 }`
 )
 
 // Jede Zeile verdirbt das Dokument an einer Stelle; der Fehler muss das
-// Feld nennen.
+// Feld nennen (field ist ein Teil der Meldung, bei den neueren Zeilen die
+// ganze Meldung bis auf den Zusatz bei kaputtem JSON).
 func TestStrictDecode(t *testing.T) {
 	type row struct {
 		name, from, to, field string
 	}
+	dupCommand := strings.Replace(commandText, `"state": "pending",`, `"state": "pending", "state": "acked",`, 1)
 	docs := []struct {
 		name   string
 		text   string
@@ -61,20 +74,42 @@ func TestStrictDecode(t *testing.T) {
 			{"unbekanntes Feld oben", `"next_id": 14,`, `"next_id": 14, "version": 3,`, "version"},
 			{"falscher Typ", `"id": 3,`, `"id": "3",`, "recipients[0].id"},
 			{"Zahl mit Komma statt ganzer Zahl", `"keys_version": 12,`, `"keys_version": 12.5,`, "keys_version"},
+			{"ganze Zahl über dem Bereich", `"keys_version": 12,`, `"keys_version": 9223372036854775808,`,
+				`Feld "keys_version": keine ganze Zahl im erlaubten Bereich`},
 			{"null statt Liste", `"recent_types": [ { "id": 7, "type": "TEST" } ]`, `"recent_types": null`, "commands.recent_types"},
 			{"null statt Objekt", `"settings": { "mute_max_seconds": 0 },`, `"settings": null,`, "settings"},
 			{"null statt Tabelle", `"global": {},`, `"global": null,`, "notify.global"},
 			{"null statt Text", `"label": "Anna",`, `"label": null,`, "recipients[0].label"},
 			{"null statt Zahl", `"keys_version": 12,`, `"keys_version": null,`, "keys_version"},
 			{"null statt Wahrheitswert", `"muted": false,`, `"muted": null,`, "recipients[0].muted"},
+			{"null als Empfänger", `"recipients": [`, `"recipients": [ null,`, `Feld "recipients[0]": null statt Objekt`},
+			{"null als Verlaufseintrag", `"outbox": [`, `"outbox": [ null,`, `Feld "outbox[0]": null statt Tabelle`},
+			{"null als Befehls-Typ", `"recent_types": [`, `"recent_types": [ null,`, `Feld "commands.recent_types[0]": null statt Objekt`},
+			{"null als Wert in notify.types", `{ "box_offline": { "enabled": "1" } }`, `{ "box_offline": null }`,
+				`Feld "notify.types[box_offline]": null statt Tabelle`},
 			{"andere Schreibweise", `"label": "Anna",`, `"LABEL": "Anna",`, "recipients[0].LABEL"},
 			{"doppelter Schlüssel", `"label": "Anna",`, `"label": "Anna", "label": "Bob",`, "recipients[0].label"},
 			{"doppelter Schlüssel im Verlaufseintrag", `"uid": "ab",`, `"uid": "ab", "uid": "cd",`, "outbox[0][uid]"},
 			{"doppelter Schlüssel in einer Tabelle", `{ "enabled": "1" }`, `{ "enabled": "1", "enabled": "0" }`, "notify.types[box_offline][enabled]"},
+			{"doppelter Schlüssel im laufenden Befehl", `"current": null`, `"current": ` + dupCommand, `Feld "commands.current.state": doppelt`},
+			{"doppeltes schema", `"schema": 1,`, `"schema": 1, "schema": 1,`, `Feld "schema": doppelt`},
+			{"doppeltes schema, verschieden", `"schema": 1,`, `"schema": 2, "schema": 1,`, `Feld "schema": doppelt`},
+			{"Komma vor der schließenden Klammer", `"by": "" }`, `"by": "", }`, `Feld "demo": kein gültiges JSON`},
+			{"Komma am Ende einer Liste", `{ "id": 7, "type": "TEST" } ]`, `{ "id": 7, "type": "TEST" }, ]`,
+				`Feld "commands.recent_types[1]": kein gültiges JSON`},
 			{"Daten nach dem Dokument", "\n}", "\n} {}", "nach dem Dokument"},
 			{"Müll nach dem Dokument", "\n}", "\n}x", "nach dem Dokument"},
-			{"anderes Schema", `"schema": 1,`, `"schema": 2,`, `"schema"`},
-			{"Schema fehlt", `"schema": 1,`, ``, `"schema"`},
+			{"anderes Schema", `"schema": 1,`, `"schema": 2,`, `Feld "schema": 2 statt 1`},
+			{"schema fehlt", `"schema": 1,`, ``, `Feld "schema": fehlt`},
+			{"Liste der Empfänger fehlt", recipientsBlock + "\n  ", ``, `Feld "recipients": fehlt`},
+			{"Demo fehlt", demoLine + "\n  ", ``, `Feld "demo": fehlt`},
+			{"Feld der Demo fehlt", `, "by": "" }`, ` }`, `Feld "demo.by": fehlt`},
+			{"Tabelle in notify fehlt", `"global": {}, `, ``, `Feld "notify.global": fehlt`},
+			{"Feld eines Empfängers fehlt", `"phone": "", `, ``, `Feld "recipients[0].phone": fehlt`},
+			{"Feld eines Befehls-Typs fehlt", `{ "id": 7, "type": "TEST" }`, `{ "id": 7 }`, `Feld "commands.recent_types[0].type": fehlt`},
+			{"leerer Befehl fehlt statt null", `"current": null, `, ``, `Feld "commands.current": fehlt`},
+			{"Feld des laufenden Befehls fehlt", `"current": null`,
+				`"current": ` + strings.Replace(commandText, `, "expired_at": 0`, ``, 1), `Feld "commands.current.expired_at": fehlt`},
 		}},
 		{"Runtime", runtimeText, func(b []byte) error { _, err := DecodeRuntime(b); return err }, []row{
 			{"unbekanntes Feld", `"seen_at": 5,`, `"seen_at": 5, "x": 1,`, "box.x"},
@@ -83,6 +118,10 @@ func TestStrictDecode(t *testing.T) {
 			{"null statt Tabelle", `"devices": {},`, `"devices": null,`, "devices"},
 			{"null statt Objekt", `"throttle": { "login": {}, "mute": {} },`, `"throttle": null,`, "throttle"},
 			{"null statt Text", `"remote_addr": "192.0.2.1",`, `"remote_addr": null,`, "box.remote_addr"},
+			{"null als Wert einer Tabelle", `{ "fw-box-1": { "last_alarm": "nie", "alarm_seq": "0", "at": 4 } }`, `{ "fw-box-1": null }`,
+				`Feld "alarms_seen[fw-box-1]": null statt Objekt`},
+			{"null als Verlaufseintrag", `"outbox": []`, `"outbox": [null]`, `Feld "outbox[0]": null statt Tabelle`},
+			{"null als vorgemerkte Meldung", `"pending": []`, `"pending": [null]`, `Feld "watch.pending[0]": null statt Objekt`},
 			{"null in einem Paar", `["device_id","fw-box-1"]`, `["device_id",null]`, "box.fields[0][1]"},
 			{"Paar mit einem Element", `["device_id","fw-box-1"]`, `["device_id"]`, "box.fields[0]"},
 			{"Paar mit drei Elementen", `["device_id","fw-box-1"]`, `["device_id","a","b"]`, "box.fields[0]"},
@@ -90,17 +129,30 @@ func TestStrictDecode(t *testing.T) {
 			{"andere Schreibweise", `"seen_at": 5,`, `"SEEN_AT": 5,`, "box.SEEN_AT"},
 			{"doppelter Schlüssel", `"seen_at": 5,`, `"seen_at": 5, "seen_at": 6,`, "box.seen_at"},
 			{"Daten nach dem Dokument", "\n}", "\n}\n[]", "nach dem Dokument"},
-			{"anderes Schema", `"schema": 1,`, `"schema": 0,`, `"schema"`},
+			{"anderes Schema", `"schema": 1,`, `"schema": 0,`, `Feld "schema": 0 statt 1`},
+			{"schema fehlt", `"schema": 1,`, ``, `Feld "schema": fehlt`},
+			{"Feld oben fehlt", "\"lifebeat_at\": 0,\n  ", ``, `Feld "lifebeat_at": fehlt`},
+			{"leerer Außen-Wächter fehlt statt null", "\"watcher\": null,\n  ", ``, `Feld "watcher": fehlt`},
+			{"Feld des Status fehlt", `"via_bridge": "0", `, ``, `Feld "box.via_bridge": fehlt`},
+			{"Merker fehlt", `"weekly_report_at": 0, `, ``, `Feld "watch.weekly_report_at": fehlt`},
+			{"Bremse fehlt", `"login": {}, "mute": {} }`, `"login": {} }`, `Feld "throttle.mute": fehlt`},
+			{"Feld in einer Tabelle fehlt", `, "at": 4`, ``, `Feld "alarms_seen[fw-box-1].at": fehlt`},
+			{"Feld eines Listenelements fehlt", `"pending": []`, `"pending": [ { "id": "a", "title": "t", "body": "b" } ]`,
+				`Feld "watch.pending[0].since": fehlt`},
 		}},
 		{"Sessions", sessionsText, func(b []byte) error { _, err := DecodeSessions(b); return err }, []row{
 			{"unbekanntes Feld", `"role": "admin",`, `"role": "admin", "ip": "x",`, "sessions[abc].ip"},
 			{"falscher Typ", `"created_at": 1,`, `"created_at": true,`, "sessions[abc].created_at"},
 			{"null statt Tabelle", `"sessions": {`, `"sessions": null, "x": {`, "sessions"},
 			{"null statt Text", `"user": "admin",`, `"user": null,`, "sessions[abc].user"},
+			{"null als Sitzung", `"abc": ` + sessionObject, `"abc": null`, `Feld "sessions[abc]": null statt Objekt`},
 			{"andere Schreibweise", `"user": "admin",`, `"User": "admin",`, "sessions[abc].User"},
-			{"doppelte Sitzung", `"sessions": {`, `"sessions": { "abc": {}, `, "sessions[abc]"},
+			{"doppelte Sitzung", `"sessions": { "abc": `, `"sessions": { "abc": ` + sessionObject + `, "abc": `, `Feld "sessions[abc]": doppelt`},
 			{"Daten nach dem Dokument", "\n}", "\n}\n\"x\"", "nach dem Dokument"},
-			{"anderes Schema", `"schema": 1,`, `"schema": 3,`, `"schema"`},
+			{"anderes Schema", `"schema": 1,`, `"schema": 3,`, `Feld "schema": 3 statt 1`},
+			{"schema fehlt", "\"schema\": 1,\n  ", ``, `Feld "schema": fehlt`},
+			{"Tabelle der Sitzungen fehlt", ",\n  \"sessions\": { \"abc\": " + sessionObject + " }", ``, `Feld "sessions": fehlt`},
+			{"Feld einer Sitzung fehlt", `"csrf": "c", `, ``, `Feld "sessions[abc].csrf": fehlt`},
 		}},
 	}
 	for _, doc := range docs {
@@ -125,10 +177,16 @@ func TestStrictDecode(t *testing.T) {
 			})
 		}
 	}
+	t.Run("State/gültig mit laufendem Befehl", func(t *testing.T) {
+		if _, err := DecodeState([]byte(strings.Replace(stateText, `"current": null`, `"current": `+commandText, 1))); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 // Ein anderes Schema ist ein SchemaError mit der gefundenen Nummer – auch
 // wenn das Dokument sonst Neues enthält (ein späteres Programm schrieb es).
+// Fehlt schema, ist das ein fehlendes Feld wie jedes andere.
 func TestSchemaErrorFirst(t *testing.T) {
 	newer := strings.Replace(stateText, `"schema": 1,`, `"schema": 2, "neues_feld": [],`, 1)
 	_, err := DecodeState([]byte(newer))
@@ -137,8 +195,9 @@ func TestSchemaErrorFirst(t *testing.T) {
 		t.Fatalf("erwartet SchemaError{2}, bekommen %v", err)
 	}
 	_, err = DecodeState([]byte(strings.Replace(stateText, `"schema": 1,`, ``, 1)))
-	if !errors.As(err, &se) || se.Found != 0 {
-		t.Fatalf("ohne schema: erwartet SchemaError{0}, bekommen %v", err)
+	var de *DecodeError
+	if errors.As(err, &se) || !errors.As(err, &de) || de.Field != "schema" || de.Problem != "fehlt" {
+		t.Fatalf("ohne schema: erwartet DecodeError{schema, fehlt}, bekommen %#v", err)
 	}
 }
 

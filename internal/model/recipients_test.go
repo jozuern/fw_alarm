@@ -61,12 +61,12 @@ func TestNewMuteToken(t *testing.T) {
 	}
 }
 
-// Wie PHP mask_bark_key; die Beispiele hat PHP selbst berechnet:
+// MaskKey ist PHP mask_bark_key; die Beispiele hat PHP selbst berechnet:
 // php -r "require 'nas_dashboard/lib/common.php'; echo mask_bark_key(…);"
 func TestMaskKey(t *testing.T) {
 	for in, want := range map[string]string{"abcdefgh12345": "abcd...", "ab": "ab...", "": "...", "äbcdef": "äbc..."} {
-		if got := maskKey(in); got != want {
-			t.Errorf("maskKey(%q) = %q, erwartet %q", in, got, want)
+		if got := MaskKey(in); got != want {
+			t.Errorf("MaskKey(%q) = %q, erwartet %q", in, got, want)
 		}
 	}
 }

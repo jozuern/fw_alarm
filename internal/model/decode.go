@@ -18,6 +18,12 @@ import (
 // den Go-Typ danebenhält. Die erlaubten Feldnamen kommen per Reflexion aus
 // den json-Angaben der Typen – es gibt keine zweite Liste, die abweichen
 // könnte. Eingebettete Felder gibt es in den Dokumenten nicht.
+//
+// Streng heißt auch vollständig: Jedes Feld jeder Struktur muss im Objekt
+// stehen, auch ein leerer Zeiger (als null). Eine von Hand gekürzte Datei
+// (z.B. ohne "recipients" oder "demo") liest sich sonst als leere Liste
+// bzw. LIVE (Spec §7: von Hand verdorben = nicht lesbar). Der Preis ist
+// gewollt: Ein neues Feld braucht ein neues Schema und eine Umstellung.
 
 // DecodeError nennt das Feld, an dem ein Dokument scheitert.
 type DecodeError struct {
@@ -33,8 +39,9 @@ func (e *DecodeError) Error() string {
 }
 
 // SchemaError: Das Dokument trägt eine andere Schema-Nummer als das
-// Programm (fehlt sie, ist Found 0). Geprüft vor allem anderen – ein
-// Dokument eines neueren Programms darf Felder haben, die dieses nicht kennt.
+// Programm. Geprüft vor allem anderen – ein Dokument eines anderen Programms
+// darf Felder haben, die dieses nicht kennt, oder welche nicht haben. Fehlt
+// schema, ist das ein fehlendes Feld (DecodeError), kein SchemaError.
 type SchemaError struct{ Found int }
 
 func (e *SchemaError) Error() string {
@@ -49,9 +56,6 @@ func DecodeState(data []byte) (*State, error) {
 	if err := decodeStrict(data, &s); err != nil {
 		return nil, err
 	}
-	if s.Schema != Schema {
-		return nil, &SchemaError{Found: s.Schema}
-	}
 	c := s.Clone()
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("Inhalt ungültig: %w", err)
@@ -65,9 +69,6 @@ func DecodeRuntime(data []byte) (*Runtime, error) {
 	if err := decodeStrict(data, &r); err != nil {
 		return nil, err
 	}
-	if r.Schema != Schema {
-		return nil, &SchemaError{Found: r.Schema}
-	}
 	return r.Clone(), nil
 }
 
@@ -77,14 +78,12 @@ func DecodeSessions(data []byte) (*Sessions, error) {
 	if err := decodeStrict(data, &s); err != nil {
 		return nil, err
 	}
-	if s.Schema != Schema {
-		return nil, &SchemaError{Found: s.Schema}
-	}
 	return s.Clone(), nil
 }
 
 // decodeStrict prüft data gegen den Typ, auf den v zeigt, und liest es
-// dann ein.
+// dann ein. Die Schema-Nummer prüft peekSchema; ihr Fehlen fällt dem
+// Durchgang als fehlendes Feld auf.
 func decodeStrict(data []byte, v any) error {
 	if found, ok := peekSchema(data); ok && found != Schema {
 		return &SchemaError{Found: found}
@@ -109,12 +108,14 @@ func decodeStrict(data []byte, v any) error {
 }
 
 // peekSchema liest nur die oberste Ebene und liefert die Zahl unter
-// "schema" (genau so geschrieben), wenn es sie gibt.
+// "schema" (genau so geschrieben), wenn sie dort genau einmal steht – ein
+// doppeltes schema meldet der Durchgang als "doppelt".
 func peekSchema(data []byte) (int, bool) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
 		return 0, false
 	}
+	found, n, ok := 0, 0, false
 	for dec.More() {
 		tok, err := dec.Token()
 		if err != nil {
@@ -125,11 +126,12 @@ func peekSchema(data []byte) (int, bool) {
 			return 0, false
 		}
 		if tok == "schema" {
-			n, err := strconv.Atoi(string(raw))
-			return n, err == nil
+			found++
+			v, err := strconv.Atoi(string(raw))
+			n, ok = v, err == nil
 		}
 	}
-	return 0, false
+	return n, ok && found == 1
 }
 
 // walker geht die Zeichen eines Dokuments durch und hält den Go-Typ daneben.
@@ -218,6 +220,10 @@ func (w *walker) value(t reflect.Type, path string) error {
 // öffnende Klammer ist schon gelesen.
 func (w *walker) object(t reflect.Type, path string) error {
 	fields := jsonFields(t)
+	byName := make(map[string]reflect.Type, len(fields))
+	for _, f := range fields {
+		byName[f.name] = f.typ
+	}
 	seen := map[string]bool{}
 	for w.dec.More() {
 		tok, err := w.next(path)
@@ -230,11 +236,11 @@ func (w *walker) object(t reflect.Type, path string) error {
 			return &DecodeError{Field: fieldPath, Problem: "doppelt"}
 		}
 		seen[key] = true
-		ft, ok := fields[key]
+		ft, ok := byName[key]
 		if !ok {
-			for name := range fields {
-				if strings.EqualFold(name, key) {
-					return &DecodeError{Field: fieldPath, Problem: "andere Schreibweise als \"" + name + "\""}
+			for _, f := range fields {
+				if strings.EqualFold(f.name, key) {
+					return &DecodeError{Field: fieldPath, Problem: "andere Schreibweise als \"" + f.name + "\""}
 				}
 			}
 			return &DecodeError{Field: fieldPath, Problem: "unbekannt"}
@@ -243,8 +249,15 @@ func (w *walker) object(t reflect.Type, path string) error {
 			return err
 		}
 	}
-	_, err := w.next(path) // schließende Klammer
-	return err
+	if _, err := w.next(path); err != nil { // schließende Klammer
+		return err
+	}
+	for _, f := range fields {
+		if !seen[f.name] {
+			return &DecodeError{Field: joinField(path, f.name), Problem: "fehlt"}
+		}
+	}
+	return nil
 }
 
 // mapping prüft eine Tabelle: Schlüssel beliebig, aber nicht doppelt.
@@ -333,9 +346,15 @@ func (w *walker) loose(tok json.Token, path string) error {
 	return nil
 }
 
-// jsonFields: JSON-Name → Typ jedes Felds der Struktur t.
-func jsonFields(t reflect.Type) map[string]reflect.Type {
-	out := make(map[string]reflect.Type, t.NumField())
+// jsonField ist ein Feld einer Struktur mit seinem JSON-Namen.
+type jsonField struct {
+	name string
+	typ  reflect.Type
+}
+
+// jsonFields: die Felder der Struktur t in ihrer Reihenfolge.
+func jsonFields(t reflect.Type) []jsonField {
+	out := make([]jsonField, 0, t.NumField())
 	for i := range t.NumField() {
 		f := t.Field(i)
 		if !f.IsExported() {
@@ -348,7 +367,7 @@ func jsonFields(t reflect.Type) map[string]reflect.Type {
 		if name == "" {
 			name = f.Name
 		}
-		out[name] = f.Type
+		out = append(out, jsonField{name: name, typ: f.Type})
 	}
 	return out
 }
