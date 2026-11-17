@@ -1,5 +1,8 @@
 # Der Dashboard-Server in Go — Design
 
+> **Überholt seit 17.11.2026:** ersetzt durch `2026-11-17-go-server-neubau-design.md`
+> (Neubau statt Übertragung). Dieser Text bleibt nur, bis der neue Plan steht.
+
 Stand: 16.11.2026. Plan dazu: `docs/superpowers/plans/2026-11-16-go-server.md`.
 Betrifft nur die Server-Seite des Dashboards (`nas_dashboard/` auf der
 Oracle-VM). Firmware, NAS-Brücke und Außen-Wächter bleiben, wie sie sind.
