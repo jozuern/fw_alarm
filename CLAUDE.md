@@ -79,25 +79,26 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
   den der PHP-Code dafür nimmt. Befehle bisher: `fw-alarm version`,
   `fw-alarm check-config [--config <datei>]`, `fw-alarm hash-password`
   (Argon2id).
-- Prüfen: `bash tools/check-go.sh` (gofmt, `go vet` für PC und
-  `linux/arm64`, staticcheck, govulncheck, `go test`) und
-  `bash tools/test-go.sh [dateien…]` (baut `bin/fw-alarm` und lässt
+- Prüfen auf dem PC: `bash tools/check-go.sh` (nur Go: gofmt, `go vet` für
+  PC und `linux/arm64`, staticcheck, govulncheck, `go test` ohne
+  Race-Detektor) und `bash tools/test-go.sh [dateien…]` (baut
+  `bin/fw-alarm` wie das Produkt – ohne CGO, `-trimpath` – und lässt
   Server-Tests aus `tests/backend/` gegen Go laufen; ohne Angabe die Dateien
   aus `tools/go-green.txt`). Go ist auf dem PC pro Benutzer installiert, die
   Skripte finden es selbst. staticcheck ohne ST1005 (`staticcheck.conf`:
   deutsche Fehlertexte beginnen mit Hauptwörtern). Kommentare deutsch mit
   Umlauten, Bezeichner englisch.
 - **GitHub prüft jeden Push auf `main`** und einmal pro Woche
-  (`.github/workflows/ci.yml`): dieselben Go-Prüfungen plus
-  `go test -race` (läuft auf dem PC mangels C-Compiler nicht) und Bau für
-  `linux/arm64` und `windows/amd64`, dazu die Node-Tests unter
-  `tests/dashboard/`, `tests/server/` und `tests/watcher/`. Nur Leserechte,
-  keine Geheimnisse, kein Einspielen; die Aktionen sind an feste Stände
-  gebunden.
+  (`.github/workflows/ci.yml`): Job „go“ – gofmt, `go vet`, staticcheck,
+  govulncheck, `go test -race` (läuft auf dem PC mangels C-Compiler nicht)
+  und Bau für `linux/arm64` und `windows/amd64`; Job „node“ – die Node-Tests
+  unter `tests/dashboard/`, `tests/server/` und `tests/watcher/` (die
+  Server-Tests unter `tests/backend/` noch nicht). Nur Leserechte, keine
+  Geheimnisse, kein Einspielen; die Aktionen sind an feste Stände gebunden.
 - Zeilenenden (`.gitattributes`): Go-Dateien, `tools/*.sh`, `.github/` und
-  die eingebetteten Oberflächen-Dateien (`assets/app/`, `app.css`,
-  `manifest.json`) LF; `vendor/`, `testdata/` und
-  `tests/backend/fixtures/` bytegenau.
+  alle eingebetteten Text-Dateien (`assets/app/`, `app.css`, `favicon.svg`,
+  `manifest.json`) LF; `vendor/`, `testdata/`, `tests/backend/fixtures/`
+  und die Bilder unter `assets/` bytegenau (`assets/vendor/` war es schon).
 
 ## Build / Flash / Monitor
 

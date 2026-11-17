@@ -33,7 +33,7 @@ func TestRun(t *testing.T) {
 		t.Errorf("check-config ohne Datei: %d %q", code, errOut)
 	}
 	// hash-password nimmt --config an (wie jeder Befehl), braucht es aber nicht.
-	if code, _, errOut := call("hash-password", "--config", "egal.toml"); code != 1 || !strings.HasPrefix(errOut, "Fehler: ") {
+	if code, _, errOut := call("hash-password", "--config", "egal.toml"); code != 1 || !strings.Contains(errOut, "\nFehler: ") {
 		t.Errorf("hash-password ohne Eingabe: %d %q", code, errOut)
 	}
 }

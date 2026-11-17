@@ -116,6 +116,12 @@ func TestHashPasswordCommand(t *testing.T) {
 	if strings.Contains(hash, "\n") || !strings.HasPrefix(hash, "$argon2id$") {
 		t.Fatalf("Ausgabe %q", out)
 	}
+	// Ohne Konsole (Pipe, Git Bash/mintty): erst der Hinweis, dann die beiden
+	// Fragen – alles auf stderr; auf stdout steht nur der Hash.
+	wantErr := "Hinweis: keine Konsole – die Eingabe wird sichtbar sein.\nNeues Passwort:\nNoch einmal:\n"
+	if errOut != wantErr {
+		t.Errorf("stderr %q, erwartet %q", errOut, wantErr)
+	}
 	if !config.VerifyPassword(hash, "Pass wört!") {
 		t.Error("ausgegebener Hash passt nicht zum Passwort")
 	}
@@ -136,7 +142,8 @@ func TestHashPasswordCommand(t *testing.T) {
 		"gar nichts":     "",
 	} {
 		code, out, errOut := hashPassword(t, input)
-		if code != 1 || out != "" || !strings.HasPrefix(errOut, "Fehler: ") {
+		lines := strings.Split(strings.TrimSuffix(errOut, "\n"), "\n")
+		if code != 1 || out != "" || !strings.HasPrefix(lines[len(lines)-1], "Fehler: ") {
 			t.Errorf("%s: Rückgabe %d, Ausgabe %q, Fehler %q", name, code, out, errOut)
 		}
 	}

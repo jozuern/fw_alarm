@@ -15,8 +15,10 @@ server/** text eol=lf
 nas_bridge/** text eol=lf
 
 # Go-Fassung: Quelltexte, Werkzeuge und Workflow immer LF (gofmt verlangt es,
-# die Skripte laufen unter Bash). Ebenso alles, was das Programm einbettet:
-# Die Bytes bestimmen ?v= und ETag und müssen auf PC und GitHub gleich sein.
+# die Skripte laufen unter Bash). Ebenso jede Text-Datei, die das Programm
+# einbettet (nas_dashboard/webassets.go): Die Bytes bestimmen ?v= und ETag und
+# müssen auf PC und GitHub gleich sein. Eingebettete Bilder und
+# assets/vendor/ bleiben bytegenau (-text, unten bzw. oben).
 *.go text eol=lf
 go.mod text eol=lf
 go.sum text eol=lf
@@ -25,10 +27,12 @@ tools/*.sh text eol=lf
 internal/**/templates/** text eol=lf
 nas_dashboard/assets/app/** text eol=lf
 nas_dashboard/assets/app.css text eol=lf
+nas_dashboard/assets/favicon.svg text eol=lf
 nas_dashboard/manifest.json text eol=lf
 
 # Bytes unverändert (zuletzt, damit es auch für *.go darin gilt): mitgelieferte
-# Module, Vergleichsdateien der Tests.
+# Module, Vergleichsdateien der Tests, eingebettete Bilder.
 vendor/** -text
 **/testdata/** -text
 tests/backend/fixtures/** -text
+nas_dashboard/assets/**/*.png -text

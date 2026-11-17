@@ -1,9 +1,70 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/bcrypt"
 )
+
+// cheapArgon baut einen Argon2id-Hash mit kleinen Werten (64 KiB, 1 Durchlauf),
+// damit der Fuzz-Test ihn tausendfach prüfen kann.
+func cheapArgon(pw string) string {
+	salt := []byte("salzsalzsalzsalz")
+	key := argon2.IDKey([]byte(pw), salt, 1, 64, 1, 32)
+	return fmt.Sprintf("$argon2id$v=19$m=64,t=1,p=1$%s$%s", b64.EncodeToString(salt), b64.EncodeToString(key))
+}
+
+// Der Hash kommt aus config.toml – Eingabe von außen. Was auch drinsteht:
+// kein Absturz, und VerifyPassword nimmt nie einen Hash an, den
+// passwordHashUsable verwirft (der Hinweis von check-config muss stimmen).
+func FuzzPasswordHash(f *testing.F) {
+	argon := cheapArgon("x")
+	for _, seed := range []string{
+		testBcrypt, otherBcrypt,
+		"$2y$04$" + strings.Repeat("A", 53),
+		"$2y$31$r60I68m5mVq98EDvnpGXGeS1SZtBd2wWlr0dy0MuX73YPDZ27VzZy",
+		argon,
+		strings.Replace(argon, "m=64", "m=1048576", 1),
+		strings.Replace(argon, "t=1", "t=0", 1),
+		strings.Replace(argon, "p=1", "p=255", 1),
+		strings.Replace(argon, "v=19", "v=16", 1),
+		argon + "$",
+		argon[:len(argon)-5],
+		"$argon2id$v=19$m=19456,t=2,p=1$WERJZnJaZnBFLlRGQm05NA$0gEMEc9M8Wl65RDmj94mLwQZuYQg/ceEjRdfNJCtCuo",
+		"", "$", "$$$$$", "$argon2id$", "$2y$", "PASTE_PASSWORD_HASH_HERE",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, hash string) {
+		usable := passwordHashUsable(hash)
+		if a, ok := parseArgon(hash); ok {
+			if a.memoryKiB > maxArgonMemoryKiB || a.passes > maxArgonPasses || a.threads > maxArgonThreads ||
+				a.passes < 1 || a.threads < 1 {
+				t.Fatalf("Grenzen nicht eingehalten: %+v", a)
+			}
+			// Teuer, aber erlaubt: nur Zerlegen prüfen, nicht rechnen (der
+			// Fuzz-Test soll Tausende Eingaben je Sekunde schaffen).
+			if a.memoryKiB > 1024 || a.passes > 2 {
+				return
+			}
+		}
+		if bcryptUsable(hash) {
+			cost, err := bcrypt.Cost([]byte(hash))
+			if err != nil || cost > maxBcryptCost {
+				t.Fatalf("bcrypt-Aufwand %d (%v) gilt als brauchbar", cost, err)
+			}
+			if cost > 5 {
+				return
+			}
+		}
+		if VerifyPassword(hash, "x") && !usable {
+			t.Fatalf("VerifyPassword nimmt den als unbrauchbar gemeldeten Hash %q an", hash)
+		}
+	})
+}
 
 func TestVerifyPassword(t *testing.T) {
 	// bcrypt aus dem Prüfstand (PHP password_hash, $2y$).

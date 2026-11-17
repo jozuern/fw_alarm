@@ -5,7 +5,8 @@
 #     bash tools/test-go.sh                      die Dateien aus tools/go-green.txt
 #     bash tools/test-go.sh <datei> [<datei>…]   genau diese Testdateien
 #
-# Baut zuerst bin/fw-alarm (mit den mitgelieferten Modulen aus vendor/), dann
+# Baut zuerst bin/fw-alarm wie das Produkt (ohne CGO, -trimpath, mit den
+# mitgelieferten Modulen aus vendor/), dann
 #     FW_BACKEND=go FW_GO_BIN=<absoluter Pfad> node --test <dateien>
 # tools/go-green.txt: je Zeile eine Testdatei, Pfad ab dem Repo
 # (z.B. tests/backend/go-driver.test.mjs); leere Zeilen und Zeilen mit #
@@ -22,7 +23,9 @@ cd "$(dirname "$0")/.."
 exe=""
 if [ "$(go env GOOS)" = "windows" ]; then exe=".exe"; fi
 mkdir -p bin
-go build -mod=vendor -o "bin/fw-alarm$exe" ./cmd/fw-alarm
+# Gebaut wie das Produkt: ohne CGO (unter Linux mit gcc würde sonst cgo
+# gelinkt und das geprüfte Programm wiche vom ausgelieferten ab).
+CGO_ENABLED=0 go build -mod=vendor -trimpath -o "bin/fw-alarm$exe" ./cmd/fw-alarm
 
 files=()
 if [ "$#" -gt 0 ]; then

@@ -527,6 +527,39 @@ func TestSendGuardConfig(t *testing.T) {
 			}
 		})
 	}
+
+	// Die Zeit gilt in der Zeitzone der Konfiguration, nicht in der Berliner.
+	// Geladen um 10:00 in Berlin = 04:00 in New York.
+	newYork := func(until string) map[string]string {
+		set := guard(`["adminkey0001"]`, until)
+		set["timezone"] = `"America/New_York"`
+		return set
+	}
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("New York: 2 h voraus gilt", func(t *testing.T) {
+		c := mustParse(t, tomlFile(newYork(`"2026-11-20 06:00"`)))
+		keys, until, active := c.SendGuard(now)
+		if !active || !slices.Equal(keys, []string{"adminkey0001"}) {
+			t.Fatalf("Sperre bis 06:00 New York nicht aktiv (bis %v)", until)
+		}
+		if want := time.Date(2026, 11, 20, 6, 0, 0, 0, ny); !until.Equal(want) {
+			t.Errorf("bis %v, erwartet %v", until, want)
+		}
+		if _, _, active := c.SendGuard(now.Add(2 * time.Hour)); active {
+			t.Error("Sperre um 06:00 New York noch aktiv")
+		}
+		if w := c.Warnings(); len(w) != 1 || !strings.Contains(w[0], "bis 06:00") {
+			t.Errorf("Hinweis %q", w)
+		}
+	})
+	t.Run("New York: 6,5 h voraus ist fehlerhaft", func(t *testing.T) {
+		if c, err := ParseAt(tomlFile(newYork(`"2026-11-20 10:30"`)), now); err == nil {
+			t.Fatalf("angenommen: %+v", c)
+		}
+	})
 }
 
 func TestHashNormalised(t *testing.T) {

@@ -14,9 +14,11 @@ import (
 )
 
 // RunHashPassword liest ein neues Passwort zweimal und gibt seinen
-// Argon2id-Hash für dashboard_password_hash aus. Am Terminal wird verdeckt
-// gelesen (ohne Echo); kommt die Eingabe aus einer Pipe, gelten die ersten
-// beiden Zeilen. Das Passwort erscheint nie in einer Ausgabe.
+// Argon2id-Hash für dashboard_password_hash aus. An einer Konsole wird
+// verdeckt gelesen (ohne Echo); sonst (Pipe, Git Bash/mintty) gelten die
+// ersten beiden Zeilen, und ein Hinweis auf stderr sagt vorher, dass die
+// Eingabe sichtbar sein wird. Fragen und Hinweise gehen auf stderr, auf
+// stdout steht nur der Hash; das Passwort gibt das Programm nie aus.
 func RunHashPassword(in io.Reader, stdout, stderr io.Writer) int {
 	first, second, err := readTwice(in, stderr)
 	if err != nil {
@@ -61,11 +63,22 @@ func readTwice(in io.Reader, prompt io.Writer) (string, string, error) {
 		}
 		return string(a), string(b), nil
 	}
+	// Keine Konsole (Pipe, oder Git Bash/mintty unter Windows): Verdeckt
+	// lesen geht nicht – das wird vorher gesagt, gefragt wird trotzdem. Jede
+	// Frage steht auf einer eigenen Zeile: Ob das Terminal die Eingabe samt
+	// Zeilenende zeigt, ist hier nicht zu erkennen.
+	errLines := errors.New("zwei Zeilen erwartet (Passwort und Wiederholung)")
+	fmt.Fprintln(prompt, "Hinweis: keine Konsole – die Eingabe wird sichtbar sein.")
 	r := bufio.NewReader(in)
-	a, errA := readLine(r)
-	b, errB := readLine(r)
-	if errA != nil || errB != nil {
-		return "", "", errors.New("zwei Zeilen erwartet (Passwort und Wiederholung)")
+	fmt.Fprintln(prompt, "Neues Passwort:")
+	a, err := readLine(r)
+	if err != nil {
+		return "", "", errLines
+	}
+	fmt.Fprintln(prompt, "Noch einmal:")
+	b, err := readLine(r)
+	if err != nil {
+		return "", "", errLines
 	}
 	return a, b, nil
 }
