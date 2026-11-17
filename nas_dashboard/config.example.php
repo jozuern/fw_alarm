@@ -76,8 +76,8 @@ return [
     // Login-IP-Sperre und die optionalen Arten (Anmeldung, Neustart der Box,
     // Wochenbericht ...). WELCHE Meldungen an diesen Key gehen und wie dringend
     // (ein/aus pro Art, Dringlichkeit, Ruhezeit, Ton, Stellvertreter,
-    // Wiederholungen), stellst du im Dashboard ein: Panel "Meldungen an den
-    // Admin" (Standard: leise). Die Werte hier darunter sind nur die
+    // Wiederholungen), stellst du im Dashboard ein: Einstellungen ->
+    // "Meldungen an mich" (Standard: leise). Die Werte hier darunter sind nur die
     // Standards, solange dort nichts anderes gewählt ist.
     // Leer ('') = ALLE Admin-Meldungen des Servers aus (das meldet dann auch
     // der Außen-Wächter). Sinnvoll: derselbe Key wie BARK_KEY_STATUS in config.h
@@ -118,8 +118,8 @@ return [
     // Jeder Empfänger kann seinen Eintrag über einen persönlichen Link stumm
     // schalten (z.B. iPhone-Kurzbefehl beim Betreten/Verlassen der Arbeit):
     //   .../api/mute.php?t=<GEHEIM-TOKEN>&state=on|off
-    // Den fertigen Link kopiert der Admin im Dashboard unter "Mehr" am
-    // Eintrag. Die alte Form ?key=<EIGENER_BARK_KEY> bleibt für
+    // Den fertigen Link kopiert der Admin im Dashboard im Bereich "Empfänger"
+    // (Person antippen). Die alte Form ?key=<EIGENER_BARK_KEY> bleibt für
     // Bestands-Kurzbefehle gültig. Stumm = der Alarm kommt weiterhin als
     // Critical Alert an, aber mit der im Dashboard eingestellten
     // Stumm-Lautstärke (Standard 0 = lautlos). Sicherheitsnetz: Nach so
@@ -150,8 +150,8 @@ return [
     // Der manuelle Alarm-Button sendet OHNE Umweg über den ESP32 - er muss ja
     // gerade dann funktionieren, wenn die ESP32-Kette klemmt. Alle Empfänger
     // bekommen ihn gleichzeitig (parallel), je bis zu bark_max_tries Versuche.
-    // Die Empfängerliste wird normalerweise IM DASHBOARD gepflegt (Panel
-    // "Alarm-Empfänger"); bark_keys_alarm hier ist nur ein Fallback, solange
+    // Die Empfängerliste wird normalerweise IM DASHBOARD gepflegt (Bereich
+    // "Empfänger"); bark_keys_alarm hier ist nur ein Fallback, solange
     // die Dashboard-Liste noch leer ist (oder samt Sicherung unlesbar wäre).
     // ACHTUNG: Titel/Body nur ASCII (ae/ue/oe), Bark zeigt keine Umlaute.
     'bark_host' => 'https://api.day.app',

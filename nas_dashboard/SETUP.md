@@ -238,7 +238,7 @@ Einrichtung:
    - `NO_CURL` – das verwendete CLI-PHP hat keine curl-Erweiterung → vollen
      Pfad wie oben verwenden.
    - `WEB_FAIL (n) …` – der Selbsttest (unten) schlägt fehl; `WEB_FAIL_NOTIFIED`
-     = „NAS-Dashboard DEFEKT“ gemeldet, `WEB_RECOVERED` = wieder OK.
+     = „Dashboard DEFEKT“ gemeldet, `WEB_RECOVERED` = wieder OK.
    - `HEALTH_ISSUES (n)` / `HEALTH_NOTIFIED` – Auffälligkeiten an der Box
      (schwaches WLAN, wenig Speicher, Heartbeat gescheitert; nur, wenn diese
      Meldung eingeschaltet ist).
@@ -246,7 +246,7 @@ Einrichtung:
      `WATCHER_SILENT_NOTIFIED` / `WATCHER_RECOVERED` – Zustand des
      Außen-Wächters (nur, wenn er eingerichtet ist). `WATCHER_UNKNOWN (…)` –
      der Datenordner klemmt, deshalb sind die Aufrufe der VM nicht zu
-     beurteilen; das deckt die Meldung „NAS-Dashboard DEFEKT“ ab.
+     beurteilen; das deckt die Meldung „Dashboard DEFEKT“ ab.
    - `STATE_WRITE_FAILED (…)` – der Wächter konnte seinen eigenen Zustand
      (`watchdog_state.json.php`) nicht speichern (Platte voll? Rechte?). Dann
      zählt er nicht weiter und wiederholt Meldungen – sofort beheben.
@@ -278,7 +278,7 @@ leise, die Werte kommen aus `config.php`. Die zusätzlichen Arten (Anmeldung am
 Dashboard, Stumm-/Laut-Wechsel per Kurzbefehl, automatisch beendete
 Stummschaltung, Neustart der Box, Auffälligkeiten an der Box, Wochenbericht)
 sind aus, bis du sie einschaltest. Schaltest du „Box offline“ oder
-„NAS-Dashboard defekt“ ab, fragt das Dashboard nach und zeigt es danach als
+„Dashboard defekt“ ab, fragt das Dashboard nach und zeigt es danach als
 Hinweis an. Steht im Ergebnis der DSM-Aufgabe `OHNE_PUSH (…)`, war eine
 Meldung fällig, aber im Dashboard abgeschaltet.
 
@@ -298,7 +298,7 @@ Der Wächter übernimmt noch drei weitere Aufgaben:
   Schreiben, Zurücklesen und Löschen – und ob die Dateien beschreibbar sind,
   die das Dashboard an Ort und Stelle beschreibt (Verlauf, Lock-Dateien,
   Sicherungen; die Meldung nennt dann die betroffene Datei). Ab **zwei Fehlschlägen in
-  Folge** kommt die Bark-Meldung „NAS-Dashboard DEFEKT“, danach alle 24 h
+  Folge** kommt die Bark-Meldung „Dashboard DEFEKT“, danach alle 24 h
   erneut, bis es wieder geht (dann einmal „wieder OK“; Abstand und „wieder OK“
   sind im Dashboard einstellbar). Abhilfe meist:
   File Station → `fw_alarm_data` → Eigenschaften → Berechtigung → Gruppe

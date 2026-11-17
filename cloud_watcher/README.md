@@ -40,7 +40,7 @@ Server weg ist).
 Außen-Wächter – NAS aus, Strom oder Internet zu Hause weg, DSM-Aufgabe
 abgeschaltet –, meldet das der Wächter auf dem Server („Aussen-Waechter meldet
 sich nicht“, einstellbar im Dashboard). Das Dashboard zeigt den Zustand unter
-„Box & Wartung“ als Zeile „Außen-Wächter (NAS)“.
+Einstellungen → „Box“ (Gruppe „Wartung“) als Zeile „Außen-Wächter (NAS)“.
 
 Bark-Alarme der Box laufen davon völlig unabhängig. Der Außen-Wächter ist –
 wie das ganze Projekt – ein **Zusatz, kein Ersatz**.
@@ -108,7 +108,7 @@ Voraussetzungen auf dem NAS (bei DSM 7 vorhanden): `bash` ≥ 4.3, `curl` ≥ 7.
    FW_WATCH_CONF=/volume1/@fw_alarm_watch/fw-alarm-watch.conf STATE_DIRECTORY=/volume1/@fw_alarm_watch/state /bin/bash /volume1/@fw_alarm_watch/fw-alarm-watch.sh > /volume1/@fw_alarm_watch/last-run.log 2>&1
    ```
    Einmal von Hand ausführen. Ob es läuft, sieht man ohne das NAS:
-   Im Dashboard unter „Box & Wartung“ steht „Außen-Wächter (NAS): meldet sich
+   Im Dashboard unter Einstellungen → „Box“ (Gruppe „Wartung“) steht „Außen-Wächter (NAS): meldet sich
    (zuletzt …)“, und im Zugriffsprotokoll des Servers erscheint alle 5 Minuten
    `POST /api/alive.php` mit Status 200. Scheitert ein Lauf, zeigt DSM den
    Grund unter „Aktion → Ergebnis anzeigen“ (dafür in den Einstellungen des

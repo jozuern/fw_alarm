@@ -62,7 +62,8 @@ pio device monitor      # serielle Ausgabe, 115200 Baud
 ```
 `platformio.ini` setzt `src_dir = boss925_alarm_bark`, damit der Ordnername exakt
 zur `.ino` passt – dadurch lässt sich dasselbe Projekt **ohne Änderung auch in der
-Arduino IDE** öffnen (Board: „ESP32 Dev Module"). Es gibt keine Tests und kein Lint.
+Arduino IDE** öffnen (Board: „ESP32 Dev Module"). Für die Firmware gibt es
+keine Tests und kein Lint (die Tests der Server-Seite stehen unter „Architektur“).
 Die Plattform ist gepinnt (`espressif32@7.0.1` = Arduino-ESP32-Core 2.0.17,
 damit getestet); Änderungen trotzdem so schreiben, dass sie auch mit Core 3.x
 bauen (Versions-Weichen über `ESP_ARDUINO_VERSION_MAJOR`).
@@ -776,7 +777,7 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   `web_health_check()` ruft `api/health.php` per `https://127.0.0.1/…` auf
   (`health_check_url`; antwortet NUR auf Loopback ohne Proxy-Kopfzeilen, sonst 404), das als `http`
   `data_dir_write_check()` ausführt (Lock, Schreiben, Zurücklesen, Löschen).
-  Ab 2 Fehlschlägen in Folge Bark „NAS-Dashboard DEFEKT“, Erinnerung alle
+  Ab 2 Fehlschlägen in Folge Bark „Dashboard DEFEKT“, Erinnerung alle
   24 h, einmal „wieder OK“; Verlaufs-Events `nas_web_failed`/
   `nas_web_recovered`. Scheitert der Selbsttest, nennt die „Box OFFLINE“-
   Meldung das NAS als wahrscheinliche Ursache (Störung 10/2026: Box lief,
@@ -921,7 +922,7 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   **Unsicherer Stand sieht nie frisch aus**: Solange keine frische
   NAS-Antwort da ist (Status-Fehler oder 15 s ohne Antwort) bzw. nach der
   Abmeldung mit stehen gebliebenem Alarm-Ergebnis, steht auf JEDER Seite das
-  Band `logic.unsureBand()` („Keine Verbindung zum NAS – angezeigte Werte
+  Band `logic.unsureBand()` („Keine Verbindung zum Server – angezeigte Werte
   können veraltet sein (Stand HH:MM:SS)“, rot mit „letzter bekannter Stand
   …: Box OFFLINE“) über dem Demo-Band; auf der Übersicht ersetzt es die
   Problemzeile der Status-Karte. Dann sind auch alle Prüfzeilen grau; ein
