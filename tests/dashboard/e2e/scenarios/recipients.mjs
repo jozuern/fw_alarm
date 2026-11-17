@@ -8,14 +8,13 @@
 // Dauer des Laufs herausgenommen und am Ende wieder angelegt, alles, was das
 // Szenario anlegt (Keys „lena0000001“ und „rcp…“), löscht es wieder.
 import { apiSession } from '../cdp.mjs';
-import { pushBox, readData, barkLog } from '../sandbox.mjs';
+import { pushBox, barkLog } from '../sandbox.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const q = (s) => JSON.stringify(s);
 const LENA_KEY = 'lena0000001';
 // Wortlaut wie im bisherigen Dashboard (app.js, Test-Push-Rückfrage).
 const testPushText = (name) => `Test-Push an "${name}" senden? Auf dem iPhone dort spielt einmal der ALARMTON – als normale Mitteilung, kein Alarm (bei Stummschalter oder Fokus bleibt sie leise). Am besten vorher Bescheid geben.`;
-const own = (k) => k.key === LENA_KEY || /^rcp[0-9a-z]{6,}$/.test(k.key);
 
 const text = (page, sel) => page.eval(`(document.querySelector(${q(sel)})?.textContent || '').replace(/\\s+/g, ' ').trim()`);
 const pillOf = (page, id) => text(page, `#rcp-${id} .rcp-state-pill`);
@@ -118,10 +117,6 @@ export default async function ({ browser, base, backend, assert, shot }) {
   const ANNA_KEY = 'rcpa' + u;
   const list = () => admin.get('keys_list');
   const entry = async (id) => (await list()).keys.find((k) => k.id === id);
-  // Vorhandene Empfänger mit vollem Key merken (die API liefert nur maskierte).
-  const stored = readData(backend, 'alarm_keys.json');
-  const initial = stored && Array.isArray(stored.keys) ? stored.keys : [];
-  const before = initial.filter((k) => !own(k)).map((k) => ({ id: k.id, label: k.label, key: k.key, phone: k.phone || '' }));
   const ids = {};
 
   const add = async (label, key, phone) => {
@@ -529,30 +524,6 @@ export default async function ({ browser, base, backend, assert, shot }) {
 
     assert(problems.length === 0, 'keine Konsolenfehler:\n' + problems.join('\n'));
   } finally {
-    // Aufräumen: Demo aus, eigene Empfänger bis auf einen weg (die Liste
-    // fasst höchstens 10, und den letzten lässt das NAS nicht löschen), alte
-    // zurück, dann den Rest der eigenen. Fehlschläge werden gemeldet, ändern
-    // aber das Ergebnis des Laufs nicht.
-    const note = (what, r) => { if (!r || !r.ok) console.error(`Aufräumen: ${what} fehlgeschlagen: ${JSON.stringify(r)}`); };
-    const ownLeft = () => (readData(backend, 'alarm_keys.json') || { keys: [] }).keys.filter(own);
-    try {
-      note('Demo aus', await admin.post({ action: 'demo_set', enabled: '0' }));
-      for (const k of ownLeft().slice(1)) note(`Empfänger ${k.label} löschen`, await admin.post({ action: 'keys_delete', id: String(k.id) }));
-      const now = readData(backend, 'alarm_keys.json');
-      const present = new Set((now && Array.isArray(now.keys) ? now.keys : []).map((k) => k.key));
-      for (const k of before) {
-        if (present.has(k.key)) continue;
-        const fields = { action: 'keys_add', label: k.label, key: k.key };
-        if (k.phone) fields.phone = k.phone;
-        note(`${k.label} zurück`, await admin.post(fields));
-      }
-      for (const k of ownLeft()) {
-        const r = await admin.post({ action: 'keys_delete', id: String(k.id) });
-        if (before.length) note(`Empfänger ${k.label} löschen`, r);
-      }
-      await pushBox(backend, admin);
-    } catch (err) {
-      console.error('Aufräumen unvollständig:', err.message);
-    }
+    // Nichts aufzuräumen: Jeder Lauf startet mit leeren Daten.
   }
 }

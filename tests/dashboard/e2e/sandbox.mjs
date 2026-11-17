@@ -1,5 +1,5 @@
 // Hilfen für die Szenarien: Status-Push der simulierten Box, ein Lauf des
-// Wächters, Laufzeitdaten und Bark-Anfragen des Prüfstands, Server an/aus.
+// Wächters, Bark-Anfragen des Prüfstands, Server an/aus.
 // Dünne Hüllen um tests/backend/harness.mjs - was dahinter läuft (PHP oder
 // später Go), entscheidet FW_BACKEND dort.
 import { box } from '../../backend/harness.mjs';
@@ -33,19 +33,10 @@ export function runWatchdog(backend) {
   return backend.runWatchdog();
 }
 
-// Laufzeitdatei lesen/ändern; name wie im Datenordner, z.B. 'watchdog_state.json'.
-// readData liefert null, wenn die Datei fehlt.
-export function readData(backend, name) {
-  return backend.data.read(name);
-}
-export function editData(backend, name, fn) {
-  return backend.data.edit(name, fn);
-}
-
 // Letzter Status-Push "vor <s> Sekunden": simuliert eine verstummte Box, ohne
 // die übrigen Werte zu ändern.
-export function setStatusAge(backend, seconds) {
-  return editData(backend, 'latest_status.json', (d) => { d.seen_at = Math.floor(Date.now() / 1000) - seconds; });
+export async function setStatusAge(backend, seconds) {
+  await backend.state.ageBoxStatus(seconds);
 }
 
 // Bark-Attrappe: alle bisherigen Anfragen ({t, key, fields}).

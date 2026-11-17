@@ -29,8 +29,10 @@ Von Hand ausprobieren: `node tests/backend/serve.mjs [--port 8787]` startet
 dasselbe Dashboard samt Attrappe, gibt die Adresse aus und läuft bis Strg+C.
 
 `tests/dashboard/e2e/sandbox.mjs` hält die Hilfen der Szenarien (Status-Push der
-simulierten Box, Lauf des Wächters, Datenordner lesen/ändern, Bark-Anfragen,
-Server anhalten/starten) als dünne Hüllen um den Prüfstand.
+simulierten Box, Lauf des Wächters, Bark-Anfragen, Server anhalten/starten) als
+dünne Hüllen um den Prüfstand. Zustand herstellen oder lesen geht nur über die
+Absichts-Helfer `backend.state.*` und `backend.storage.*` (jeder Aufruf mit
+`await`), nie über Dateien im Datenordner.
 
 Stolpersteine in den Szenarien: Ein `page.goto()`, das nur den `#`-Teil der
 aktuellen Adresse ändert (z.B. nach dem Login von `index.php` auf

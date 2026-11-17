@@ -7,7 +7,7 @@
 // Jeder Lauf startet mit leeren Daten: Das Szenario legt seine drei Empfänger
 // mit eindeutigen Keys an (und stellt Vorhandenes, falls doch da, wieder her).
 import { apiSession } from '../cdp.mjs';
-import { pushBox, runWatchdog, readData, editData, setStatusAge, barkLog, sandboxServer } from '../sandbox.mjs';
+import { pushBox, runWatchdog, setStatusAge, barkLog, sandboxServer } from '../sandbox.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const q = (sel) => JSON.stringify(sel);
@@ -59,14 +59,6 @@ export default async function ({ browser, base, backend, assert, shot }) {
   const K = { josh: 'josh' + u, tom: 'fail' + u, anna: 'anna' + u };
   const ids = {};
   const list = () => admin.get('keys_list');
-  // Vorhandene Empfänger (frühere Läufe) mit vollem Key merken - die API
-  // liefert nur maskierte Keys, die Datei im data_dir die echten. Reste eines
-  // abgebrochenen Laufs DIESES Szenarios werden nur entfernt, nicht wieder
-  // angelegt (sonst würden sie von Lauf zu Lauf weitergereicht).
-  const stored = readData(backend, 'alarm_keys.json');
-  const before = (stored && Array.isArray(stored.keys) ? stored.keys : [])
-    .map((k) => ({ id: k.id, label: k.label, key: k.key, phone: k.phone || '' }));
-  const leftover = (k) => ['Josh', 'Tom', 'Anna'].includes(k.label) && /^(josh|fail|anna)[0-9a-z]{6,}$/.test(k.key);
   let serverDown = false;
 
   const page = await browser.newPage();
@@ -135,14 +127,10 @@ export default async function ({ browser, base, backend, assert, shot }) {
     await add('anna', 'Anna', K.anna);
     assert((await admin.post({ action: 'keys_mute', id: String(ids.anna), muted: '1' })).ok, 'Anna stumm');
     assert((await admin.post({ action: 'keys_set_mute_volume', id: String(ids.anna), volume: '3' })).ok, 'Anna Lautstärke 3');
-    for (const k of before) {
-      const r = await admin.post({ action: 'keys_delete', id: String(k.id) });
-      assert(r.ok, `alten Empfänger ${k.label} herausnehmen: ` + JSON.stringify(r));
-    }
     assert((await list()).keys.length === 3, 'genau 3 Empfänger');
 
     // ---- Bereit: erst mit Hinweis (Wächter nie gelaufen), dann alles bereit
-    if (readData(backend, 'watchdog_state.json')) editData(backend, 'watchdog_state.json', (d) => { d.last_run_at = 0; });
+    await backend.state.setMarks({ last_run_at: 0 });
     await pushBox(backend, admin);
     await page.viewport({ width: 390, height: 844, mobile: true, scale: 2 });
     await page.login(base, 'admin', 'test');
@@ -379,7 +367,7 @@ export default async function ({ browser, base, backend, assert, shot }) {
     // ---- Box offline, kleines iPhone -----------------------------------------
     await page.viewport({ width: 320, height: 568, mobile: true, scale: 2 });
     await pushBox(backend, admin);
-    setStatusAge(backend, 600);
+    await setStatusAge(backend, 600);
     await page.waitFor(`${titleIs('Box offline')} && document.title.startsWith('🔴')`, 10000);
     await page.eval('scrollTo(0, 0)');
     assert(await page.eval(`!!document.querySelector('.status-card.is-crit')`), 'Status-Karte rot');
@@ -402,7 +390,7 @@ export default async function ({ browser, base, backend, assert, shot }) {
     // Tab-Leiste stehen.
     assert((await admin.post({ action: 'demo_set', enabled: '1', id: String(ids.josh) })).ok, 'Demo ein');
     await pushBox(backend, admin);
-    setStatusAge(backend, 600);
+    await setStatusAge(backend, 600);
     await page.waitFor(`${titleIs('Box offline')} && !!document.querySelector('.demo-band')`, 10000);
     await page.viewport({ width: 320, height: 568, mobile: true, scale: 2 });
     await sandboxServer(backend, 'stop');
@@ -548,33 +536,8 @@ export default async function ({ browser, base, backend, assert, shot }) {
 
     assert(problems.length === 0, 'keine Konsolenfehler:\n' + problems.join('\n'));
   } finally {
-    // Aufräumen: Server wieder an, Demo aus, alte Empfänger zurück, eigene weg
-    // (den letzten lässt das NAS nicht löschen - dann bleibt er stehen).
-    // Fehlschläge werden gemeldet, ändern aber das Ergebnis des Laufs nicht.
-    const note = (what, r) => { if (!r || !r.ok) console.error(`Aufräumen: ${what} fehlgeschlagen: ${JSON.stringify(r)}`); };
-    try {
-      if (serverDown) await sandboxServer(backend, 'start');
-      note('Demo aus', await admin.post({ action: 'demo_set', enabled: '0' }));
-      // Ein noch wartender TEST-Befehl (Lauf mittendrin abgebrochen) würde
-      // den nächsten Lauf blockieren; ohne wartenden Befehl ist das ein No-op.
-      await admin.post({ action: 'cancel' });
-      const now = readData(backend, 'alarm_keys.json');
-      const present = new Set((now && Array.isArray(now.keys) ? now.keys : []).map((k) => k.key));
-      for (const k of before) {
-        if (present.has(k.key) || leftover(k)) continue;
-        const fields = { action: 'keys_add', label: k.label, key: k.key };
-        if (k.phone) fields.phone = k.phone;
-        note(`${k.label} zurück`, await admin.post(fields));
-      }
-      const ownIds = Object.values(ids);
-      for (const [i, id] of ownIds.entries()) {
-        const r = await admin.post({ action: 'keys_delete', id: String(id) });
-        // Der letzte Empfänger der Liste darf bleiben (NAS lehnt das Löschen ab).
-        if (i < ownIds.length - 1 || before.some((k) => !leftover(k))) note(`Empfänger ${id} löschen`, r);
-      }
-      await pushBox(backend, admin);
-    } catch (err) {
-      console.error('Aufräumen unvollständig:', err.message);
-    }
+    // Server wieder an, damit der Prüfstand sauber endet (die Daten verwirft
+    // jeder Lauf ohnehin).
+    if (serverDown) await sandboxServer(backend, 'start').catch((err) => console.error('Server starten:', err.message));
   }
 }

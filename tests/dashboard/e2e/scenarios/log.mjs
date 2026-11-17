@@ -88,7 +88,7 @@ export default async function ({ browser, base, backend, assert, shot }) {
     // ---- Ereignisse erzeugen ------------------------------------------------
     // Ein leerer Prüfstand hat keinen Verlauf: ältere Einträge für „Ältere laden“ (mehr als zwei Seiten).
     const seeded = Math.floor(Date.now() / 1000) - 7200;
-    backend.data.appendLog(Array.from({ length: 60 }, (_, i) => ({ event: 'key_added', by: 'admin', label: 'Alt' + i, key: 'kkkk...', log_at: seeded + i })));
+    await backend.state.seedLog(Array.from({ length: 60 }, (_, i) => ({ event: 'key_added', by: 'admin', label: 'Alt' + i, key: 'kkkk...', log_at: seeded + i })));
     assert((await admin.post({ action: 'demo_set', enabled: '0' })).ok, 'Demo aus');
     await admin.post({ action: 'cancel' });
     await removeOwn();

@@ -8,14 +8,12 @@
 // Jeder Lauf startet mit leeren Daten: Meldungs- und App-Einstellungen werden
 // trotzdem als Datei gesichert und am Ende zurückgeschrieben; die eigenen
 // Empfänger (Keys „seta…“/„setb…“) löscht das Szenario wieder, Demo aus.
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { apiSession } from '../cdp.mjs';
-import { pushBox, readData, editData, setStatusAge, barkLog } from '../sandbox.mjs';
+import { pushBox, setStatusAge, barkLog } from '../sandbox.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const q = (s) => JSON.stringify(s);
 const text = (page, sel) => page.eval(`(document.querySelector(${q(sel)})?.textContent || '').replace(/\\s+/g, ' ').trim()`);
-const own = (k) => /^set[ab][0-9a-z]{6,}$/.test(k.key);
 
 // Seite neu laden: Ein reiner Wechsel des #-Teils löst kein load-Ereignis aus.
 async function open(page, base, hash) {
@@ -78,15 +76,6 @@ async function failAction(page, action) {
   })()`);
 }
 
-// Laufzeitdatei im data_dir roh sichern (null = gab es nicht) bzw. zurückschreiben.
-function backupFile(backend, name) {
-  const p = backend.data.path(name);
-  return { p, raw: existsSync(p) ? readFileSync(p, 'utf8') : null };
-}
-function restoreFile(b) {
-  if (b.raw === null) { if (existsSync(b.p)) unlinkSync(b.p); } else writeFileSync(b.p, b.raw);
-}
-
 // Notification-Attrappe: zeichnet jede Benachrichtigung auf; die Erlaubnis
 // steht erst auf „default“ und wird beim Fragen erteilt. window.focus zählt.
 const NOTIFICATION_STUB = `(() => {
@@ -118,8 +107,6 @@ export default async function ({ browser, base, backend, assert, shot }) {
   const typeOf = async (key) => (await notify()).types.find((t) => t.key === key);
   const optOf = async (type, key) => (await typeOf(type)).options.find((o) => o.key === key).value;
   const globalOf = async (key) => (await notify()).global.find((o) => o.key === key).value;
-  const backups = [backupFile(backend, 'notify_settings.json'), backupFile(backend, 'app_settings.json')];
-  const muteBefore = (await admin.get('settings_list')).settings.mute_max_seconds.value;
   const ids = {};
 
   const add = async (label, key) => {
@@ -129,11 +116,6 @@ export default async function ({ browser, base, backend, assert, shot }) {
     const added = (await list()).keys.filter((k) => !known.has(k.id));
     assert(added.length === 1, 'neue id für ' + label);
     return added[0].id;
-  };
-  const removeOwn = async () => {
-    for (const k of ((readData(backend, 'alarm_keys.json') || { keys: [] }).keys || []).filter(own)) {
-      await admin.post({ action: 'keys_delete', id: String(k.id) });
-    }
   };
 
   const page = await browser.newPage();
@@ -155,7 +137,6 @@ export default async function ({ browser, base, backend, assert, shot }) {
   try {
     // ---- Ausgangslage: Demo aus, Anna und Ben (stumm), Box meldet sich ----
     assert((await admin.post({ action: 'demo_set', enabled: '0' })).ok, 'Demo aus');
-    await removeOwn();
     ids.anna = await add('Anna', 'seta' + u);
     ids.ben = await add('Ben', 'setb' + u);
     assert((await admin.post({ action: 'keys_mute', id: String(ids.ben), muted: '1' })).ok, 'Ben stumm');
@@ -323,7 +304,7 @@ export default async function ({ browser, base, backend, assert, shot }) {
     // Verkürzen, während Anna schon 5 Std stumm ist: Sie würde sofort laut
     // (und bekäme eine Nachricht) - erst nachfragen, mit Namen.
     assert((await admin.post({ action: 'keys_mute', id: String(ids.anna), muted: '1' })).ok, 'Anna stumm');
-    editData(backend, 'alarm_keys.json', (d) => { d.keys.find((k) => k.id === ids.anna).muted_at = Math.floor(Date.now() / 1000) - 5 * 3600; });
+    await backend.state.ageMute(ids.anna, 5 * 3600);
     await page.eval('FW.store.refreshKeys()');
     await page.waitFor(`(FW.store.getState().keys?.keys || []).some((k) => k.id === ${ids.anna} && k.muted && Date.now() / 1000 - k.muted_at > 4 * 3600)`, 5000);
     await page.click('.set-choice[data-value="14400"]');
@@ -431,7 +412,7 @@ export default async function ({ browser, base, backend, assert, shot }) {
     await page.click('.set-probe-window summary');
     await page.waitFor(`(document.querySelector('.set-probe-window')?.textContent || '').includes('18:55')`, 3000);
     // Box offline: gedimmt, mit dem Stand von wann.
-    setStatusAge(backend, 120);
+    await setStatusAge(backend, 120);
     await page.eval('FW.store.refreshStatus()');
     await page.waitFor(`(document.querySelector('.set-box-stale')?.textContent || '').includes('letzter bekannter Stand von') && !!document.querySelector('#box-wifi.tone-unknown')`, 8000);
     await shot(page, 'mobile-box-offline');
@@ -471,7 +452,7 @@ export default async function ({ browser, base, backend, assert, shot }) {
     await page.eval('FW.store.refreshStatus()');
     // Tab versteckt, Box verstummt: genau EINE Benachrichtigung.
     await page.eval(`(() => { Object.defineProperty(document, 'hidden', { value: true, configurable: true }); document.dispatchEvent(new Event('visibilitychange')); })()`);
-    setStatusAge(backend, 120);
+    await setStatusAge(backend, 120);
     await page.eval('FW.store.refreshStatus()');
     await page.waitFor(`window.__notes.length === 1`, 5000);
     const note1 = await page.eval(`({ title: window.__notes[0].title, body: window.__notes[0].body, tag: window.__notes[0].tag })`);
@@ -551,15 +532,6 @@ export default async function ({ browser, base, backend, assert, shot }) {
 
     assert(problems.length === 0, 'keine Konsolenfehler:\n' + problems.join('\n'));
   } finally {
-    const note = (what, r) => { if (!r || !r.ok) console.error(`Aufräumen: ${what} fehlgeschlagen: ${JSON.stringify(r)}`); };
-    try {
-      note('Demo aus', await admin.post({ action: 'demo_set', enabled: '0' }));
-      note('Stumm-Dauer', await admin.post({ action: 'settings_set', key: 'mute_max_seconds', value: String(muteBefore) }));
-      backups.forEach(restoreFile);
-      await removeOwn();
-      await pushBox(backend, admin);
-    } catch (e) {
-      console.error('Aufräumen: ' + e.message);
-    }
+    // Nichts aufzuräumen: Jeder Lauf startet mit leeren Daten.
   }
 }
