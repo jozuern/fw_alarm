@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -40,6 +41,50 @@ func TestRescueLenient(t *testing.T) {
 		if r.Recipients == nil || len(r.Recipients) != 0 {
 			t.Errorf("%q: %+v", garbage, r)
 		}
+	}
+}
+
+// Aus der Not-Kopie die Empfänger eines Alarms im Notbetrieb.
+func TestRescueTargets(t *testing.T) {
+	anna := RescueRecipient{ID: 3, Key: keyAnna, Label: "Anna"}
+	bert := RescueRecipient{ID: 7, Key: keyBert, Label: "Bert", Muted: true, MutedAt: 4, MuteVolume: 3}
+	carl := RescueRecipient{ID: 13, Key: keyCarl, Label: "Carl", MuteVolume: 99}
+	tgt := func(r RescueRecipient, vol int) Target {
+		return Target{ID: r.ID, Key: r.Key, Label: r.Label, Muted: r.Muted, MuteVolume: vol}
+	}
+	many := make([]RescueRecipient, 0, 12)
+	for i := 1; i <= 12; i++ {
+		many = append(many, RescueRecipient{ID: i, Key: fmt.Sprintf("testkey-r-%02d", i)})
+	}
+	cases := []struct {
+		name string
+		in   Rescue
+		want []Target
+		demo bool
+	}{
+		{"alle gültigen, Stumm wie gespeichert", Rescue{Recipients: []RescueRecipient{anna, bert, carl}},
+			[]Target{tgt(anna, 0), tgt(bert, 3), tgt(carl, 10)}, false},
+		{"gültiger Demo-Empfänger: nur er", Rescue{DemoKeyID: 7, Recipients: []RescueRecipient{anna, bert, carl}},
+			[]Target{tgt(bert, 3)}, true},
+		{"Demo-Verweis ins Leere: alle", Rescue{DemoKeyID: 99, Recipients: []RescueRecipient{anna, bert}},
+			[]Target{tgt(anna, 0), tgt(bert, 3)}, false},
+		{"Demo-Verweis auf einen ungültigen Eintrag: alle", Rescue{DemoKeyID: 5, Recipients: []RescueRecipient{
+			{ID: 5, Key: "kurz"}, anna}}, []Target{tgt(anna, 0)}, false},
+		{"ungültige und doppelte fallen weg", Rescue{Recipients: []RescueRecipient{
+			{ID: 1, Key: "kurz"}, anna, {ID: 9, Key: " " + keyAnna + " "}, {ID: 2, Key: "mit leer zeichen"}}},
+			[]Target{tgt(anna, 0)}, false},
+		{"kein gültiger Key", Rescue{Recipients: []RescueRecipient{{ID: 1, Key: "kurz"}}}, []Target{}, false},
+		{"leer", Rescue{}, []Target{}, false},
+	}
+	for _, c := range cases {
+		got, demo := c.in.Targets()
+		if !reflect.DeepEqual(got, c.want) || demo != c.demo {
+			t.Errorf("%s: %+v demo=%v, erwartet %+v demo=%v", c.name, got, demo, c.want, c.demo)
+		}
+	}
+	got, _ := Rescue{Recipients: many}.Targets()
+	if len(got) != MaxRecipients || got[0].ID != 1 || got[MaxRecipients-1].ID != MaxRecipients {
+		t.Errorf("höchstens %d, die ersten: %+v", MaxRecipients, got)
 	}
 }
 

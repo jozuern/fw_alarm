@@ -34,6 +34,42 @@ func (r Rescue) MarshalJSON() ([]byte, error) {
 	return json.Marshal(plain(r))
 }
 
+// Targets liefert die Empfänger, an die ein Alarm im Notbetrieb ginge (Spec
+// §6.3): die gültigen, einmaligen Keys der Kopie, höchstens MaxRecipients –
+// lieber die gültigen Einträge als keiner. Verweist DemoKeyID auf einen
+// dieser Einträge, nur auf ihn (demo = true); ein Verweis ins Leere
+// alarmiert lieber alle als niemanden (wie Effective). Stumm-Zustand und
+// Stumm-Lautstärke wie gespeichert. Keine Targets = die Kopie taugt nicht.
+func (r Rescue) Targets() (targets []Target, demo bool) {
+	list := make([]Target, 0, min(len(r.Recipients), MaxRecipients))
+	seen := make(map[string]bool, len(r.Recipients))
+	for _, rr := range r.Recipients {
+		key := phpTrim(rr.Key)
+		if !ValidKey(key) || seen[key] {
+			continue
+		}
+		if len(list) >= MaxRecipients {
+			break
+		}
+		seen[key] = true
+		list = append(list, Target{
+			ID:         rr.ID,
+			Key:        key,
+			Label:      rr.Label,
+			Muted:      rr.Muted,
+			MuteVolume: min(10, max(0, rr.MuteVolume)),
+		})
+	}
+	if r.DemoKeyID != 0 {
+		for _, tg := range list {
+			if tg.ID == r.DemoKeyID {
+				return []Target{tg}, true
+			}
+		}
+	}
+	return list, false
+}
+
 // DecodeRescueLenient liest die Not-Kopie nachsichtig – lieber die gültigen
 // Einträge als keiner (Spec §6.3): Einträge, die keine Objekte sind, keinen
 // gültigen Key haben oder deren Key schon vorkam, fallen weg; es zählen die
