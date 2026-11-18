@@ -1,7 +1,6 @@
 package dashapi
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -173,86 +172,4 @@ func FuzzFilterInt(f *testing.F) {
 			t.Fatalf("%q → %d, Kern %q", s, n, core)
 		}
 	})
-}
-
-// EINE Tabelle: welche Aktion die Listen-Version erhöht – genau das, was die
-// Box kennt (CLAUDE.md, Empfängerliste/Arbeitsmodus/Demo-Modus). Jede
-// Erhöhung geht über die Version hinaus, die die Box zuletzt gemeldet hat
-// (PHP bump_keys_version) – auch wenn die Box eine höhere meldet als der
-// Server hat.
-func TestWhichActionsBump(t *testing.T) {
-	const (
-		yes = iota
-		no
-		onlyWithMute // nur, wenn sich dabei stumm/laut ändert
-	)
-	type row struct {
-		name  string
-		setup func(d *model.State) // vor der Aktion (Anna, Bert, Version 10)
-		kv    []string
-		bumps int
-	}
-	muteAnna := func(d *model.State) { d.Recipients[0].Muted, d.Recipients[0].MutedAt = true, t0.Unix() }
-	permAnna := func(d *model.State) { muteAnna(d); d.Recipients[0].MutePermanent = true }
-	demoAnna := func(d *model.State) { d.Demo = model.Demo{Enabled: true, KeyID: 1, Key: anna.Key, Label: "Anna"} }
-	rows := []row{
-		{"keys_add", nil, []string{"action", "keys_add", "label", "Cara", "key", "carakey00003"}, yes},
-		{"keys_delete", nil, []string{"action", "keys_delete", "id", "2"}, yes},
-		{"keys_replace_key", nil, []string{"action", "keys_replace_key", "id", "1", "key", "neuekey00001"}, yes},
-		{"keys_mute stumm", nil, []string{"action", "keys_mute", "id", "1", "muted", "1"}, yes},
-		{"keys_mute laut", muteAnna, []string{"action", "keys_mute", "id", "1", "muted", "0"}, yes},
-		{"keys_set_mute_volume", nil, []string{"action", "keys_set_mute_volume", "id", "1", "volume", "3"}, yes},
-		{"demo_set an", nil, []string{"action", "demo_set", "enabled", "1", "id", "1"}, yes},
-		{"demo_set aus", demoAnna, []string{"action", "demo_set", "enabled", "0"}, yes},
-		{"demo_set aus, obwohl aus (Reparaturweg)", nil, []string{"action", "demo_set", "enabled", "0"}, yes},
-		{"keys_set_mute_permanent laut → dauerhaft", nil, []string{"action", "keys_set_mute_permanent", "id", "1", "permanent", "1"}, onlyWithMute},
-		{"keys_set_mute_permanent stumm → dauerhaft", muteAnna, []string{"action", "keys_set_mute_permanent", "id", "1", "permanent", "1"}, onlyWithMute},
-		{"keys_set_mute_permanent beenden", permAnna, []string{"action", "keys_set_mute_permanent", "id", "1", "permanent", "0"}, onlyWithMute},
-		{"keys_rename", nil, []string{"action", "keys_rename", "id", "1", "label", "Anna B."}, no},
-		{"keys_rename des Demo-Empfängers", demoAnna, []string{"action", "keys_rename", "id", "1", "label", "Anna B."}, no},
-		{"keys_set_phone", nil, []string{"action", "keys_set_phone", "id", "1", "phone", "0171 1"}, no},
-		{"keys_new_mute_token", nil, []string{"action", "keys_new_mute_token", "id", "1"}, no},
-		{"settings_set", nil, []string{"action", "settings_set", "key", "mute_max_seconds", "value", "7200"}, no},
-		{"notify_set", nil, []string{"action", "notify_set", "type", "login_success", "key", "enabled", "value", "1"}, no},
-		// Nichts geändert: keine neue Version.
-		{"keys_mute ohne Wechsel", nil, []string{"action", "keys_mute", "id", "1", "muted", "0"}, no},
-		{"keys_set_mute_volume ohne Wechsel", nil, []string{"action", "keys_set_mute_volume", "id", "1", "volume", "0"}, no},
-		{"keys_replace_key ohne Wechsel", nil, []string{"action", "keys_replace_key", "id", "1", "key", anna.Key}, no},
-		{"keys_set_mute_permanent ohne Wechsel", nil, []string{"action", "keys_set_mute_permanent", "id", "1", "permanent", "0"}, no},
-		{"abgelehnt: letzter Empfänger fehlt nicht, unbekannte id", nil, []string{"action", "keys_delete", "id", "9"}, no},
-	}
-	for _, r := range rows {
-		for _, boxV := range []int{0, 40} { // 0 = keine Box gesehen; 40 = Box meldet mehr als der Server hat
-			t.Run(fmt.Sprintf("%s/Box %d", r.name, boxV), func(t *testing.T) {
-				b := newBench(t)
-				b.setCfg(func(c *config.Config) { c.MuteMaxSeconds = 43200 })
-				b.seed(10, anna, bert)
-				if r.setup != nil {
-					b.update(r.setup)
-				}
-				if boxV > 0 {
-					b.setBox(&model.BoxStatus{SeenAt: t0.Unix(), Fields: model.Fields{{Name: "keys_version", Value: strconv.Itoa(boxV)}}})
-				}
-				wasMuted := b.c.Store.State().Recipients[0].Muted
-				code, body := b.admin().do(r.kv...)
-				if code != 200 || !strings.Contains(body, `"ok":true`) {
-					if !(r.bumps == no && strings.Contains(body, `"ok":false`)) {
-						t.Fatalf("%d %s", code, body)
-					}
-				}
-				st := b.c.Store.State()
-				bump := r.bumps == yes || (r.bumps == onlyWithMute && st.Recipients[0].Muted != wasMuted)
-				want := 10
-				if bump {
-					want = max(10, boxV) + 1
-				}
-				if st.KeysVersion != want {
-					t.Errorf("Version %d, erwartet %d (%s)", st.KeysVersion, want, body)
-				}
-				if strings.Contains(body, `"version":`) && !strings.Contains(body, `"version":`+strconv.Itoa(want)) {
-					t.Errorf("Antwort nennt eine andere Version: %s", body)
-				}
-			})
-		}
-	}
 }

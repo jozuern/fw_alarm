@@ -44,13 +44,45 @@ const (
 // rechnet nur (kein Netz, keine Datei, keine Uhr außer übergebenen Werten)
 // und legt Verlaufseinträge mit d.Log in die outbox.
 func (s *Store) Update(ctx context.Context, fn func(d *model.State) error) error {
-	_, err := s.change(ctx, fn, modeUpdate)
+	return s.UpdateThen(ctx, fn, nil)
+}
+
+// UpdateThen ist Update mit after: dasselbe fn, dieselben Fehler – dazu
+// läuft after GENAU EINMAL, wenn und nur wenn diese Änderung gilt (gesichert
+// und als Schnappschuss gesetzt), ob der Aufrufer nil bekam (rechtzeitig)
+// oder ErrLate (das Sichern landete nach der Frist). Für Arbeit, die erst
+// nach dem Sichern hinausgehen darf (Meldungen an Menschen) – "Update, dann
+// senden" verlöre sie bei ErrLate, und "warten, bis die Version erreicht ist"
+// täuscht sich, wenn eine andere Änderung die Version hebt, während diese
+// scheiterte.
+//
+// after läuft NIE, wenn fn einen Fehler liefert (so sagt ein Aufrufer auch
+// "nichts zu tun" – liefert fn nil, wird gesichert, auch ohne Unterschied),
+// die Änderung eine Regel verletzt (ErrInvalid), die Frist vor dem Beginn
+// ablief (ErrDropped), das Sichern scheitert (ErrStorage), im Notbetrieb,
+// nach Close und auch dann nicht, wenn das Sichern erst landet, nachdem
+// Close den Schreiber aufgegeben hat.
+//
+// Wo after läuft: auf der Goroutine, die gesichert hat – nach dem Umsetzen
+// des Zeigers (after sieht die Änderung in State()) und nachdem sie den einen
+// Schreiber freigegeben hat (andere Änderungen warten also nie auf after),
+// außerhalb jeder Sperre der Ablage. Bei rechtzeitigem Sichern ist after
+// zurück, bevor UpdateThen nil liefert. Close wartet auf diese Goroutine wie
+// auf jede der Ablage, innerhalb seiner Frist. Deshalb MUSS after sofort
+// zurückkehren und längere Arbeit (Bark) an Core.Bg geben: So kann after
+// weder Close aufhalten noch es verklemmen – es hält keine Sperre, Core.Bg
+// wartet nie, und eine Änderung aus after heraus läuft oder wird nach
+// Close abgelehnt. Ein Laufzeitfehler in after wird abgefangen und ins
+// Journal geschrieben (ohne den Wert); die Änderung gilt trotzdem.
+func (s *Store) UpdateThen(ctx context.Context, fn func(d *model.State) error, after func()) error {
+	_, err := s.change(ctx, fn, modeUpdate, after)
 	return err
 }
 
 // change ist der eine Schreiber der festen Daten (Update, Nachsichern der
-// outbox, Resave, Flush). saved: es wurde gesichert und gilt.
-func (s *Store) change(ctx context.Context, fn func(d *model.State) error, mode changeMode) (saved bool, err error) {
+// outbox, Resave, Flush). saved: es wurde gesichert und gilt. after: siehe
+// UpdateThen (nil = nichts).
+func (s *Store) change(ctx context.Context, fn func(d *model.State) error, mode changeMode, after func()) (saved bool, err error) {
 	if s.emergency {
 		return false, ErrEmergency
 	}
@@ -99,7 +131,7 @@ func (s *Store) change(ctx context.Context, fn func(d *model.State) error, mode 
 	}
 
 	done := make(chan error, 1)
-	if !s.spawn("Sichern der festen Daten", func() { s.saveAndCommit(cur, d, done) }) {
+	if !s.spawn("Sichern der festen Daten", func() { s.saveAndCommit(cur, d, done, after) }) {
 		return false, fmt.Errorf("%w: Ablage geschlossen", ErrDropped)
 	}
 	held = false // gibt jetzt saveAndCommit frei
@@ -118,17 +150,22 @@ func (s *Store) change(ctx context.Context, fn func(d *model.State) error, mode 
 
 // saveAndCommit sichert den Entwurf und setzt danach – rechtzeitig oder
 // nach der Frist – den Zeiger um (commit). Erst dann gibt es den Schreiber
-// frei und meldet das Ergebnis. Ein Laufzeitfehler beim Sichern heißt:
-// gescheitert, der Schreiber wird trotzdem frei.
-func (s *Store) saveAndCommit(prev, draft *model.State, done chan<- error) {
+// frei, ruft after (nur nach einem commit, siehe UpdateThen) und meldet das
+// Ergebnis. Ein Laufzeitfehler beim Sichern heißt: gescheitert, der
+// Schreiber wird trotzdem frei.
+func (s *Store) saveAndCommit(prev, draft *model.State, done chan<- error, after func()) {
 	err := fmt.Errorf("%w: Laufzeitfehler beim Sichern", ErrStorage)
+	committed := false
 	defer func() {
 		if r := recover(); r != nil {
 			s.logPanic("Sichern der festen Daten", r)
 			s.saved.durable.Store(false)
 		}
 		<-s.slot
-		done <- err
+		if committed && after != nil {
+			s.runAfter(after)
+		}
+		done <- err // Platz 1: wartet nie, auch wenn der Aufrufer schon fort ist
 	}()
 	doc, serr := s.saveStateDoc(draft)
 	if serr != nil {
@@ -137,8 +174,25 @@ func (s *Store) saveAndCommit(prev, draft *model.State, done chan<- error) {
 		return
 	}
 	s.commit(prev, doc)
+	committed = true
 	s.work.Add(1)
 	err = nil
+}
+
+// runAfter ruft after nach einem commit, außerhalb jeder Sperre – außer
+// Close hat den Schreiber schon aufgegeben (der Prozess endet gleich; was
+// after anstößt, liefe ins Leere). Ein Laufzeitfehler darin wird abgefangen.
+func (s *Store) runAfter(after func()) {
+	if s.gaveUp.Load() {
+		s.log.Warn("Änderung nach dem Aufgeben von Close gesichert – die Arbeit danach entfällt")
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.logPanic("Arbeit nach einer Änderung", r)
+		}
+	}()
+	after()
 }
 
 // commit: Der Zustand ist gesichert – jetzt gilt er. Die Einträge seiner
@@ -210,5 +264,5 @@ func (s *Store) guardedChange(ctx context.Context, name string) (saved bool, err
 			saved, err = false, fmt.Errorf("%w: Laufzeitfehler", ErrStorage)
 		}
 	}()
-	return s.change(ctx, nil, modePrune)
+	return s.change(ctx, nil, modePrune, nil)
 }

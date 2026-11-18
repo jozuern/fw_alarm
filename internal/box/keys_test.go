@@ -120,13 +120,26 @@ func (b *bench) call(method string, form url.Values) *httptest.ResponseRecorder 
 	return rec
 }
 
+// fetch: api/keys.php wie die Box; bricht den Test ab, wenn die Antwort
+// nicht 200 Klartext ohne Zwischenspeichern ist. Nur aus der Goroutine des
+// Tests rufen (FailNow) – nebenläufig: tryFetch.
 func (b *bench) fetch(nonce string) string {
 	b.t.Helper()
+	got, err := b.tryFetch(nonce)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	return got
+}
+
+// tryFetch: wie fetch, meldet eine falsche Antwort aber als Fehler – für
+// Goroutinen neben dem Test.
+func (b *bench) tryFetch(nonce string) (string, error) {
 	rec := b.call(http.MethodPost, url.Values{"token": {machineToken}, "device_id": {"fw-box-1"}, "nonce": {nonce}})
 	if rec.Code != 200 || rec.Header().Get("Content-Type") != "text/plain; charset=utf-8" || rec.Header().Get("Cache-Control") != "no-store" {
-		b.t.Fatalf("%d %v %s", rec.Code, rec.Header(), rec.Body.String())
+		return "", fmt.Errorf("%d %v %s", rec.Code, rec.Header(), rec.Body.String())
 	}
-	return rec.Body.String()
+	return rec.Body.String(), nil
 }
 
 // Das Format zeichengenau: ok, nonce, version, count, dann je Empfänger
@@ -315,7 +328,13 @@ func TestKeysAnswerFromOneSnapshot(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for calls.Add(1) <= 1000 {
-				got := b.fetch("s")
+				// Kein t.Fatal hier (nicht die Goroutine des Tests): Fehler
+				// sammeln, der Test meldet sie nach wg.Wait.
+				got, ferr := b.tryFetch("s")
+				if ferr != nil {
+					errs <- ferr.Error()
+					continue
+				}
 				rest, ok := strings.CutPrefix(got, "ok=1\nnonce=s\nversion=")
 				vText, list, _ := strings.Cut(rest, "\n")
 				v, err := strconv.Atoi(vText)

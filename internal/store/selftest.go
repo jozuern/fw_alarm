@@ -78,7 +78,7 @@ func (s *Store) SelfTest() SelfTest {
 func (s *Store) Resave(ctx context.Context) {
 	h := s.SaveHealth()
 	if !h.Durable && !s.emergency {
-		if _, err := s.change(ctx, nil, modeForce); err != nil {
+		if _, err := s.change(ctx, nil, modeForce, nil); err != nil {
 			s.log.Warn("feste Daten nicht nachgesichert", "err", err)
 		}
 	}

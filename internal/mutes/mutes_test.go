@@ -48,10 +48,12 @@ type barkReq struct {
 }
 
 type bench struct {
-	t   *testing.T
-	c   *core.Core
-	fs  *storetest.FaultFS
-	cfg atomic.Pointer[config.Config]
+	t       *testing.T
+	c       *core.Core
+	fs      *storetest.FaultFS
+	clk     *clock.Fake
+	journal syncBuffer // das Journal des Core
+	cfg     atomic.Pointer[config.Config]
 
 	mu     sync.Mutex
 	reqs   []barkReq
@@ -82,9 +84,35 @@ func newBench(t *testing.T) *bench {
 	})
 	b.cfg.Store(&config.Config{Timezone: "Europe/Berlin", BarkHost: srv.URL, BarkKeyStatus: statusKey,
 		MuteMaxSeconds: 43200, OfflineAfterSeconds: 180, WatchdogOfflineAfterSeconds: 600})
+	b.clk = clock.NewFake(t0)
 	b.c = &core.Core{Cfg: b.cfg.Load, CfgOK: func() bool { return true }, Store: st,
-		Bark: bark.New(b.cfg.Load, clock.Real(), log), Clock: clock.NewFake(t0), Bg: group, Log: log, Version: "test"}
+		Bark: bark.New(b.cfg.Load, clock.Real(), log), Clock: b.clk, Bg: group,
+		Log: slog.New(slog.NewTextHandler(&b.journal, nil)), Version: "test"}
 	return b
+}
+
+// syncBuffer: ein Journal, das der Test lesen kann.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (w *syncBuffer) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+func (w *syncBuffer) lines(substr string) []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []string
+	for _, l := range strings.Split(w.b.String(), "\n") {
+		if strings.Contains(l, substr) {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 func (b *bench) serveBark(w http.ResponseWriter, r *http.Request) {
@@ -324,5 +352,98 @@ func TestExpireMessagesAfterUpdate(t *testing.T) {
 	if len(admin) != 1 || admin[0].Fields.Get("title") != "Stummschaltung abgelaufen" ||
 		admin[0].Fields.Get("body") != "[17.11.2026 11:00] Automatisch wieder laut geschaltet (Zeitlimit erreicht): Anna Mueller, Cara." {
 		t.Errorf("Meldung an den Admin: %+v", admin)
+	}
+}
+
+// Das Sichern der Rückschaltung landet erst nach der Frist (ErrLate): Expire
+// meldet das wie bisher seinem Aufrufer – und gilt die Rückschaltung danach,
+// gehen die Info "Alarmton wieder LAUT" und (eingeschaltet) mute_expired
+// trotzdem hinaus, genau einmal, nach dem Sichern.
+func TestExpireLateSaveStillTells(t *testing.T) {
+	b := newBench(t)
+	b.three(43201)
+	b.update(func(d *model.State) { d.Notify.Types = map[string]map[string]string{"mute_expired": {"enabled": "1"}} })
+	release := b.fs.Hang(filepath.Join(dir, "state.json.tmp"))
+	t.Cleanup(release)
+	var savedFirst atomic.Bool
+	savedFirst.Store(true)
+	b.mu.Lock()
+	b.onReq = func(string) {
+		if b.c.Store.State().Recipients[0].Muted {
+			savedFirst.Store(false)
+		}
+	}
+	b.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := Expire(ctx, b.c); !errors.Is(err, store.ErrLate) {
+		t.Fatalf("Fehler %v, erwartet ErrLate", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if reqs := b.take(); len(reqs) != 0 {
+		t.Fatalf("vor dem Sichern gesendet: %+v", reqs)
+	}
+	release()
+	var reqs []barkReq
+	deadline := time.Now().Add(15 * time.Second)
+	for len(reqs) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		reqs = append(reqs, b.take()...)
+	}
+	if !b.c.Bg.Wait(15 * time.Second) {
+		t.Fatal("Versand endet nicht")
+	}
+	reqs = append(reqs, b.take()...)
+	byKey := map[string]int{}
+	for _, r := range reqs {
+		byKey[r.Key]++
+	}
+	if len(reqs) != 2 || byKey[annaKey] != 1 || byKey[statusKey] != 1 {
+		t.Fatalf("Anfragen: %+v", reqs)
+	}
+	if !savedFirst.Load() {
+		t.Error("Meldung ging hinaus, bevor die Rückschaltung galt")
+	}
+	if st := b.c.Store.State(); st.Recipients[0].Muted || st.KeysVersion != 8 {
+		t.Errorf("Rückschaltung gilt nicht: %+v", st.Recipients[0])
+	}
+}
+
+// Kaputte Platte und eine überfällige Stummschaltung: Expire läuft bei jedem
+// Poll – die Warnung steht höchstens einmal pro Minute im Journal (Uhr des
+// Core), die nächste nennt, wie viele dazwischen unterdrückt wurden.
+func TestExpireWarningAtMostOncePerMinute(t *testing.T) {
+	b := newBench(t)
+	b.three(43201)
+	b.fs.Fail(filepath.Join(dir, "state.json.tmp"), errors.New("Platte voll"))
+	const warn = "überfällige Stummschaltung nicht gesichert"
+	expire := func(times int) {
+		t.Helper()
+		for range times {
+			if err := Expire(context.Background(), b.c); !errors.Is(err, store.ErrStorage) {
+				t.Fatalf("Fehler %v", err)
+			}
+		}
+	}
+	expire(5)
+	if got := b.journal.lines(warn); len(got) != 1 || !strings.Contains(got[0], "unterdrueckt=0") {
+		t.Fatalf("nach 5 Aufrufen: %q", got)
+	}
+	b.clk.Advance(59 * time.Second)
+	expire(1)
+	if got := b.journal.lines(warn); len(got) != 1 {
+		t.Fatalf("nach 59 s: %q", got)
+	}
+	b.clk.Advance(time.Second)
+	expire(1)
+	got := b.journal.lines(warn)
+	if len(got) != 2 || !strings.Contains(got[1], "unterdrueckt=5") {
+		t.Fatalf("nach 60 s: %q", got)
+	}
+	b.clk.Advance(time.Minute)
+	expire(1)
+	if got := b.journal.lines(warn); len(got) != 3 || !strings.Contains(got[2], "unterdrueckt=0") {
+		t.Fatalf("nach weiteren 60 s: %q", got)
 	}
 }

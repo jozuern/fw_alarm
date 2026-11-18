@@ -118,6 +118,9 @@ type Store struct {
 	closeMu sync.Mutex
 	done    bool         // Close lief schon
 	release func() error // server.lock; nil = nicht angelegt oder schon freigegeben
+	// gaveUp: Close hat hängende Schreiber aufgegeben – ein Sichern, das
+	// danach noch landet, ruft sein after nicht mehr (UpdateThen).
+	gaveUp atomic.Bool
 }
 
 // State liefert den festen Zustand – Schnappschuss, nie nil. Im Notbetrieb

@@ -160,7 +160,7 @@ func (s *Store) Flush(ctx context.Context) error {
 		before := s.work.Load()
 		var errs []error
 		if !s.emergency {
-			_, err := s.change(ctx, nil, modePrune)
+			_, err := s.change(ctx, nil, modePrune, nil)
 			switch {
 			case err == nil:
 			case ctx.Err() != nil:
@@ -218,6 +218,7 @@ func (s *Store) Close(ctx context.Context) error {
 		select {
 		case <-finished:
 		case <-ctx.Done():
+			s.gaveUp.Store(true)
 			s.log.Error("Schreiber der Ablage hängen – server.lock bleibt bis zum Ende des Prozesses")
 			return errors.Join(append(errs, fmt.Errorf("Schreiber hängen: %w", ctx.Err()))...)
 		}

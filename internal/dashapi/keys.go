@@ -2,6 +2,7 @@ package dashapi
 
 import (
 	"net/http"
+	"strconv"
 
 	"fwalarm/internal/config"
 	"fwalarm/internal/model"
@@ -115,7 +116,7 @@ func handleKeysAdd(x *Ctx) {
 	now, by, bv := x.Core.Clock.Now(), x.Sess.User, boxVersion(x)
 	apply(x, func(d *model.State) (web.Object, error) {
 		if len(d.Recipients) >= model.MaxRecipients {
-			return nil, refuse("Maximal 10 Empfänger möglich.")
+			return nil, refuse("Maximal " + strconv.Itoa(model.MaxRecipients) + " Empfänger möglich.")
 		}
 		for _, r := range d.Recipients {
 			if r.Key == key {

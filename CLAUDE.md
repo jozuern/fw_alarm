@@ -74,7 +74,9 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
   PHP-Fassung da sind, die Datei mit PHP – neu schreiben mit
   `FW_WRITE_GOLDEN=1`; jede Meldung an den Admin geht durch `notify.Send`),
   das Zurückschalten überfälliger Stummschaltungen samt Meldungen danach in
-  `mutes.Expire`, die Verlaufs-Ereignisse (Kategorie, nur Admin,
+  `mutes.Expire` (Meldungen, die erst nach dem Sichern hinausdürfen, hängen
+  über `Store.UpdateThen` am Sichern – auch an einem, das erst nach der Frist
+  landet), die Verlaufs-Ereignisse (Kategorie, nur Admin,
   freigegebene Felder) in `internal/logview/events.go` (wie
   `log_event_types()`; ein neues Ereignis braucht dort eine Zeile, in
   `internal/model` seinen Namen samt Eintrag in `AllEvents` und in
