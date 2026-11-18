@@ -592,7 +592,12 @@ Passwortprüfungen kosten Rechenzeit und Speicher, deshalb:
   eine fehlerhafte Konfiguration lassen ihn stehen). Versuche mit gültigem
   Ausweis warten in einer eigenen Reihe, die VOR der allgemeinen bedient
   wird – je Ausweis höchstens ein Platz darin, damit ein gestohlener
-  Ausweis sie nicht füllen kann. Bremse, Zählung, „eine je Absender“ und
+  Ausweis sie nicht füllen kann, und Ausweise des Admin-Kontos vor denen
+  des Lese-Kontos (wer nur das Lese-Passwort kennt, kann sich beliebig
+  viele Ausweise holen – er darf damit den Admin nicht verdrängen). Schickt
+  der Browser mehrere Cookies dieses Namens, zählt der erste GÜLTIGE (ein
+  von einer Nachbar-Adresse untergeschobenes verdeckt den echten Ausweis
+  sonst); dasselbe gilt für das Sitzungs-Cookie. Bremse, Zählung, „eine je Absender“ und
   „genau eine Prüfung pro Versuch“ gelten für beide Reihen gleich. Der
   Grund (Durchsicht von Aufgabe 12): In einer einzigen, je Absender
   gerechten Reihe stünde der Admin hinter JEDEM Absender, der gerade einen
