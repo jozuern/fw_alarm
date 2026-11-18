@@ -1,15 +1,11 @@
 package web
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
-	"log/slog"
 	"net/http"
-	"slices"
-	"strings"
 	"time"
 
 	"fwalarm/internal/config"
@@ -60,6 +56,16 @@ type Session struct {
 	CSRF string // Token für ändernde Aktionen
 }
 
+// CSRFMatches sagt, ob sent das CSRF-Token dieser Sitzung ist – in konstanter
+// Zeit (PHP: hash_equals in require_csrf). Ein leeres Token auf einer der
+// beiden Seiten passt nie.
+func (s *Session) CSRFMatches(sent string) bool {
+	if s == nil || s.CSRF == "" || sent == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(s.CSRF), []byte(sent)) == 1
+}
+
 // Resume setzt die Sitzung der Anfrage fort (PHP: resume_dashboard_session
 // mit is_dashboard_authed und refresh_dashboard_cookie): true = angemeldet;
 // dann ist last_seen erneuert (höchstens einmal pro Minute geschrieben) und
@@ -67,7 +73,8 @@ type Session struct {
 //
 // Kein Cookie, eine ID ohne Sitzung (erfunden, abgemeldet, beendet) → false,
 // es entsteht nichts. Eine Sitzung, die nicht mehr gilt – 12 h ohne Anfrage,
-// oder Benutzername bzw. Passwort-Hash ihres Kontos haben sich geändert –,
+// Benutzername bzw. Passwort-Hash ihres Kontos haben sich geändert, oder ihr
+// fehlt Benutzer, CSRF-Token oder Stempel (eine von Hand bearbeitete Datei) –,
 // wird gelöscht. In keinem dieser Fälle sendet Resume ein Cookie, auch kein
 // Lösch-Cookie: Trifft eine noch laufende Anfrage mit einer ALTEN ID erst
 // nach einer Neuanmeldung ein, überschriebe es das gerade vergebene neue.
@@ -139,17 +146,33 @@ func begin(c *core.Core, w http.ResponseWriter, r *http.Request, cfg *config.Con
 	return &Session{User: user, Role: role, CSRF: csrf}
 }
 
-// End meldet ab (PHP: end_dashboard_session): Die Sitzung der Anfrage ist
-// fort, und statt einer Erneuerung, die Resume vorher gesetzt hat, geht nur
-// das Lösch-Cookie hinaus. Ob abgemeldet werden darf (CSRF), prüft der
-// Aufrufer.
+// End meldet ab (PHP: end_dashboard_session). Vorher hat der Aufrufer
+// geprüft, dass die Anfrage eine gültige Sitzung hat (Resume → true) und
+// das mitgeschickte Token passt (Session.CSRFMatches) – sonst ruft er End
+// nicht (ein fremdes Formular soll niemanden abmelden). End löscht die
+// Sitzung, die das Cookie der Anfrage nennt; nur wenn es sie dabei
+// tatsächlich entfernt hat, geht das Lösch-Cookie hinaus – statt der
+// Erneuerung, die Resume vorher gesetzt hat. Gab es sie nicht (mehr), setzt
+// End nichts (PHP schickt ohne lebende Sitzung nie ein Lösch-Cookie). Den
+// Geräte-Ausweis lässt End stehen.
 func End(c *core.Core, w http.ResponseWriter, r *http.Request) {
-	if key, _, ok := sessionOf(r); ok {
-		if _, there := c.Store.Sessions().Sessions[key]; there {
-			c.Store.UpdateSessions(func(d *model.Sessions) { delete(d.Sessions, key) })
-		}
+	key, _, ok := sessionOf(r)
+	if !ok {
+		return
 	}
-	putSessionCookie(c, w, r, &http.Cookie{Value: "", MaxAge: -1, Expires: time.Unix(1, 0)})
+	if _, there := c.Store.Sessions().Sessions[key]; !there {
+		return
+	}
+	removed := false
+	c.Store.UpdateSessions(func(d *model.Sessions) {
+		if _, there := d.Sessions[key]; there {
+			delete(d.Sessions, key)
+			removed = true
+		}
+	})
+	if removed {
+		putCookie(c, w, r, &http.Cookie{Name: sessionCookie, Value: "", MaxAge: -1, Expires: time.Unix(1, 0)})
+	}
 }
 
 // EndAll beendet alle Sitzungen – die Konfiguration ist fehlerhaft (Spec
@@ -201,8 +224,13 @@ func SweepSessions(c *core.Core) {
 // noch, wie PHP), und Benutzername und Passwort-Hash ihres Kontos sind
 // dieselben wie bei der Anmeldung (PHP: dashboard_auth_stamp – wer das
 // Passwort ändert, meldet ALLE Sitzungen dieses Kontos ab; ein entferntes
-// Konto ebenso). Die Rolle wird wie bei Resume gelesen.
+// Konto ebenso). Ohne Benutzer, CSRF-Token oder Stempel gilt sie nie (so
+// legt Begin keine an – nur eine von Hand bearbeitete Datei). Die Rolle wird
+// wie bei Resume gelesen.
 func sessionLive(s model.Session, cfg *config.Config, now int64) bool {
+	if s.User == "" || s.CSRF == "" || s.AuthStamp == "" {
+		return false
+	}
 	if now-min(s.LastSeen, now) > sessionMaxIdle {
 		return false
 	}
@@ -258,40 +286,6 @@ func sessionKey(value string) string {
 
 // setSessionCookie setzt das Cookie der Sitzung für weitere 12 h.
 func setSessionCookie(c *core.Core, w http.ResponseWriter, r *http.Request, value string) {
-	putSessionCookie(c, w, r, &http.Cookie{Value: value, MaxAge: sessionMaxIdle,
+	putCookie(c, w, r, &http.Cookie{Name: sessionCookie, Value: value, MaxAge: sessionMaxIdle,
 		Expires: c.Clock.Now().Add(sessionMaxIdle * time.Second)})
-}
-
-// putSessionCookie ergänzt ck um die Eigenschaften, die jedes Sitzungs-Cookie
-// trägt (PHP: dashboard_cookie_options – Pfad hier "/", der Server hat nur
-// diesen einen Ort), und ersetzt ein Sitzungs-Cookie, das diese Antwort schon
-// trägt: Eine Antwort setzt höchstens eins (die Erneuerung durch Resume
-// weicht der Abmeldung oder der neuen ID).
-func putSessionCookie(c *core.Core, w http.ResponseWriter, r *http.Request, ck *http.Cookie) {
-	ck.Name = sessionCookie
-	ck.Path = "/"
-	ck.HttpOnly = true
-	ck.SameSite = http.SameSiteStrictMode
-	ck.Secure = IsHTTPS(c, r)
-	h := w.Header()
-	h["Set-Cookie"] = slices.DeleteFunc(h["Set-Cookie"], func(line string) bool {
-		return strings.HasPrefix(line, sessionCookie+"=")
-	})
-	h.Add("Set-Cookie", ck.String())
-}
-
-// randomBytes liefert n Bytes aus crypto/rand (scheitert nie: Kann das
-// System keinen Zufall liefern, beendet Go das Programm, statt eine
-// vorhersagbare ID auszugeben).
-func randomBytes(n int) []byte {
-	b := make([]byte, n)
-	_, _ = rand.Read(b) // liefert seit Go 1.24 nie einen Fehler
-	return b
-}
-
-func logger(c *core.Core) *slog.Logger {
-	if c.Log != nil {
-		return c.Log
-	}
-	return slog.Default()
 }

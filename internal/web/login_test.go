@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -35,7 +36,7 @@ func controlledVerifier(calls chan verifyCall) func(hash, pw string) bool {
 	}
 }
 
-func nextCall(t *testing.T, calls chan verifyCall) verifyCall {
+func nextCall(t testing.TB, calls chan verifyCall) verifyCall {
 	t.Helper()
 	select {
 	case c := <-calls:
@@ -46,16 +47,7 @@ func nextCall(t *testing.T, calls chan verifyCall) verifyCall {
 	}
 }
 
-func notDone(t *testing.T, what string, ch <-chan attempt) {
-	t.Helper()
-	select {
-	case a := <-ch:
-		t.Fatalf("%s ist schon fertig: %v", what, a.res)
-	default:
-	}
-}
-
-func resultOf(t *testing.T, ch <-chan attempt) attempt {
+func resultOf(t testing.TB, ch <-chan attempt) attempt {
 	t.Helper()
 	select {
 	case a := <-ch:
@@ -327,9 +319,9 @@ func TestLoginSleepOutsideSlot(t *testing.T) {
 	if n := slotsInUse(b.c); n != 2 {
 		t.Errorf("zwei andere prüfen nicht zugleich: %d Plätze", n)
 	}
-	notDone(t, "A", a)
-	b.clk.Advance(time.Second - time.Millisecond)
-	notDone(t, "A nach 999 ms", a)
+	// A wartet allein auf seinen Zeitgeber von 1 s: Kurz davor läuft keiner
+	// ab (A kann also nicht fertig sein), genau dann seiner.
+	b.advanceQuiet(time.Second - time.Millisecond)
 	b.clk.Advance(time.Millisecond)
 	if r := resultOf(t, a); r.res != LoginFailed {
 		t.Errorf("A: %v", r.res)
@@ -494,4 +486,57 @@ func TestLoginWaiterLeaves(t *testing.T) {
 	cy.reply <- false
 	b.finish(x)
 	b.finish(y)
+}
+
+// Jeder Fehlversuch kostet genau 1 s – auch der mit unbekanntem und der mit
+// leerem Namen (sonst verriete die Antwortzeit, ob es den Namen gibt).
+func TestLoginFailurePause(t *testing.T) {
+	b := newAuthBench(t, nil, true)
+	for i, tc := range []struct{ name, user, pw string }{
+		{"Admin, falsches Passwort", adminUser, "falsch"},
+		{"Lese-Benutzer, falsches Passwort", readerUser, "falsch"},
+		{"unbekannter Name", "niemand", adminPass},
+		{"leerer Name", "", ""},
+	} {
+		ch := b.startLogin(tc.user, tc.pw, fmt.Sprintf("192.0.2.%d", 30+i))
+		select {
+		case d := <-b.clk.sleeps:
+			if d != time.Second {
+				t.Errorf("%s: Pause %v", tc.name, d)
+			}
+		case r := <-ch:
+			t.Fatalf("%s: fertig ohne Pause (%v)", tc.name, r.res)
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: keine Pause", tc.name)
+		}
+		b.advanceQuiet(time.Second - time.Millisecond) // vorher kann er nicht fertig sein
+		b.clk.Advance(time.Millisecond)
+		if r := resultOf(t, ch); r.res != LoginFailed {
+			t.Errorf("%s: %v", tc.name, r.res)
+		}
+	}
+}
+
+// Ein riesiges Sperrfenster (auch in einem von Hand gebauten Stand) schaltet
+// die Bremse nicht ab: Die Umrechnung in eine Dauer liefe sonst über.
+func TestLoginHugeLockoutWindow(t *testing.T) {
+	for _, window := range []int{math.MaxInt, 9223372037} {
+		b := newAuthBench(t, nil, true)
+		b.setCfg(func(c *config.Config) { c.LoginMaxFailures = 2; c.LoginLockoutWindowSeconds = window })
+		var once sync.Once
+		got := -1
+		OnLockout = func(c *core.Core, ip string, windowSeconds int) { once.Do(func() { got = windowSeconds }) }
+		for i, want := range []LoginResult{LoginFailed, LoginFailed, LoginBlocked} {
+			if a := b.login(adminUser, "falsch", "192.0.2.4"); a.res != want {
+				t.Errorf("Fenster %d, Versuch %d: %v, erwartet %v", window, i+1, a.res, want)
+			}
+		}
+		if !b.c.Bg.Wait(10 * time.Second) {
+			t.Fatal("Meldung endet nicht")
+		}
+		OnLockout = nil
+		if got != config.MaxLockoutWindowSeconds {
+			t.Errorf("Fenster %d: gemeldet %d, erwartet %d", window, got, config.MaxLockoutWindowSeconds)
+		}
+	}
 }

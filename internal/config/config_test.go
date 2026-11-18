@@ -1,8 +1,11 @@
 package config
 
 import (
+	"bytes"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -809,12 +812,127 @@ func TestAuthStamp(t *testing.T) {
 	}
 }
 
+// Ein zu aufwendiger Hash ist ein Hinweis, der den Grund nennt (die Übernahme
+// zeigt ihn später ebenso) – ohne den Hash zu zitieren.
+func TestHashWarningsNameTheReason(t *testing.T) {
+	expensive := "$2y$14$" + testBcrypt[7:]
+	const reason = "Hash zu aufwendig (Argon2id höchstens 64 MiB, 4 Durchläufe und 4 Fäden, bcrypt höchstens Kosten 13)"
+	for _, tc := range []struct {
+		set  map[string]string
+		want string
+	}{
+		{map[string]string{"dashboard_password_hash": `"` + expensive + `"`},
+			"dashboard_password_hash: " + reason + " – so kann sich der Admin nicht anmelden (neuer Hash: fw-alarm hash-password)"},
+		{map[string]string{"dashboard_password_hash": `"$argon2id$v=19$m=262144,t=3,p=1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g"`},
+			"dashboard_password_hash: " + reason + " – so kann sich der Admin nicht anmelden (neuer Hash: fw-alarm hash-password)"},
+		{map[string]string{"dashboard_readonly_user": `"leser"`, "dashboard_readonly_password_hash": `"` + expensive + `"`},
+			"dashboard_readonly_password_hash: " + reason + " – so kann sich der Lese-Benutzer nicht anmelden (neuer Hash: fw-alarm hash-password)"},
+		{map[string]string{"dashboard_password_hash": `"klartext-geheim"`},
+			"dashboard_password_hash ist weder ein bcrypt- noch ein Argon2id-Hash – so kann sich der Admin nicht anmelden (neuer Hash: fw-alarm hash-password)"},
+	} {
+		w := mustParse(t, tomlFile(tc.set)).Warnings()
+		if len(w) != 1 || w[0] != tc.want {
+			t.Errorf("Hinweise %q,\nerwartet %q", w, tc.want)
+		}
+	}
+}
+
+// Ein riesiges Sperrfenster schaltete die Bremse still ab: Sekunden mal
+// time.Second läuft ab rund 292 Jahren über und wird negativ. Höchstens ein
+// Jahr gilt – mit Hinweis.
+func TestLockoutWindowClamped(t *testing.T) {
+	const year = 31536000
+	if MaxLockoutWindowSeconds != year {
+		t.Fatalf("Obergrenze %d", MaxLockoutWindowSeconds)
+	}
+	const hint = "login_lockout_window_seconds ist größer als ein Jahr – es gilt 31536000 (ein Jahr)"
+	for value, want := range map[string]struct {
+		got  int
+		hint bool
+	}{
+		"9223372037":          {year, true},
+		"9223372036854775807": {year, true},
+		"31536001":            {year, true},
+		"31536000":            {year, false},
+		"900":                 {900, false},
+		"10":                  {60, false},
+		"-5":                  {60, false},
+	} {
+		c := mustParse(t, tomlFile(map[string]string{"login_lockout_window_seconds": value}))
+		if c.LoginLockoutWindowSeconds != want.got || c.LoginLockoutWindow() != want.got {
+			t.Errorf("%s: %d / %d, erwartet %d", value, c.LoginLockoutWindowSeconds, c.LoginLockoutWindow(), want.got)
+		}
+		w := c.Warnings()
+		if want.hint && (len(w) != 1 || w[0] != hint) || !want.hint && len(w) != 0 {
+			t.Errorf("%s: Hinweise %q", value, w)
+		}
+		if d := time.Duration(c.LoginLockoutWindow()) * time.Second; d < time.Minute {
+			t.Errorf("%s: Dauer %v", value, d)
+		}
+		// Was Write daraus schreibt, lädt ohne Hinweis mit demselben Wert.
+		again := mustParse(t, Write(c))
+		if again.LoginLockoutWindowSeconds != want.got || len(again.Warnings()) != 0 {
+			t.Errorf("%s: nach Write %d, Hinweise %q", value, again.LoginLockoutWindowSeconds, again.Warnings())
+		}
+	}
+	// Auch ein von Hand gebauter Stand.
+	for raw, want := range map[int]int{math.MaxInt: year, 0: 60, 120: 120} {
+		if got := (&Config{LoginLockoutWindowSeconds: raw}).LoginLockoutWindow(); got != want {
+			t.Errorf("von Hand %d: %d, erwartet %d", raw, got, want)
+		}
+	}
+}
+
+// DeviceKey: HMAC-SHA256 mit dem Passwort-Hash als Schlüssel über
+// "fw-alarm device v1|<Rolle>|<Benutzer>"; ohne Konto oder mit unbrauchbarem
+// Hash keiner.
+func TestDeviceKey(t *testing.T) {
+	c := mustParse(t, tomlFile(map[string]string{
+		"dashboard_readonly_user":          `"leser"`,
+		"dashboard_readonly_password_hash": `"` + otherBcrypt + `"`,
+	}))
+	want := func(hash, text string) []byte {
+		m := hmac.New(sha256.New, []byte(hash))
+		m.Write([]byte(text))
+		return m.Sum(nil)
+	}
+	if got := c.DeviceKey("admin"); !bytes.Equal(got, want(testBcrypt, "fw-alarm device v1|admin|admin")) {
+		t.Errorf("DeviceKey(admin) = %x", got)
+	}
+	if got := c.DeviceKey("readonly"); !bytes.Equal(got, want(otherBcrypt, "fw-alarm device v1|readonly|leser")) {
+		t.Errorf("DeviceKey(readonly) = %x", got)
+	}
+	for name, cfg := range map[string]*Config{
+		"anderes Passwort": mustParse(t, tomlFile(map[string]string{"dashboard_password_hash": `"` + otherBcrypt + `"`})),
+		"anderer Name":     mustParse(t, tomlFile(map[string]string{"dashboard_user": `"chef"`})),
+	} {
+		if k := cfg.DeviceKey("admin"); k == nil || bytes.Equal(k, c.DeviceKey("admin")) {
+			t.Errorf("%s: kein oder derselbe Schlüssel", name)
+		}
+	}
+	for name, key := range map[string][]byte{
+		"Rolle chef":            c.DeviceKey("chef"),
+		"Rolle leer":            c.DeviceKey(""),
+		"Admin ohne Namen":      mustParse(t, tomlFile(map[string]string{"dashboard_user": `""`})).DeviceKey("admin"),
+		"Admin ohne Hash":       mustParse(t, tomlFile(map[string]string{"dashboard_password_hash": `""`})).DeviceKey("admin"),
+		"Admin-Hash kaputt":     mustParse(t, tomlFile(map[string]string{"dashboard_password_hash": `"klartext"`})).DeviceKey("admin"),
+		"Admin-Hash zu teuer":   mustParse(t, tomlFile(map[string]string{"dashboard_password_hash": `"$2y$14$` + testBcrypt[7:] + `"`})).DeviceKey("admin"),
+		"kein Lese-Konto":       mustParse(t, tomlFile(nil)).DeviceKey("readonly"),
+		"Lese-Konto ohne Namen": mustParse(t, tomlFile(map[string]string{"dashboard_readonly_password_hash": `"` + otherBcrypt + `"`})).DeviceKey("readonly"),
+	} {
+		if key != nil {
+			t.Errorf("%s: Schlüssel %x", name, key)
+		}
+	}
+}
+
 // exported liefert nur die Werte der Datei (ohne den Zeitpunkt des Ladens
 // und die geladene Zeitzone); nil-Listen zählen wie leere.
 func exported(c *Config) Config {
 	v := *c
 	v.loc = nil
 	v.loadedAt = time.Time{}
+	v.lockoutClamped = false
 	rv := reflect.ValueOf(&v).Elem()
 	for i := range rv.NumField() {
 		f := rv.Field(i)

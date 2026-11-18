@@ -71,7 +71,9 @@ Shell-History) – Zeile 1 = Token für config.h, Zeile 2 = Hash:
 Admin-Zugang. Passwort-Hash erzeugen (das Passwort wird zweimal verdeckt
 eingetippt, nie als Argument – sonst landet es in der History):
   sudo fw-alarm hash-password
-Vorhandene bcrypt-Hashes aus config.php ($2y$…) gelten weiter.`,
+Vorhandene bcrypt-Hashes aus config.php ($2y$…) gelten weiter. Brauchbar
+ist ein Hash bis bcrypt-Kosten 13 bzw. Argon2id mit höchstens 64 MiB, 4
+Durchläufen und 4 Fäden – einen teureren meldet check-config.`,
 		[]string{"dashboard_user", "dashboard_password_hash"}},
 	{`Optionaler zweiter Benutzer mit reinem LESE-Zugriff: Er sieht Status und
 Empfängerliste, kann aber weder TEST noch Alarm auslösen und die Liste
@@ -80,7 +82,8 @@ wie oben.`,
 		[]string{"dashboard_readonly_user", "dashboard_readonly_password_hash"}},
 	{`Login-Bremse: Nach so vielen Fehlversuchen wird der Absender für das
 Zeitfenster (Sekunden) gesperrt – zusätzlich zur Pause von 1 s nach jedem
-Fehlversuch. Untergrenzen: 1 Versuch, 60 Sekunden.`,
+Fehlversuch. Untergrenzen: 1 Versuch, 60 Sekunden; das Zeitfenster gilt
+höchstens ein Jahr (31536000).`,
 		[]string{"login_max_failures", "login_lockout_window_seconds"}},
 	{`==== Nur hinter einem Reverse-Proxy / Tunnel (sonst leer lassen) ==========
 Läuft der Server hinter einem Proxy auf demselben Rechner (Cloudflare

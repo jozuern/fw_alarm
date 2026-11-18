@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/bcrypt"
@@ -138,6 +139,50 @@ func TestVerifyPassword(t *testing.T) {
 	for _, good := range []string{testBcrypt, otherBcrypt, hash, phpArgon} {
 		if !PasswordHashUsable(good) {
 			t.Errorf("brauchbarer Hash %q gilt als unbrauchbar", good)
+		}
+	}
+}
+
+// Obergrenzen (Spec §6.8): Argon2id bis 64 MiB, 4 Durchläufe, 4 Fäden;
+// bcrypt bis Kosten 13. Darüber "zu aufwendig" – unbrauchbar, und geprüft
+// wird nie (die Rechnung beginnt gar nicht).
+func TestHashBounds(t *testing.T) {
+	argon := func(m, passes, p int) string {
+		return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g", m, passes, p)
+	}
+	bc := func(cost int) string { return fmt.Sprintf("$2y$%02d$", cost) + testBcrypt[7:] }
+	for hash, want := range map[string]hashVerdict{
+		argon(65536, 4, 4):   hashUsable,
+		argon(19456, 2, 1):   hashUsable,
+		argon(8, 1, 1):       hashUsable,
+		bc(4):                hashUsable,
+		bc(13):               hashUsable,
+		argon(65537, 4, 1):   hashTooExpensive,
+		argon(65536, 5, 1):   hashTooExpensive,
+		argon(65536, 4, 5):   hashTooExpensive,
+		argon(262144, 2, 1):  hashTooExpensive, // die alte Grenze
+		argon(1048576, 2, 1): hashTooExpensive,
+		bc(14):               hashTooExpensive,
+		bc(15):               hashTooExpensive,
+		bc(31):               hashTooExpensive,
+		bc(3):                hashMalformed,
+		bc(32):               hashMalformed,
+		bc(99):               hashMalformed,
+		argon(16, 1, 4):      hashMalformed, // weniger als 8 KiB je Faden
+		"":                   hashMalformed,
+		"klartext":           hashMalformed,
+	} {
+		if got := judgeHash(hash); got != want {
+			t.Errorf("%s: %d, erwartet %d", hash, got, want)
+		}
+		if PasswordHashUsable(hash) != (want == hashUsable) {
+			t.Errorf("%s: PasswordHashUsable %v", hash, PasswordHashUsable(hash))
+		}
+		if want == hashTooExpensive {
+			start := time.Now()
+			if VerifyPassword(hash, "test") || time.Since(start) > 100*time.Millisecond {
+				t.Errorf("%s: zu aufwendiger Hash geprüft (%v)", hash, time.Since(start))
+			}
 		}
 	}
 }

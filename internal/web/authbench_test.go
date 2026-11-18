@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net"
@@ -73,7 +74,7 @@ func (k *testClock) After(d time.Duration) <-chan time.Time {
 }
 
 type authBench struct {
-	t   *testing.T
+	t   testing.TB
 	c   *core.Core
 	clk *testClock
 	fs  *storetest.FaultFS
@@ -83,7 +84,7 @@ type authBench struct {
 // newAuthBench: Admin und Lese-Benutzer mit bcrypt-Hashes, Bremse mit den
 // Standards von PHP (8 Versuche, 900 s). prepare (darf nil sein) richtet die
 // Dateischicht vor dem Öffnen ein; strict: Close muss gelingen.
-func newAuthBench(t *testing.T, prepare func(fs *storetest.FaultFS), strict bool) *authBench {
+func newAuthBench(t testing.TB, prepare func(fs *storetest.FaultFS), strict bool) *authBench {
 	t.Helper()
 	b := &authBench{t: t, clk: newTestClock(), fs: storetest.New()}
 	if prepare != nil {
@@ -164,19 +165,60 @@ func (b *authBench) resume(value string) (*Session, bool, *httptest.ResponseReco
 
 // sessionCookieOf liefert das Sitzungs-Cookie der Antwort (nil: keins) und
 // verlangt, dass es höchstens eins gibt.
-func sessionCookieOf(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie {
+func sessionCookieOf(t testing.TB, rec *httptest.ResponseRecorder) *http.Cookie {
+	t.Helper()
+	return cookieOf(t, rec, sessionCookie)
+}
+
+// deviceCookieOf: der Geräte-Ausweis der Antwort (nil: keiner gesetzt).
+func deviceCookieOf(t testing.TB, rec *httptest.ResponseRecorder) *http.Cookie {
+	t.Helper()
+	return cookieOf(t, rec, deviceCookie)
+}
+
+func cookieOf(t testing.TB, rec *httptest.ResponseRecorder, name string) *http.Cookie {
 	t.Helper()
 	var found *http.Cookie
 	for _, ck := range rec.Result().Cookies() {
-		if ck.Name != sessionCookie {
+		if ck.Name != name {
 			continue
 		}
 		if found != nil {
-			t.Errorf("zwei Sitzungs-Cookies in einer Antwort: %q", rec.Header()["Set-Cookie"])
+			t.Errorf("zwei Cookies %s in einer Antwort: %q", name, rec.Header()["Set-Cookie"])
 		}
 		found = ck
 	}
 	return found
+}
+
+// withDevice: Kopfzeile für startLogin/login, die den Geräte-Ausweis mitschickt.
+func withDevice(pass string) [2]string { return [2]string{"Cookie", deviceCookie + "=" + pass} }
+
+// testID: eine feste Ausweis-id (16 Bytes aus n).
+func testID(n byte) []byte { return bytes.Repeat([]byte{n}, deviceIDBytes) }
+
+// laneWaiting: Wartende in der Vorzugsreihe und in der allgemeinen Reihe
+// (unter der Sperre gelesen, damit der Race-Detektor durchsieht).
+func laneWaiting(c *core.Core) (prio, general int) {
+	q := slotsFor(c)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, w := range q.waiting {
+		general += len(w)
+	}
+	return len(q.prio), general
+}
+
+// advanceQuiet stellt die Uhr um d weiter und verlangt, dass dabei kein
+// Zeitgeber ablief – also kein Wartender und kein Schlafender aufwachen
+// konnte (deterministisch, ohne auf ein Ergebnis zu warten, das nicht kommt).
+func (b *authBench) advanceQuiet(d time.Duration) {
+	b.t.Helper()
+	before := b.clk.Pending()
+	b.clk.Advance(d)
+	if after := b.clk.Pending(); after != before {
+		b.t.Fatalf("nach %v liefen %d Zeitgeber ab – zu früh", d, before-after)
+	}
 }
 
 // attempt ist das Ergebnis eines Anmeldeversuchs.
@@ -230,7 +272,7 @@ func (b *authBench) finish(ch <-chan attempt) attempt {
 }
 
 // useVerifier setzt für die Dauer des Tests eine eigene Passwortprüfung ein.
-func useVerifier(t *testing.T, fn func(hash, pw string) bool) {
+func useVerifier(t testing.TB, fn func(hash, pw string) bool) {
 	t.Helper()
 	old := verifyPassword
 	verifyPassword = fn

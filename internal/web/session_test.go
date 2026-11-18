@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -217,15 +218,42 @@ func TestSessionRules(t *testing.T) {
 		if _, ok, _ := b.resume(other); !ok {
 			t.Error("Abmelden beendet eine andere Sitzung")
 		}
-		// Ohne Sitzung: nur das Lösch-Cookie, nichts geschrieben.
+		// Ohne (lebende) Sitzung setzt End nichts und schreibt nichts – PHP
+		// schickt ohne Sitzung nie ein Lösch-Cookie: ohne Cookie, mit
+		// erfundenem, mit dem eben abgemeldeten.
 		before := b.c.Store.Sessions()
-		rec = httptest.NewRecorder()
-		End(b.c, rec, b.request(http.MethodPost, "192.0.2.1", "", nil))
-		if ck := sessionCookieOf(t, rec); ck == nil || ck.MaxAge >= 0 {
-			t.Errorf("Abmelden ohne Sitzung: %q", rec.Header()["Set-Cookie"])
+		for _, cookie := range []string{"", sessionIDText.EncodeToString(make([]byte, 32)), v} {
+			rec = httptest.NewRecorder()
+			End(b.c, rec, b.request(http.MethodPost, "192.0.2.1", cookie, nil))
+			if got := rec.Header()["Set-Cookie"]; len(got) != 0 {
+				t.Errorf("Abmelden ohne Sitzung (%.8q): %q", cookie, got)
+			}
 		}
 		if b.c.Store.Sessions() != before {
 			t.Error("Abmelden ohne Sitzung hat geschrieben")
+		}
+	})
+
+	t.Run("ohne Benutzer, CSRF-Token oder Stempel gilt keine", func(t *testing.T) {
+		b := newAuthBench(t, nil, true)
+		for _, spoil := range []func(*model.Session){
+			func(s *model.Session) { s.CSRF = "" },
+			func(s *model.Session) { s.User = "" },
+			func(s *model.Session) { s.AuthStamp = "" },
+		} {
+			v, _ := b.begin(adminUser, "admin")
+			key := keyOfValue(v)
+			b.c.Store.UpdateSessions(func(d *model.Sessions) {
+				e := d.Sessions[key]
+				spoil(&e)
+				d.Sessions[key] = e
+			})
+			if s, ok, rec := b.resume(v); ok || s != nil || len(rec.Header()["Set-Cookie"]) != 0 {
+				t.Errorf("verdorbene Sitzung gilt: %v %q", ok, rec.Header()["Set-Cookie"])
+			}
+			if _, there := b.c.Store.Sessions().Sessions[key]; there {
+				t.Error("verdorbene Sitzung bleibt gespeichert")
+			}
 		}
 	})
 }
@@ -396,4 +424,57 @@ func TestSweepSessions(t *testing.T) {
 	if n := len(b.c.Store.Sessions().Sessions); n != 0 {
 		t.Errorf("12 h später: %d Sitzungen übrig", n)
 	}
+}
+
+// CSRFMatches vergleicht in konstanter Zeit; ein leeres Token passt nie.
+func TestSessionCSRFMatches(t *testing.T) {
+	s := &Session{User: adminUser, Role: "admin", CSRF: "abc123"}
+	if !s.CSRFMatches("abc123") {
+		t.Error("richtiges Token abgelehnt")
+	}
+	for _, sent := range []string{"", "abc12", "abc1234", "ABC123", " abc123"} {
+		if s.CSRFMatches(sent) {
+			t.Errorf("%q angenommen", sent)
+		}
+	}
+	if (&Session{}).CSRFMatches("") || (*Session)(nil).CSRFMatches("abc123") {
+		t.Error("leeres Token oder keine Sitzung passt")
+	}
+	src, err := os.ReadFile("session.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?s)func \(s \*Session\) CSRFMatches.*?subtle\.ConstantTimeCompare`).Match(src) {
+		t.Error("CSRFMatches vergleicht nicht mit subtle.ConstantTimeCompare")
+	}
+}
+
+// Jeder Wert des Sitzungs-Cookies: kein Absturz, keine Sitzung, kein
+// Set-Cookie, nichts geschrieben.
+func FuzzSessionCookie(f *testing.F) {
+	b := newAuthBench(f, nil, true)
+	real, _ := b.begin(adminUser, "admin")
+	for _, seed := range []string{real[:42], real + "x", strings.ToUpper(real), keyOfValue(real), "",
+		"abcdefabcdefabcdefabcdefabcdef12", sessionIDText.EncodeToString(make([]byte, 32)), `"` + real[:41] + `"`,
+		"a; " + sessionCookie + "=b", strings.Repeat("A", 43), "\x00\xff"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, v string) {
+		if strings.Contains(v, real) {
+			return // die eine echte ID (der Fuzzer findet sie nicht)
+		}
+		before := b.c.Store.Sessions()
+		req := httptest.NewRequest(http.MethodGet, "/index.php", nil)
+		req.Header.Set("Cookie", sessionCookie+"="+v)
+		rec := httptest.NewRecorder()
+		if s, ok := Resume(b.c, rec, req); ok || s != nil {
+			t.Fatalf("Cookie %q: Sitzung %+v", v, s)
+		}
+		if got := rec.Header()["Set-Cookie"]; len(got) != 0 {
+			t.Fatalf("Cookie %q: Set-Cookie %q", v, got)
+		}
+		if b.c.Store.Sessions() != before {
+			t.Fatalf("Cookie %q: Sitzungen verändert", v)
+		}
+	})
 }

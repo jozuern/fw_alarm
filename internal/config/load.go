@@ -115,7 +115,8 @@ func ParseAt(data []byte, now time.Time) (*Config, error) {
 	c.WatcherTokenSHA256 = strings.ToLower(TrimPHP(c.WatcherTokenSHA256))
 	c.BarkKeyStatus = TrimPHP(c.BarkKeyStatus)
 	c.LoginMaxFailures = max(1, c.LoginMaxFailures)
-	c.LoginLockoutWindowSeconds = max(60, c.LoginLockoutWindowSeconds)
+	c.lockoutClamped = c.LoginLockoutWindowSeconds > MaxLockoutWindowSeconds
+	c.LoginLockoutWindowSeconds = clampLockout(c.LoginLockoutWindowSeconds)
 	c.BarkMaxTries = max(1, c.BarkMaxTries)
 	if !seen["bark_false_alarm_volume"] {
 		c.BarkFalseAlarmVolume = c.BarkAlarmVolume

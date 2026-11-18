@@ -84,14 +84,20 @@ const (
 //     bevor irgendetwas gezählt wird (sonst ließe jede Webseite den Browser
 //     des Admins Fehlversuche absenden und sperrte ihn aus).
 //  2. Ist der Absender gesperrt → Blocked: keine Prüfung, kein Platz.
-//  3. Platz für die Prüfung, höchstens 5 s → sonst Busy, nicht gezählt.
+//  3. Platz für die Prüfung (slots.go): mit gültigem Geräte-Ausweis
+//     (device.go) in der Vorzugsreihe, sonst in der allgemeinen; höchstens
+//     5 s, und ist die allgemeine Reihe voll, sofort → sonst Busy, nicht
+//     gezählt.
 //  4. Der Versuch wird gezählt (ThrottleHit), VOR der Prüfung: gleichzeitige
 //     Versuche bekommen nicht mehr Versuche als erlaubt. Wurde der Absender
 //     inzwischen gesperrt → Blocked.
 //  5. Genau EINE Prüfung (passwordTarget), dann ist der Platz wieder frei.
-//  6. Erfolg: Zähler des Absenders zurück, neue Sitzung (Begin) → OK.
-//     Fehlschlag: hat er die Sperre ausgelöst, OnLockout; dann 1 s Pause
-//     (außerhalb der Plätze) → Failed.
+//  6. Erfolg: Zähler des Absenders zurück, neue Sitzung (Begin), und – wenn
+//     die Anfrage keinen gültigen Ausweis für diese Rolle trug – ein neuer
+//     Geräte-Ausweis → OK. Fehlschlag: hat er die Sperre ausgelöst,
+//     OnLockout; dann 1 s Pause (außerhalb der Plätze) → Failed.
+//
+// Die Reihe ändert nur die Wartezeit, nie Antwort, Zählung oder Pause.
 //
 // Alles läuft im Speicher: Anmelden geht im Notbetrieb und wenn nichts
 // gesichert werden kann. Es gelten die Passwörter der geltenden Fassung –
@@ -107,14 +113,19 @@ func Login(c *core.Core, w http.ResponseWriter, r *http.Request, f *Form) (Login
 	}
 	cfg := c.Cfg() // eine Fassung für Grenzen, Prüfung und Sitzung
 	limit := max(1, cfg.LoginMaxFailures)
-	windowSeconds := max(60, cfg.LoginLockoutWindowSeconds)
+	windowSeconds := cfg.LoginLockoutWindow() // 60 s bis ein Jahr: als Dauer nie übergelaufen
 	window := time.Duration(windowSeconds) * time.Second
 	ip := ClientIP(c, r)
 	who := ThrottleKey(ip)
 	if throttleBlocked(c, "login", who, limit, window) {
 		return LoginBlocked, shown
 	}
-	release, ok := slotsFor(c).acquire(r.Context(), c.Clock, who)
+	device, known := devicePassOf(r, cfg)
+	lane := "" // allgemeine Reihe
+	if known {
+		lane = device.id
+	}
+	release, ok := slotsFor(c).acquire(r.Context(), c.Clock, who, lane)
 	if !ok {
 		return LoginBusy, shown
 	}
@@ -125,6 +136,9 @@ func Login(c *core.Core, w http.ResponseWriter, r *http.Request, f *Form) (Login
 	if good {
 		ThrottleClear(c, "login", who)
 		begin(c, w, r, cfg, user, role)
+		if !known || device.role != role {
+			setDeviceCookie(c, w, r, cfg, role) // ein vorhandener gültiger bleibt (keine neuen ids)
+		}
 		if fn := OnLogin; fn != nil {
 			c.Bg.Go("Meldung: Anmeldung", func() { fn(c, role, user, ip) })
 		}

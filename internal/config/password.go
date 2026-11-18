@@ -23,15 +23,22 @@ const (
 	argonKeyLen    = 32
 )
 
-// Obergrenzen für vorhandene Hashes: Ein Hash mit absurden Werten (von Hand
-// erzeugt oder vertippt) hielte sonst jede Anmeldung minutenlang auf oder
-// sprengte den Speicher des Dienstes. Solche Hashes gelten als unbrauchbar.
+// Obergrenzen für vorhandene Hashes (Spec §6.8): Höchstens zwei Prüfungen
+// laufen zugleich, und der Dienst hat 256 MiB Speicher (MemoryMax) – ein
+// teurerer Hash sprengte mit zwei Prüfungen die Speichergrenze oder hielte
+// die Plätze sekundenlang besetzt (bcrypt 13 dauert auf der VM rund eine
+// halbe Sekunde, jede Stufe mehr das Doppelte). Solche Hashes gelten als
+// unbrauchbar; check-config nennt sie "zu aufwendig". Der Argon2id-Hash von
+// PHP (64 MiB, 4 Durchläufe) liegt genau auf der Grenze.
 const (
-	maxArgonMemoryKiB = 256 * 1024
-	maxArgonPasses    = 10
-	maxArgonThreads   = 16
-	maxBcryptCost     = 15
+	maxArgonMemoryKiB = 64 * 1024
+	maxArgonPasses    = 4
+	maxArgonThreads   = 4
+	maxBcryptCost     = 13
 )
+
+// hashTooExpensiveText nennt die Obergrenzen (für die Hinweise).
+const hashTooExpensiveText = "Hash zu aufwendig (Argon2id höchstens 64 MiB, 4 Durchläufe und 4 Fäden, bcrypt höchstens Kosten 13)"
 
 var b64 = base64.RawStdEncoding // Form der PHC-Zeichenketten (ohne "=")
 
@@ -63,21 +70,44 @@ func VerifyPassword(hash, pw string) bool {
 }
 
 // PasswordHashUsable: Würde VerifyPassword diesen Hash überhaupt prüfen
-// (Argon2id innerhalb der Obergrenzen oder bcrypt)? Für check-config und die
-// Anmeldung (ein unbrauchbarer Hash wird nie geprüft, web/verify.go).
-func PasswordHashUsable(hash string) bool {
-	_, ok := parseArgon(hash)
-	return ok || bcryptUsable(hash)
+// (Argon2id oder bcrypt, innerhalb der Obergrenzen)? Für check-config und
+// die Anmeldung (ein unbrauchbarer Hash wird nie geprüft, web/verify.go).
+func PasswordHashUsable(hash string) bool { return judgeHash(hash) == hashUsable }
+
+// hashVerdict: brauchbar, keine erkennbare Form (Klartext, anderes
+// Verfahren, kaputt) oder in der Form richtig, aber über den Obergrenzen.
+type hashVerdict int
+
+const (
+	hashUsable hashVerdict = iota
+	hashMalformed
+	hashTooExpensive
+)
+
+func judgeHash(hash string) hashVerdict {
+	if a, ok := parseArgonForm(hash); ok {
+		if !argonWithinBounds(a) {
+			return hashTooExpensive
+		}
+		return hashUsable
+	}
+	if !bcryptPattern.MatchString(hash) {
+		return hashMalformed
+	}
+	cost, err := bcrypt.Cost([]byte(hash))
+	switch {
+	case err != nil || cost < bcrypt.MinCost: // auch Kosten über 31: kein bcrypt
+		return hashMalformed
+	case cost > maxBcryptCost:
+		return hashTooExpensive
+	}
+	return hashUsable
 }
 
 var bcryptPattern = regexp.MustCompile(`^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$`)
 
 func bcryptUsable(hash string) bool {
-	if !bcryptPattern.MatchString(hash) {
-		return false
-	}
-	cost, err := bcrypt.Cost([]byte(hash))
-	return err == nil && cost >= bcrypt.MinCost && cost <= maxBcryptCost
+	return bcryptPattern.MatchString(hash) && judgeHash(hash) == hashUsable
 }
 
 type argonHash struct {
@@ -90,7 +120,19 @@ type argonHash struct {
 // Zahlen ohne Vorzeichen und ohne führende Nullen.
 var argonParams = regexp.MustCompile(`^m=([1-9][0-9]{0,9}),t=([1-9][0-9]{0,9}),p=([1-9][0-9]{0,2})$`)
 
+// parseArgon: ein Argon2id-Hash in gültiger Form und innerhalb der
+// Obergrenzen.
 func parseArgon(hash string) (argonHash, bool) {
+	a, ok := parseArgonForm(hash)
+	return a, ok && argonWithinBounds(a)
+}
+
+func argonWithinBounds(a argonHash) bool {
+	return a.memoryKiB <= maxArgonMemoryKiB && a.passes <= maxArgonPasses && uint32(a.threads) <= maxArgonThreads
+}
+
+// parseArgonForm zerlegt einen Argon2id-Hash ohne die Obergrenzen zu prüfen.
+func parseArgonForm(hash string) (argonHash, bool) {
 	var a argonHash
 	parts := strings.Split(hash, "$")
 	// "", "argon2id", "v=19", "m=…,t=…,p=…", Salz, Hash
@@ -105,7 +147,6 @@ func parseArgon(hash string) (argonHash, bool) {
 	passes, errT := strconv.ParseUint(m[2], 10, 32)
 	threads, errP := strconv.ParseUint(m[3], 10, 8)
 	if errM != nil || errT != nil || errP != nil ||
-		memory > maxArgonMemoryKiB || passes > maxArgonPasses || threads > maxArgonThreads ||
 		memory < 8*threads { // Argon2 verlangt mindestens 8 KiB je Faden
 		return a, false
 	}

@@ -57,7 +57,7 @@ type Config struct {
 	DashboardReadonlyUser         string `toml:"dashboard_readonly_user"`
 	DashboardReadonlyPasswordHash string `toml:"dashboard_readonly_password_hash"`
 	LoginMaxFailures              int    `toml:"login_max_failures"`           // nie unter 1
-	LoginLockoutWindowSeconds     int    `toml:"login_lockout_window_seconds"` // nie unter 60
+	LoginLockoutWindowSeconds     int    `toml:"login_lockout_window_seconds"` // nie unter 60, nie über ein Jahr
 
 	// Hinter einem Proxy / Tunnel.
 	TrustedProxies      []string `toml:"trusted_proxies"`
@@ -99,8 +99,9 @@ type Config struct {
 	ControlSocket        string `toml:"control_socket"` // Unix-Socket des Steuer-Zugangs
 	CheckIntervalSeconds int    `toml:"check_interval_seconds"`
 
-	loc      *time.Location // geladene Zeitzone (nil bei einem von Hand gebauten Stand)
-	loadedAt time.Time      // Zeitpunkt des Ladens – an ihm misst Warnings die Probe-Sperre
+	loc            *time.Location // geladene Zeitzone (nil bei einem von Hand gebauten Stand)
+	loadedAt       time.Time      // Zeitpunkt des Ladens – an ihm misst Warnings die Probe-Sperre
+	lockoutClamped bool           // login_lockout_window_seconds stand über einem Jahr (Hinweis)
 }
 
 // Standardwerte, die auch ohne lesbare Datei gebraucht werden: Die Befehle
@@ -229,6 +230,42 @@ func (c *Config) AuthStamp(role string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+// DeviceKey ist der Schlüssel der Geräte-Ausweise eines Kontos (Spec §6.8
+// "bekannte Geräte zuerst", web/device.go): HMAC-SHA256 mit dem
+// Passwort-Hash als Schlüssel über "fw-alarm device v1|<Rolle>|<Benutzer>".
+// Ein anderes Passwort oder ein anderer Benutzername macht jeden alten
+// Ausweis des Kontos wertlos. nil = kein Schlüssel: Rolle weder "admin"
+// noch "readonly", Konto ohne Namen oder Hash unbrauchbar.
+func (c *Config) DeviceKey(role string) []byte {
+	var user, hash string
+	switch role {
+	case "admin":
+		user, hash = c.DashboardUser, c.DashboardPasswordHash
+	case "readonly":
+		user, hash = c.DashboardReadonlyUser, c.DashboardReadonlyPasswordHash
+	default:
+		return nil
+	}
+	if user == "" || !PasswordHashUsable(hash) {
+		return nil
+	}
+	mac := hmac.New(sha256.New, []byte(hash))
+	mac.Write([]byte("fw-alarm device v1|" + role + "|" + user)) // Schreiben in einen Hash scheitert nie
+	return mac.Sum(nil)
+}
+
+// MaxLockoutWindowSeconds: längstes Fenster der Login-Bremse (ein Jahr).
+// Darüber liefe die Umrechnung in eine Dauer (Nanosekunden in int64) über –
+// ab rund 292 Jahren wird sie negativ, und die Bremse wäre still aus.
+const MaxLockoutWindowSeconds = 365 * 24 * 3600
+
+// LoginLockoutWindow ist das Fenster der Login-Bremse in Sekunden:
+// mindestens 60 (wie PHP login_throttle_limits), höchstens ein Jahr – auch
+// für einen von Hand gebauten Stand.
+func (c *Config) LoginLockoutWindow() int { return clampLockout(c.LoginLockoutWindowSeconds) }
+
+func clampLockout(s int) int { return min(MaxLockoutWindowSeconds, max(60, s)) }
+
 // SendGuard sagt, ob die Probe-Sperre zum Zeitpunkt now gilt, und für welche
 // Keys. Sie gilt, solange send_guard_keys nicht leer ist und send_guard_until
 // nach now liegt – sie endet also von selbst.
@@ -273,12 +310,22 @@ func (c *Config) Warnings() []string {
 			w = append(w, "watcher_token_sha256 ist derselbe Hash wie machine_token_sha256 – api/alive.php bleibt aus (der Außen-Wächter darf nie das Token der Box kennen)")
 		}
 	}
-	if !PasswordHashUsable(c.DashboardPasswordHash) {
+	switch judgeHash(c.DashboardPasswordHash) {
+	case hashMalformed:
 		w = append(w, "dashboard_password_hash ist weder ein bcrypt- noch ein Argon2id-Hash – so kann sich der Admin nicht anmelden (neuer Hash: fw-alarm hash-password)")
+	case hashTooExpensive:
+		w = append(w, "dashboard_password_hash: "+hashTooExpensiveText+" – so kann sich der Admin nicht anmelden (neuer Hash: fw-alarm hash-password)")
 	}
-	if (c.DashboardReadonlyUser != "" || c.DashboardReadonlyPasswordHash != "") &&
-		!PasswordHashUsable(c.DashboardReadonlyPasswordHash) {
-		w = append(w, "dashboard_readonly_password_hash ist weder ein bcrypt- noch ein Argon2id-Hash – so kann sich der Lese-Benutzer nicht anmelden")
+	if c.DashboardReadonlyUser != "" || c.DashboardReadonlyPasswordHash != "" {
+		switch judgeHash(c.DashboardReadonlyPasswordHash) {
+		case hashMalformed:
+			w = append(w, "dashboard_readonly_password_hash ist weder ein bcrypt- noch ein Argon2id-Hash – so kann sich der Lese-Benutzer nicht anmelden")
+		case hashTooExpensive:
+			w = append(w, "dashboard_readonly_password_hash: "+hashTooExpensiveText+" – so kann sich der Lese-Benutzer nicht anmelden (neuer Hash: fw-alarm hash-password)")
+		}
+	}
+	if c.lockoutClamped {
+		w = append(w, fmt.Sprintf("login_lockout_window_seconds ist größer als ein Jahr – es gilt %d (ein Jahr)", MaxLockoutWindowSeconds))
 	}
 	if len(c.TrustedProxies) > 0 {
 		if _, ok := c.ClientIPHeader(); !ok {

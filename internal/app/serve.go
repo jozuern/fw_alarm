@@ -225,16 +225,20 @@ func Serve(ctx context.Context, o ServeOptions) error {
 // gültigen Fassung anmeldet, bleibt angemeldet. Ist sie schon beim Start
 // fehlerhaft (Start mit der Kopie), gleich jetzt – eine Passwort-Änderung
 // mit Tippfehler, die erst ein Neustart einliest, sperrt ein verlorenes Handy
-// ebenso aus. Eine neue gültige Fassung beendet nichts von selbst: Sitzungen,
-// deren Zugangsdaten sich geändert haben, enden bei ihrer nächsten Anfrage
-// (web.Resume). Muss vor prov.Run und dem Steuer-Zugang (reload) laufen.
+// ebenso aus. Jede neue gültige Fassung räumt sofort die Sitzungen ab, deren
+// Zugangsdaten nicht mehr passen (Spec §8: Passwort geändert – ein
+// verlorenes Handy ist draußen, auch wenn es gerade nicht abfragt); die
+// übrigen bleiben. Muss vor prov.Run und dem Steuer-Zugang (reload) laufen.
 func watchConfig(c *core.Core, prov *config.Provider) {
-	// "false" meldet der Provider nur beim Wechsel von gut auf fehlerhaft.
-	// Die Meldung läuft unter seiner Sperre; EndAll ruft ihn nicht zurück.
+	// "false" meldet der Provider nur beim Wechsel von gut auf fehlerhaft,
+	// "true" bei jeder neuen gültigen Fassung. Die Meldung läuft unter seiner
+	// Sperre; EndAll und SweepSessions lesen nur Get (erlaubt).
 	prov.OnChange(func(ok bool) {
-		if !ok {
-			web.EndAll(c)
+		if ok {
+			web.SweepSessions(c)
+			return
 		}
+		web.EndAll(c)
 	})
 	if !prov.OK() {
 		web.EndAll(c)

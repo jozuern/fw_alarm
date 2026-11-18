@@ -58,26 +58,42 @@ func TestLoginSlots(t *testing.T) {
 			started[s] = append(started[s], c.pw)
 		}
 
-		// Ankunft der Reihe nach a1 b1 c1 a2 b2 c2 …: Ein Versuch ist
-		// angekommen, sobald er prüft oder in der Schlange wartet.
+		// Je Absender höchstens 2 Wartende: refill stellt reihum (A, B, C, A,
+		// B, C …) je einen Versuch an, solange ein Absender weniger als 2
+		// wartend und noch nicht alle 10 unterwegs hat – Ankunft wie a1 b1 c1
+		// a2 b2 c2 … Ein Versuch ist angekommen, sobald er prüft oder in der
+		// Schlange wartet.
 		var results []<-chan attempt
-		for i := 1; i <= 10; i++ {
-			for _, s := range senders {
-				results = append(results, b.startLogin(adminUser, fmt.Sprintf("%s-%02d", s, i), ip[s]))
-				select {
-				case c := <-calls:
-					take(c)
-				case d := <-b.clk.waits:
-					if d != 5*time.Second {
-						t.Fatalf("Wartezeit %v, erwartet 5 s", d)
+		sent := map[string]int{}
+		queued := map[string]int{} // wartend, nach Sicht des Tests
+		refill := func() {
+			t.Helper()
+			for more := true; more; {
+				more = false
+				for _, s := range senders {
+					if queued[s] >= 2 || sent[s] >= 10 {
+						continue
 					}
-				case <-time.After(10 * time.Second):
-					t.Fatalf("Versuch %s-%02d kommt nicht an", s, i)
+					more = true
+					sent[s]++
+					results = append(results, b.startLogin(adminUser, fmt.Sprintf("%s-%02d", s, sent[s]), ip[s]))
+					select {
+					case c := <-calls:
+						take(c)
+					case d := <-b.clk.waits:
+						if d != 5*time.Second {
+							t.Fatalf("Wartezeit %v, erwartet 5 s", d)
+						}
+						queued[s]++
+					case <-time.After(10 * time.Second):
+						t.Fatalf("Versuch %s-%02d kommt nicht an", s, sent[s])
+					}
 				}
 			}
 		}
-		if slotsWaiting(b.c) != 28 {
-			t.Fatalf("%d Wartende, erwartet 28", slotsWaiting(b.c))
+		refill()
+		if slotsWaiting(b.c) != 6 {
+			t.Fatalf("%d Wartende, erwartet 6", slotsWaiting(b.c))
 		}
 
 		// settle: bis jede zugeteilte Prüfung begonnen und jede beendete ihren
@@ -89,6 +105,7 @@ func TestLoginSlots(t *testing.T) {
 				select {
 				case c := <-calls:
 					take(c)
+					queued[c.pw[:1]]--
 				case <-time.After(time.Millisecond):
 				}
 				if time.Now().After(deadline) {
@@ -124,6 +141,8 @@ func TestLoginSlots(t *testing.T) {
 				c.reply <- false
 				delete(active, s)
 			}
+			settle()
+			refill()
 		}
 		// Je Absender in der Reihenfolge der Ankunft.
 		for _, s := range senders {
@@ -164,18 +183,13 @@ func TestLoginSlots(t *testing.T) {
 		waiting := func(what string) <-chan attempt {
 			t.Helper()
 			ch := b.startLogin(adminUser, adminPass, map[string]string{"z": "192.0.2.3", "x2": "192.0.2.1"}[what])
-			select {
-			case <-b.clk.waits:
-			case <-time.After(10 * time.Second):
-				t.Fatalf("%s wartet nicht", what)
-			}
+			b.expectWait(what) // genau 5 s
 			return ch
 		}
 		z := waiting("z")   // ein neuer Absender, beide Plätze belegt
 		x2 := waiting("x2") // derselbe Absender wie eine laufende Prüfung
-		b.clk.Advance(5*time.Second - time.Millisecond)
-		notDone(t, "z", z)
-		notDone(t, "x2", x2)
+		// Ihre Zeitgeber laufen nicht vor 5 s ab – vorher kann keiner fertig sein.
+		b.advanceQuiet(5*time.Second - time.Millisecond)
 		b.clk.Advance(time.Millisecond)
 		for name, ch := range map[string]<-chan attempt{"z": z, "x2": x2} {
 			r := resultOf(t, ch)

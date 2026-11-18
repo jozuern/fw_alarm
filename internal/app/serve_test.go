@@ -472,10 +472,24 @@ func TestDefaultLastGoodPath(t *testing.T) {
 // Wird config.toml fehlerhaft, enden alle Sitzungen (Spec §6.8) – einmal je
 // Wechsel: Wer sich danach mit den Passwörtern der letzten gültigen Fassung
 // anmeldet, bleibt angemeldet, solange die Datei fehlerhaft bleibt. Eine neue
-// gültige Fassung beendet nichts; ein Start mit fehlerhafter Datei beendet
+// gültige Fassung räumt sofort ab, was zu ihren Zugangsdaten nicht mehr passt
+// (Spec §8), und lässt den Rest; ein Start mit fehlerhafter Datei beendet
 // alles gleich.
 func TestBrokenConfigEndsSessions(t *testing.T) {
+	const (
+		hashA = "$2y$04$r60I68m5mVq98EDvnpGXGeS1SZtBd2wWlr0dy0MuX73YPDZ27VzZy"
+		hashB = "$2y$04$arQ57ZxGZu0qqkyhgNiBc.Ri6mtxzvUCvCwP8PvCH/TfBrFX9abKO"
+	)
+	account := func(hash string, more ...func(*config.Config)) func(*config.Config) {
+		return func(c *config.Config) {
+			c.DashboardUser, c.DashboardPasswordHash = "admin", hash
+			for _, m := range more {
+				m(c)
+			}
+		}
+	}
 	b := newBench(t)
+	b.writeConfig(account(hashA))
 	if err := os.MkdirAll(b.state, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -499,10 +513,10 @@ func TestBrokenConfigEndsSessions(t *testing.T) {
 		c := &core.Core{Cfg: prov.Get, CfgOK: prov.OK, Store: st, Clock: clk, Bg: bg.New(log), Log: log}
 		return c, prov
 	}
-	add := func(c *core.Core, key string) {
-		c.Store.UpdateSessions(func(d *model.Sessions) {
-			d.Sessions[key] = model.Session{User: "admin", Role: "admin", CSRF: "c", AuthStamp: "s"}
-		})
+	add := func(c *core.Core, key string) { // angemeldet mit der geltenden Fassung
+		now := clk.Now().Unix()
+		s := model.Session{User: "admin", Role: "admin", CSRF: "c", AuthStamp: c.Cfg().AuthStamp("admin"), CreatedAt: now, LastSeen: now}
+		c.Store.UpdateSessions(func(d *model.Sessions) { d.Sessions[key] = s })
 	}
 	has := func(c *core.Core, keys ...string) bool {
 		got := c.Store.Sessions().Sessions
@@ -539,13 +553,23 @@ func TestBrokenConfigEndsSessions(t *testing.T) {
 	if !has(c, "danach") {
 		t.Errorf("eine weitere Prüfung der noch fehlerhaften Datei beendet Sitzungen: %v", c.Store.Sessions().Sessions)
 	}
-	b.writeConfig(func(cfg *config.Config) { cfg.LoginMaxFailures = 5 })
+	b.writeConfig(account(hashA, func(cfg *config.Config) { cfg.LoginMaxFailures = 5 }))
 	if err := prov.Reload(); err != nil {
 		t.Fatal(err)
 	}
 	if !has(c, "danach") {
-		t.Errorf("eine neue gültige Fassung beendet Sitzungen: %v", c.Store.Sessions().Sessions)
+		t.Errorf("eine neue gültige Fassung mit demselben Passwort beendet Sitzungen: %v", c.Store.Sessions().Sessions)
 	}
+	// Neues Passwort: Die Sitzung ist sofort fort, nicht erst bei ihrer
+	// nächsten Anfrage (ein verlorenes Handy, das gerade nicht abfragt).
+	b.writeConfig(account(hashB))
+	if err := prov.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if !has(c) {
+		t.Errorf("nach dem Passwortwechsel: %v", c.Store.Sessions().Sessions)
+	}
+	add(c, "neues-passwort")
 	broken()
 	if err := prov.Reload(); err == nil {
 		t.Fatal("die fehlerhafte Datei wurde angenommen")
@@ -555,7 +579,7 @@ func TestBrokenConfigEndsSessions(t *testing.T) {
 	}
 
 	// Start mit fehlerhafter Datei (aus der Kopie): alles gleich beendet.
-	if err := os.WriteFile(b.lastGood, b.configText(nil), 0o600); err != nil {
+	if err := os.WriteFile(b.lastGood, b.configText(account(hashA)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	c, prov = setup()
