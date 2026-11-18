@@ -18,10 +18,14 @@ import (
 	"testing"
 	"time"
 
+	"fwalarm/internal/bg"
 	"fwalarm/internal/clock"
 	"fwalarm/internal/config"
 	"fwalarm/internal/control"
+	"fwalarm/internal/core"
+	"fwalarm/internal/model"
 	"fwalarm/internal/store"
+	"fwalarm/internal/store/storetest"
 )
 
 // syncBuffer: Puffer, den mehrere Goroutinen beschreiben dürfen.
@@ -462,6 +466,169 @@ func TestDefaultLastGoodPath(t *testing.T) {
 		if got := DefaultLastGoodPath(); got != "/var/lib/fw-alarm/"+config.LastGoodName {
 			t.Errorf("mehrere Ordner: %q", got)
 		}
+	}
+}
+
+// Wird config.toml fehlerhaft, enden alle Sitzungen (Spec §6.8) – einmal je
+// Wechsel: Wer sich danach mit den Passwörtern der letzten gültigen Fassung
+// anmeldet, bleibt angemeldet, solange die Datei fehlerhaft bleibt. Eine neue
+// gültige Fassung beendet nichts; ein Start mit fehlerhafter Datei beendet
+// alles gleich.
+func TestBrokenConfigEndsSessions(t *testing.T) {
+	b := newBench(t)
+	if err := os.MkdirAll(b.state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.DiscardHandler)
+	clk := clock.NewFake(time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC))
+	setup := func() (*core.Core, *config.Provider) {
+		t.Helper()
+		prov, err := config.NewProvider(b.config, b.lastGood, clk, log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, _, err := store.Open(filepath.FromSlash("/daten"), storetest.New(), clk, log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := st.Close(context.Background()); err != nil {
+				t.Error(err)
+			}
+		})
+		c := &core.Core{Cfg: prov.Get, CfgOK: prov.OK, Store: st, Clock: clk, Bg: bg.New(log), Log: log}
+		return c, prov
+	}
+	add := func(c *core.Core, key string) {
+		c.Store.UpdateSessions(func(d *model.Sessions) {
+			d.Sessions[key] = model.Session{User: "admin", Role: "admin", CSRF: "c", AuthStamp: "s"}
+		})
+	}
+	has := func(c *core.Core, keys ...string) bool {
+		got := c.Store.Sessions().Sessions
+		if len(got) != len(keys) {
+			return false
+		}
+		for _, k := range keys {
+			if _, ok := got[k]; !ok {
+				return false
+			}
+		}
+		return true
+	}
+	broken := func() {
+		if err := os.WriteFile(b.config, []byte("farbe = 1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	c, prov := setup()
+	watchConfig(c, prov)
+	add(c, "vorher")
+	broken()
+	if err := prov.Reload(); err == nil {
+		t.Fatal("die fehlerhafte Datei wurde angenommen")
+	}
+	if !has(c) {
+		t.Fatalf("nach dem Wechsel auf fehlerhaft: %v", c.Store.Sessions().Sessions)
+	}
+	add(c, "danach") // angemeldet mit der letzten gültigen Fassung
+	if err := prov.Reload(); err == nil {
+		t.Fatal("die fehlerhafte Datei wurde angenommen")
+	}
+	if !has(c, "danach") {
+		t.Errorf("eine weitere Prüfung der noch fehlerhaften Datei beendet Sitzungen: %v", c.Store.Sessions().Sessions)
+	}
+	b.writeConfig(func(cfg *config.Config) { cfg.LoginMaxFailures = 5 })
+	if err := prov.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if !has(c, "danach") {
+		t.Errorf("eine neue gültige Fassung beendet Sitzungen: %v", c.Store.Sessions().Sessions)
+	}
+	broken()
+	if err := prov.Reload(); err == nil {
+		t.Fatal("die fehlerhafte Datei wurde angenommen")
+	}
+	if !has(c) {
+		t.Errorf("beim zweiten Wechsel auf fehlerhaft: %v", c.Store.Sessions().Sessions)
+	}
+
+	// Start mit fehlerhafter Datei (aus der Kopie): alles gleich beendet.
+	if err := os.WriteFile(b.lastGood, b.configText(nil), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, prov = setup()
+	if prov.OK() {
+		t.Fatal("Start ohne Fehler")
+	}
+	add(c, "aus-sessions.json")
+	watchConfig(c, prov)
+	if !has(c) {
+		t.Errorf("Start mit fehlerhafter Datei: %v", c.Store.Sessions().Sessions)
+	}
+}
+
+// Serve selbst hängt watchConfig ein: reload einer fehlerhaften Datei und
+// ein Start mit fehlerhafter Datei beenden die Sitzungen aus sessions.json;
+// ein Start mit gültiger Datei lässt sie.
+func TestServeBrokenConfigEndsSessions(t *testing.T) {
+	b := newBench(t)
+	sessions := filepath.Join(b.state, "sessions.json")
+	put := func() {
+		t.Helper()
+		if err := os.MkdirAll(b.state, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		doc := `{"schema":1,"sessions":{"` + strings.Repeat("ab", 32) + `":{"user":"admin","role":"admin","csrf":"c","auth_stamp":"s","created_at":1,"last_seen":2}}}`
+		if err := os.WriteFile(sessions, []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func() int {
+		t.Helper()
+		data, err := os.ReadFile(sessions)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, err := model.DecodeSessions(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(d.Sessions)
+	}
+	stop := func(done <-chan error) {
+		t.Helper()
+		if code, _, errOut := b.run("stop"); code != 0 {
+			t.Fatalf("stop: %q", errOut)
+		}
+		if err := waitEnded(t, done); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	put()
+	done, _ := b.start()
+	stop(done)
+	if n := count(); n != 1 {
+		t.Fatalf("Start mit gültiger Datei: %d Sitzungen, erwartet 1", n)
+	}
+	done, _ = b.start()
+	if err := os.WriteFile(b.config, []byte("farbe = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := b.run("reload"); code != 1 {
+		t.Fatalf("reload der fehlerhaften Datei: %d", code)
+	}
+	stop(done)
+	if n := count(); n != 0 {
+		t.Errorf("nach reload einer fehlerhaften Datei: %d Sitzungen", n)
+	}
+	put()
+	done, _ = b.start() // aus der Kopie
+	stop(done)
+	if n := count(); n != 0 {
+		t.Errorf("nach einem Start mit fehlerhafter Datei: %d Sitzungen", n)
 	}
 }
 

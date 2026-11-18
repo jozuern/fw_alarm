@@ -19,7 +19,7 @@ func cheapArgon(pw string) string {
 
 // Der Hash kommt aus config.toml – Eingabe von außen. Was auch drinsteht:
 // kein Absturz, und VerifyPassword nimmt nie einen Hash an, den
-// passwordHashUsable verwirft (der Hinweis von check-config muss stimmen).
+// PasswordHashUsable verwirft (der Hinweis von check-config muss stimmen).
 func FuzzPasswordHash(f *testing.F) {
 	argon := cheapArgon("x")
 	for _, seed := range []string{
@@ -39,7 +39,7 @@ func FuzzPasswordHash(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, hash string) {
-		usable := passwordHashUsable(hash)
+		usable := PasswordHashUsable(hash)
 		if a, ok := parseArgon(hash); ok {
 			if a.memoryKiB > maxArgonMemoryKiB || a.passes > maxArgonPasses || a.threads > maxArgonThreads ||
 				a.passes < 1 || a.threads < 1 {
@@ -131,12 +131,12 @@ func TestVerifyPassword(t *testing.T) {
 		if VerifyPassword(bad, "test") {
 			t.Errorf("unbrauchbarer Hash %q angenommen", bad)
 		}
-		if passwordHashUsable(bad) {
+		if PasswordHashUsable(bad) {
 			t.Errorf("unbrauchbarer Hash %q gilt als brauchbar", bad)
 		}
 	}
 	for _, good := range []string{testBcrypt, otherBcrypt, hash, phpArgon} {
-		if !passwordHashUsable(good) {
+		if !PasswordHashUsable(good) {
 			t.Errorf("brauchbarer Hash %q gilt als unbrauchbar", good)
 		}
 	}

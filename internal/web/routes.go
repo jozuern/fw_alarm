@@ -1,7 +1,7 @@
 // Package web ist die HTTP-Seite des Servers: die Tabelle der Adressen
 // (hier), Antworten, statische Dateien, Formulare, Sicherheits-Kopfzeilen,
-// Vertrauen in den Proxy, Bremsen, das Maschinen-Token, Fristen; später
-// Sitzungen, Anmeldung und Seiten.
+// Vertrauen in den Proxy, Bremsen, das Maschinen-Token, Fristen, Sitzungen
+// und die Anmeldung samt begrenzter Passwortprüfungen; später die Seiten.
 //
 // Die Tabelle kennt nur genaue Pfade (Spec §6.4). Mehrfache Schrägstriche
 // werden wie bei Nginx zusammengezogen; umgeleitet wird nie (eine Umleitung

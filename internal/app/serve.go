@@ -93,6 +93,7 @@ func Serve(ctx context.Context, o ServeOptions) error {
 		Log:     log,
 		Version: o.Version,
 	}
+	watchConfig(c, prov)
 	rt := web.NewRouter(c)
 
 	stopRequested := make(chan struct{})
@@ -216,6 +217,28 @@ func Serve(ctx context.Context, o ServeOptions) error {
 	}
 	log.Info("Server beendet")
 	return errors.Join(runErr, closeErr)
+}
+
+// watchConfig beendet alle Sitzungen, sobald config.toml fehlerhaft wird
+// (Spec §6.8) – einmal je Wechsel, nicht bei jeder Prüfung der noch
+// fehlerhaften Datei: Wer sich danach mit den Passwörtern der letzten
+// gültigen Fassung anmeldet, bleibt angemeldet. Ist sie schon beim Start
+// fehlerhaft (Start mit der Kopie), gleich jetzt – eine Passwort-Änderung
+// mit Tippfehler, die erst ein Neustart einliest, sperrt ein verlorenes Handy
+// ebenso aus. Eine neue gültige Fassung beendet nichts von selbst: Sitzungen,
+// deren Zugangsdaten sich geändert haben, enden bei ihrer nächsten Anfrage
+// (web.Resume). Muss vor prov.Run und dem Steuer-Zugang (reload) laufen.
+func watchConfig(c *core.Core, prov *config.Provider) {
+	// "false" meldet der Provider nur beim Wechsel von gut auf fehlerhaft.
+	// Die Meldung läuft unter seiner Sperre; EndAll ruft ihn nicht zurück.
+	prov.OnChange(func(ok bool) {
+		if !ok {
+			web.EndAll(c)
+		}
+	})
+	if !prov.OK() {
+		web.EndAll(c)
+	}
 }
 
 // errStopping: reload oder flush, während der Server schon schließt.

@@ -138,6 +138,17 @@ func throttleDecide(m map[string]model.ThrottleEntry, who string, limit int, win
 	return e, Hit{}, false
 }
 
+// throttleBlocked sagt, ob who gesperrt ist – ohne zu zählen, am
+// Schnappschuss (Login fragt das, bevor es um einen Platz für die
+// Passwortprüfung anstellt: Ein gesperrter Absender kostet keine Prüfung
+// und keinen Platz). Gezählt wird danach mit ThrottleHit, das noch einmal
+// entscheidet.
+func throttleBlocked(c *core.Core, bucket, who string, limit int, window time.Duration) bool {
+	pick := throttleBucket(bucket)
+	_, h, final := throttleDecide(*pick(c.Store.Runtime()), who, limit, int64(window/time.Second), c.Clock.Now().Unix())
+	return final && h.Blocked
+}
+
 // ThrottleClear nimmt den Absender who aus der Bremse bucket (PHP:
 // throttle_clear, nach einer erfolgreichen Anmeldung). Hat er keinen
 // Eintrag, ändert sich nichts.

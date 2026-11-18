@@ -62,8 +62,10 @@ func VerifyPassword(hash, pw string) bool {
 	return false
 }
 
-// passwordHashUsable: Würde VerifyPassword diesen Hash überhaupt prüfen?
-func passwordHashUsable(hash string) bool {
+// PasswordHashUsable: Würde VerifyPassword diesen Hash überhaupt prüfen
+// (Argon2id innerhalb der Obergrenzen oder bcrypt)? Für check-config und die
+// Anmeldung (ein unbrauchbarer Hash wird nie geprüft, web/verify.go).
+func PasswordHashUsable(hash string) bool {
 	_, ok := parseArgon(hash)
 	return ok || bcryptUsable(hash)
 }

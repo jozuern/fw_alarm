@@ -273,11 +273,11 @@ func (c *Config) Warnings() []string {
 			w = append(w, "watcher_token_sha256 ist derselbe Hash wie machine_token_sha256 – api/alive.php bleibt aus (der Außen-Wächter darf nie das Token der Box kennen)")
 		}
 	}
-	if !passwordHashUsable(c.DashboardPasswordHash) {
+	if !PasswordHashUsable(c.DashboardPasswordHash) {
 		w = append(w, "dashboard_password_hash ist weder ein bcrypt- noch ein Argon2id-Hash – so kann sich der Admin nicht anmelden (neuer Hash: fw-alarm hash-password)")
 	}
 	if (c.DashboardReadonlyUser != "" || c.DashboardReadonlyPasswordHash != "") &&
-		!passwordHashUsable(c.DashboardReadonlyPasswordHash) {
+		!PasswordHashUsable(c.DashboardReadonlyPasswordHash) {
 		w = append(w, "dashboard_readonly_password_hash ist weder ein bcrypt- noch ein Argon2id-Hash – so kann sich der Lese-Benutzer nicht anmelden")
 	}
 	if len(c.TrustedProxies) > 0 {
