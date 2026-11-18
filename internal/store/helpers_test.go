@@ -3,8 +3,11 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -88,11 +91,238 @@ func open(t testing.TB, f *storetest.FaultFS) (*store.Store, store.StartInfo) {
 	return openIn(t, dir, f)
 }
 
+// closeStore schließt die Ablage; die Grenze von 30 s zählt nur, wenn ein
+// Schreiber hängt (dann scheitert der Test, statt ewig zu warten).
 func closeStore(t testing.TB, s *store.Store) {
 	t.Helper()
-	if err := s.Close(context.Background()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.Close(ctx); err != nil {
 		t.Errorf("Close: %v", err)
 	}
+}
+
+// openFake öffnet die Ablage im Datenordner der FaultFS mit einer gestellten
+// Uhr, die der Test weiterstellen kann.
+func openFake(t testing.TB, f *storetest.FaultFS) (*store.Store, *clock.Fake) {
+	t.Helper()
+	clk := clock.NewFake(t0)
+	s, _, err := store.Open(dir, f, clk, quiet())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { closeStore(t, s) })
+	return s, clk
+}
+
+// hang lässt jeden Aufruf auf name hängen, bis die gelieferte Funktion
+// gerufen wird – spätestens am Ende des Tests, vor dem Schließen der Ablage
+// (Aufräumen läuft rückwärts).
+func hang(t testing.TB, f *storetest.FaultFS, name string) (release func()) {
+	t.Helper()
+	release = f.Hang(name)
+	t.Cleanup(release)
+	return release
+}
+
+// eventually wartet, bis cond gilt. Die Grenze von 10 s zählt nur, wenn
+// der Test ohnehin scheitert – sie entscheidet nie über ein Ergebnis.
+func eventually(t testing.TB, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("wartet vergeblich: %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// flush: alles Ausstehende auf die Platte; der Test scheitert bei einem
+// Fehler.
+func flush(t testing.TB, s *store.Store) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.Flush(ctx); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+}
+
+// calledSince: Begann seit Aufruf Nummer n ein Aufruf op, der name berührt?
+// (FaultFS hält einen Aufruf fest, bevor er an einem Hänger wartet.)
+func calledSince(f *storetest.FaultFS, n int, op, name string) bool {
+	for _, c := range f.Log()[n:] {
+		if c.Op == op && contains(c.Names, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// countSince: wie viele Aufrufe op auf name seit Aufruf Nummer n.
+func countSince(f *storetest.FaultFS, n int, op, name string) int {
+	k := 0
+	for _, c := range f.Log()[n:] {
+		if c.Op == op && contains(c.Names, name) {
+			k++
+		}
+	}
+	return k
+}
+
+// entry: ein Verlaufseintrag (key_test) mit dem Namen label zur Zeit at.
+func entryAt(label string, at time.Time) model.Entry {
+	return model.NewEntry(model.EvKeyTest, at, map[string]any{"by": "admin", "label": label, "ok": true})
+}
+
+func entry(label string) model.Entry { return entryAt(label, t0) }
+
+// uidOf: die uid eines Eintrags.
+func uidOf(e model.Entry) string { return e.Str("uid") }
+
+// fileLines: die Zeilen einer Verlaufsdatei der FaultFS (ohne leere).
+func fileLines(f *storetest.FaultFS, name string) []string {
+	b, _ := f.Get(at(name))
+	var out []string
+	for line := range strings.SplitSeq(string(b), "\n") {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// uidCount: wie oft die uid in history.jsonl und history.1.jsonl steht
+// (als Feld "uid" einer lesbaren Zeile).
+func uidCount(f *storetest.FaultFS, uid string) int {
+	n := 0
+	for _, name := range []string{"history.jsonl", "history.1.jsonl"} {
+		for _, line := range fileLines(f, name) {
+			var m map[string]any
+			if json.Unmarshal([]byte(line), &m) == nil && m["uid"] == uid {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// uidsOf: die uids einer Liste von Einträgen, in ihrer Reihenfolge.
+func uidsOf(list []model.Entry) []string {
+	out := make([]string, len(list))
+	for i, e := range list {
+		out[i] = uidOf(e)
+	}
+	return out
+}
+
+// countIn: wie oft die uid in einer Liste von Einträgen vorkommt.
+func countIn(list []model.Entry, uid string) int {
+	n := 0
+	for _, e := range list {
+		if uidOf(e) == uid {
+			n++
+		}
+	}
+	return n
+}
+
+// outboxOf: die uids der outbox eines gesicherten Dokuments (state.json oder
+// runtime.json); nil, wenn es fehlt oder nicht lesbar ist.
+func outboxOf(f *storetest.FaultFS, name string) []string {
+	b, ok := f.Get(at(name))
+	if !ok {
+		return nil
+	}
+	switch name {
+	case "state.json":
+		if st, err := model.DecodeState(b); err == nil {
+			return uidsOf(st.Outbox)
+		}
+	case "runtime.json":
+		if rt, err := model.DecodeRuntime(b); err == nil {
+			return uidsOf(rt.Outbox)
+		}
+	}
+	return nil
+}
+
+// runtimeIn liest runtime.json der FaultFS streng; nil = fehlt oder nicht
+// lesbar.
+func runtimeIn(f *storetest.FaultFS) *model.Runtime {
+	b, ok := f.Get(at("runtime.json"))
+	if !ok {
+		return nil
+	}
+	rt, err := model.DecodeRuntime(b)
+	if err != nil {
+		return nil
+	}
+	return rt
+}
+
+// sessionsIn liest sessions.json der FaultFS streng; nil = fehlt oder
+// nicht lesbar.
+func sessionsIn(f *storetest.FaultFS) *model.Sessions {
+	b, ok := f.Get(at("sessions.json"))
+	if !ok {
+		return nil
+	}
+	ss, err := model.DecodeSessions(b)
+	if err != nil {
+		return nil
+	}
+	return ss
+}
+
+// addRecipient: eine Änderung, die einen Empfänger anlegt (erfundener Key
+// und Token aus dem Namen), die Listen-Version erhöht und – wenn e nicht nil
+// ist – e in die outbox legt.
+func addRecipient(label string, e model.Entry) func(d *model.State) error {
+	return func(d *model.State) error {
+		id := d.AllocateID()
+		d.Recipients = append(d.Recipients, model.Recipient{ID: id, Key: "testkey-" + strings.ToLower(label),
+			Label: label, AddedAt: t0.Unix(), MuteToken: fmt.Sprintf("tok%s%05d", label, id)})
+		d.Bump(0)
+		if e != nil {
+			d.Log(e)
+		}
+		return nil
+	}
+}
+
+// hasLabel: steht ein Empfänger dieses Namens im Zustand?
+func hasLabel(st *model.State, label string) bool {
+	if st == nil {
+		return false
+	}
+	for _, r := range st.Recipients {
+		if r.Label == label {
+			return true
+		}
+	}
+	return false
+}
+
+// update: Update mit Hintergrund-Kontext; der Test scheitert bei einem Fehler.
+func update(t testing.TB, s *store.Store, fn func(d *model.State) error) {
+	t.Helper()
+	if err := s.Update(context.Background(), fn); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+}
+
+// clockAt: eine gestellte Uhr bei t0.
+func clockAt() *clock.Fake { return clock.NewFake(t0) }
+
+// runtimeGoroutines: Zahl der laufenden Goroutinen (für den Nachweis, dass
+// Close alle Schreiber beendet).
+func runtimeGoroutines() int { return runtime.NumGoroutine() }
+
+// session: eine angemeldete Sitzung (erfundene Werte).
+func session(user string) model.Session {
+	return model.Session{User: user, Role: "admin", CSRF: "csrf-" + user, AuthStamp: "stamp", CreatedAt: t0.Unix(), LastSeen: t0.Unix()}
 }
 
 // stateIn liest eine Zustandsdatei der FaultFS streng; nil = fehlt oder

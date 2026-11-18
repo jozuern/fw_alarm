@@ -30,10 +30,11 @@ const (
 var errMismatch = errors.New("zurückgelesen anders als geschrieben")
 
 // saveHealth: Ergebnis des letzten Sicherns je Dokument (true = gelungen
-// oder noch keins gescheitert). Aufgabe 7 meldet es als SaveHealth; so
-// zählt auch ein gescheitertes Sichern beim Start (Neuanfang, Rückfall).
+// oder noch keins gescheitert); history auch false, wenn der Verlauf beim
+// Start nicht lesbar war. SaveHealth meldet es; so zählt auch ein
+// gescheitertes Sichern beim Start (Neuanfang, Rückfall).
 type saveHealth struct {
-	durable, volatile, sessions, rescue atomic.Bool
+	durable, volatile, sessions, rescue, history atomic.Bool
 }
 
 // marshalDoc: die Form eines Dokuments auf der Platte – eingerückt (für
@@ -91,17 +92,44 @@ func canonical(v any, reread func([]byte) ([]byte, error)) ([]byte, error) {
 // Vorfassung (keepPrev). Im Notbetrieb nie: ErrEmergency, ohne einen
 // Aufruf der Dateischicht. Ein Sichern von state.json zur Zeit.
 func (s *Store) saveState(st *model.State) error {
+	_, err := s.saveStateDoc(st)
+	return err
+}
+
+// saveStateDoc sichert wie saveState und liefert den Zustand so, wie ihn
+// der strenge Leser aus dem Geschriebenen liest: Das ist es, was danach
+// gilt (Update veröffentlicht ihn) – Speicher und Platte gleichen sich
+// genau (ungültiges UTF-8 etwa schon als U+FFFD), und der Schnappschuss
+// teilt nichts mit dem Entwurf, den der Aufrufer in der Hand hatte.
+func (s *Store) saveStateDoc(st *model.State) (*model.State, error) {
 	if s.emergency {
-		return ErrEmergency
+		return nil, ErrEmergency
 	}
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	data, err := canonical(st, rereadState)
+	data, doc, err := canonicalState(st)
 	if err == nil {
 		err = s.writeDoc(fileState, data, rereadState)
 	}
 	s.saved.durable.Store(err == nil)
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return doc, nil
+}
+
+// canonicalState: wie canonical, dazu der gelesene Zustand.
+func canonicalState(st *model.State) ([]byte, *model.State, error) {
+	b, err := marshalDoc(st)
+	if err != nil {
+		return nil, nil, err
+	}
+	doc, err := model.DecodeState(b)
+	if err != nil {
+		return nil, nil, err
+	}
+	data, err := marshalDoc(doc)
+	return data, doc, err
 }
 
 // saveRuntime sichert die flüchtigen Daten als runtime.json – auch im

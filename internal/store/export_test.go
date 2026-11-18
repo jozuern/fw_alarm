@@ -14,6 +14,14 @@ func (s *Store) SaveRuntime(r *model.Runtime) error   { return s.saveRuntime(r) 
 func (s *Store) SaveSessions(x *model.Sessions) error { return s.saveSessions(x) }
 func (s *Store) SaveRescue(r model.Rescue) error      { return s.saveRescue(r) }
 
+// SetHistoryRotateAt setzt die Grenze, ab der history.jsonl nach
+// history.1.jsonl wandert (sonst 5 MB) – damit ein Test rotieren kann.
+func (s *Store) SetHistoryRotateAt(n int64) {
+	s.hist.mu.Lock()
+	defer s.hist.mu.Unlock()
+	s.hist.rotateAt = n
+}
+
 // MarshalDoc: die Form, in der die Ablage ein Dokument schreibt.
 func MarshalDoc(v any) ([]byte, error) { return marshalDoc(v) }
 

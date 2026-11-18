@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,6 +28,17 @@ func schemaDoc(t testing.TB, v any, n int) []byte {
 		t.Fatalf("schema nicht gefunden:\n%s", b)
 	}
 	return out
+}
+
+// journalLine: die erste Zeile des Journals, deren Meldung mit prefix
+// beginnt ("" = keine).
+func journalLine(journal, prefix string) string {
+	for line := range strings.SplitSeq(journal, "\n") {
+		if strings.Contains(line, `msg="`+prefix) || strings.Contains(line, "msg="+prefix) {
+			return line
+		}
+	}
+	return ""
 }
 
 // Die vier Zeilen der Start-Tabelle (Spec §6.3).
@@ -398,7 +410,9 @@ func TestMigrationKeepsOriginal(t *testing.T) {
 			f.ShortWrite(at("state.schema-0.json.tmp"), len(orig)/2)
 		}},
 		{"Umbenennen scheitert", func(f *storetest.FaultFS) {
-			f.Fail(at("state.schema-0.json"), errors.New("Platte voll"))
+			// Nur das Umbenennen: Stat, Schreiben und Zurücklesen der
+			// Temp-Datei gelingen, erst das letzte Stück scheitert.
+			f.FailOp(at("state.schema-0.json"), "Rename", errors.New("Platte voll"))
 		}},
 		{"Ordner unter dem Namen", func(f *storetest.FaultFS) { f.PutDir(at("state.schema-0.json")) }},
 		{"leere Datei unter dem Namen", func(f *storetest.FaultFS) { f.Put(at("state.schema-0.json"), nil) }},
@@ -406,9 +420,31 @@ func TestMigrationKeepsOriginal(t *testing.T) {
 		h := storetest.New()
 		h.Put(at("state.json"), orig)
 		c.setup(h)
-		s, info = open(t, h)
+		var journal bytes.Buffer
+		s, info, err := store.Open(dir, h, clock.NewFake(t0), slog.New(slog.NewTextHandler(&journal, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { closeStore(t, s) })
 		if info.Mode != store.StartEmergency || !s.Emergency() {
 			t.Errorf("%s: Start %s", c.name, mode(info.Mode))
+		}
+		if c.name == "Umbenennen scheitert" {
+			renamed := false
+			for _, call := range h.Log() {
+				if call.Op == "Rename" && contains(call.Names, at("state.schema-0.json")) && call.Err != nil {
+					renamed = true
+				}
+			}
+			if !renamed {
+				t.Errorf("%s: das Umbenennen wurde gar nicht versucht: %v", c.name, h.Log())
+			}
+		}
+		// Die Zeile zum Notbetrieb nennt den wirklichen Grund: state.json
+		// ist lesbar, nur das Original ließ sich nicht ablegen.
+		if line := journalLine(journal.String(), "Notbetrieb"); !strings.Contains(line, "Original") ||
+			strings.Contains(line, "Empfängerliste nicht lesbar") {
+			t.Errorf("%s: Zeile zum Notbetrieb nennt nicht den Grund: %q", c.name, line)
 		}
 		if got, _ := h.Get(at("state.json")); !bytes.Equal(got, orig) {
 			t.Errorf("%s: state.json ersetzt, obwohl das Original nicht abgelegt ist", c.name)

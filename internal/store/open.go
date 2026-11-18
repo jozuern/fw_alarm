@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -51,18 +50,26 @@ type StartInfo struct {
 }
 
 // Open öffnet den Datenordner dir: Sperre server.lock (bis Close), dann
-// die Start-Tabelle (Spec §6.3) und die flüchtigen Daten. Einziger Fehler:
-// ErrLocked – ein anderer Prozess arbeitet schon in diesem Ordner. Lässt
-// sich die Sperre gar nicht anlegen (Ordner nicht beschreibbar), startet
-// er trotzdem (StartInfo.LockUnavailable) und bedient, was er lesen konnte.
+// die Start-Tabelle (Spec §6.3), die flüchtigen Daten und der Verlauf. Was
+// in einer gesicherten outbox steht und im Verlauf fehlt, wird angehängt;
+// sonst schreibt Open nur, was die Start-Tabelle verlangt – das Nachsichern
+// der outbox folgt mit dem nächsten Sichern. Danach laufen die
+// Hintergrund-Schreiber bis Close.
+//
+// Einziger Fehler: ErrLocked – ein anderer Prozess arbeitet schon in diesem
+// Ordner. Lässt sich die Sperre gar nicht anlegen (Ordner nicht
+// beschreibbar), startet er trotzdem (StartInfo.LockUnavailable) und
+// bedient, was er lesen konnte.
 func Open(dir string, fsys FS, clk clock.Clock, log *slog.Logger) (*Store, StartInfo, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	s := &Store{dir: dir, fsys: fsys, clk: clk, log: log}
-	for _, ok := range []*atomic.Bool{&s.saved.durable, &s.saved.volatile, &s.saved.sessions, &s.saved.rescue} {
+	s := &Store{dir: dir, fsys: fsys, clk: clk, log: log,
+		slot: make(chan struct{}, 1), pruneKick: make(chan struct{}, 1), stop: make(chan struct{})}
+	for _, ok := range []*atomic.Bool{&s.saved.durable, &s.saved.volatile, &s.saved.sessions, &s.saved.rescue, &s.saved.history} {
 		ok.Store(true)
 	}
+	s.initWriters()
 	var info StartInfo
 
 	if err := fsys.MkdirAll(dir); err != nil {
@@ -82,23 +89,13 @@ func Open(dir string, fsys FS, clk clock.Clock, log *slog.Logger) (*Store, Start
 	now := clk.Now()
 	s.openState(now, &info)
 	s.openVolatile(now, &info)
+	s.openHistory()
+	s.startCheck()
+	s.startWriters()
 	log.Info("Ablage geöffnet", "start", info.Mode.String(), "ruecksprung", info.Rewound,
 		"laufzeit_verworfen", info.RuntimeDiscarded, "sitzungen_verworfen", info.SessionsDiscarded,
 		"sperre_fehlt", info.LockUnavailable)
 	return s, info, nil
-}
-
-// Close gibt server.lock frei; mehrfach rufbar. (Aufgabe 7 wartet hier
-// zuvor auf die Schreiber, begrenzt durch ctx.)
-func (s *Store) Close(ctx context.Context) error {
-	s.lockMu.Lock()
-	defer s.lockMu.Unlock()
-	if s.release == nil {
-		return nil
-	}
-	err := s.release()
-	s.release = nil
-	return err
 }
 
 // docStatus: was beim Lesen einer Datei herauskam.
@@ -200,6 +197,7 @@ func (s *Store) openState(now time.Time, info *StartInfo) {
 
 	// Ein älteres Schema wird nur angehoben, wenn sein Original vollständig
 	// abgelegt ist – sonst Notbetrieb statt eines Anhebens ohne Original.
+	cause := "Empfängerliste nicht lesbar"
 	var start stateRead // die Datei, auf der gestartet wird
 	switch info.Mode {
 	case StartNormal:
@@ -211,13 +209,14 @@ func (s *Store) openState(now time.Time, info *StartInfo) {
 		if err := s.keepOriginal(r); err != nil {
 			s.log.Error("Original des älteren Schemas nicht ablegbar – kein Anheben, Notbetrieb", "schema", r.from, "err", err)
 			info.Mode = StartEmergency
+			cause = fmt.Sprintf("Original des älteren Schemas %d nicht ablegbar, die Liste wird nicht angehoben", r.from)
 		}
 	}
 
 	if info.Mode == StartEmergency {
 		s.emergency = true
 		s.state.Store(model.NewState())
-		s.log.Error("Notbetrieb: Empfängerliste nicht lesbar – nichts Festes wird geschrieben",
+		s.log.Error("Notbetrieb: "+cause+" – nichts Festes wird geschrieben",
 			"state.json", cur.describe(), "state.prev.json", prev.describe())
 		s.readRescue()
 		return

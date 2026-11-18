@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Die Not-Kopie nachsichtig: lieber die gültigen Einträge als keiner.
@@ -140,6 +141,58 @@ func TestRescueTargets(t *testing.T) {
 		check(t, Rescue{}, muteMax, want{[]Target{}, false, false})
 		check(t, Rescue{DemoKeyID: 1, Recipients: []RescueRecipient{{ID: 1, Key: "kurz"}}}, muteMax, want{[]Target{}, false, false})
 	})
+}
+
+// Die Not-Kopie aus dem Zustand: Sie alarmiert im Notbetrieb genau die, die
+// der Zustand selbst alarmieren würde (Effective) – zu jeder Zeit, mit und
+// ohne Demo-Modus –, und trägt weder Telefonnummern noch Stumm-Tokens.
+func TestRescueFrom(t *testing.T) {
+	const muteMax = 43200 // 12 h
+	st := sampleState()
+	r := RescueFrom(st, t0)
+	if r.Schema != Schema || r.WrittenAt != t0.Unix() || r.DemoKeyID != 0 {
+		t.Errorf("Kopf: %+v", r)
+	}
+	if len(r.Recipients) != len(st.Recipients) {
+		t.Fatalf("%d statt %d Empfänger", len(r.Recipients), len(st.Recipients))
+	}
+	for i, x := range st.Recipients {
+		want := RescueRecipient{ID: x.ID, Key: x.Key, Label: x.Label, Muted: x.Muted, MutedAt: x.MutedAt,
+			MuteVolume: x.MuteVolume, MutePermanent: x.MutePermanent}
+		if r.Recipients[i] != want {
+			t.Errorf("Eintrag %d: %+v statt %+v", i, r.Recipients[i], want)
+		}
+	}
+	text := string(mustJSON(t, r))
+	for _, secret := range []string{tokenAnna, tokenBert, tokenCarl, "0171 1234"} {
+		if strings.Contains(text, secret) {
+			t.Errorf("Not-Kopie enthält %q", secret)
+		}
+	}
+
+	for _, now := range []time.Time{t0, t0.Add(5 * time.Hour), t0.Add(40 * 24 * time.Hour)} {
+		for _, demo := range []bool{false, true} {
+			s := st.Clone()
+			if demo {
+				s.Demo = Demo{Enabled: true, KeyID: 7, Key: keyBert, Label: "Bert", ChangedAt: t0.Unix()}
+			}
+			got, isDemo, ok := RescueFrom(s, t0).Targets(now, muteMax)
+			if want := s.Effective(now, muteMax); !reflect.DeepEqual(got, want) || isDemo != demo || !ok {
+				t.Errorf("%v, Demo %v: %+v (Demo %v, ok %v) statt %+v", now.Sub(t0), demo, got, isDemo, ok, want)
+			}
+		}
+	}
+
+	// Ausgeschalteter Demo-Modus mit stehengebliebener id: kein Demo-Empfänger.
+	s := st.Clone()
+	s.Demo = Demo{KeyID: 7, Key: keyBert}
+	if r := RescueFrom(s, t0); r.DemoKeyID != 0 {
+		t.Errorf("Demo aus, aber demo_key_id %d", r.DemoKeyID)
+	}
+	// Leere Liste: eine leere, nie fehlende Liste.
+	if r := RescueFrom(NewState(), t0); r.Recipients == nil || len(r.Recipients) != 0 {
+		t.Errorf("leerer Zustand: %+v", r.Recipients)
+	}
 }
 
 // Was der Server schreibt, liest der nachsichtige Leser unverändert.

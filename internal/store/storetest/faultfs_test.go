@@ -180,6 +180,46 @@ func TestFaults(t *testing.T) {
 		t.Errorf("nach Fail(nil): %v", err)
 	}
 
+	// FailOp trifft nur die eine Methode auf dem Namen – auch als Ziel –,
+	// alle anderen Aufrufe laufen normal.
+	f.FailOp(a, "Rename", boom)
+	if _, err := f.Stat(a); err != nil {
+		t.Errorf("FailOp Rename trifft Stat: %v", err)
+	}
+	if err := f.WriteFileSync(a, []byte("y")); err != nil {
+		t.Errorf("FailOp Rename trifft WriteFileSync: %v", err)
+	}
+	if err := f.WriteFileSync(filepath.FromSlash("/d/b"), []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Rename(filepath.FromSlash("/d/b"), a); !errors.Is(err, boom) {
+		t.Errorf("FailOp Rename als Ziel: %v", err)
+	}
+	if b, _ := f.Get(a); string(b) != "y" {
+		t.Errorf("gescheitertes Umbenennen hat ersetzt: %q", b)
+	}
+	f.FailOp(a, "Rename", nil)
+	if err := f.Rename(filepath.FromSlash("/d/b"), a); err != nil {
+		t.Errorf("nach FailOp(nil): %v", err)
+	}
+
+	// FailAfter: der Aufruf wirkt und meldet danach den Fehler – wie ein
+	// fsync, der scheitert, nachdem die Daten schon in der Datei stehen.
+	f.FailAfter(a, "AppendSync", boom)
+	if err := f.AppendSync(a, []byte("+z")); !errors.Is(err, boom) {
+		t.Errorf("FailAfter: %v", err)
+	}
+	if b, _ := f.Get(a); string(b) != "b+z" {
+		t.Errorf("FailAfter hat nicht geschrieben: %q", b)
+	}
+	if err := f.WriteFileSync(a, []byte("w")); err != nil {
+		t.Errorf("FailAfter AppendSync trifft WriteFileSync: %v", err)
+	}
+	f.Heal()
+	if err := f.AppendSync(a, []byte("!")); err != nil {
+		t.Errorf("nach Heal: %v", err)
+	}
+
 	n := f.Calls()
 	f.FailCall(n + 2)
 	if _, err := f.ReadFile(a); err != nil {

@@ -353,7 +353,10 @@ func walk(t *testing.T, name string, setup func(*storetest.FaultFS),
 		} else {
 			f.Heal()
 		}
-		if err := s.Close(context.Background()); err != nil {
+		// Close schreibt Ausstehendes (Verlauf, Nachsichern der outbox); nach
+		// einem Absturz scheitert das zwangsläufig – dann zählt nur, dass
+		// Close zurückkehrt und die Schreiber beendet.
+		if err := s.Close(context.Background()); err != nil && !crash {
 			t.Fatal(err)
 		}
 		if hadState && stateIn(view, "state.json") == nil && stateIn(view, "state.prev.json") == nil {

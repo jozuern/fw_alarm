@@ -35,6 +35,30 @@ func (r Rescue) MarshalJSON() ([]byte, error) {
 	return json.Marshal(plain(r))
 }
 
+// RescueFrom baut die Not-Kopie aus dem festen Zustand (Spec §6.3): je
+// Empfänger id, Key, Name und Stumm-Zustand – nie Telefonnummer oder
+// Stumm-Token –, dazu der Demo-Empfänger, wenn der Demo-Modus an ist; now ist
+// der Zeitpunkt des Schreibens. Was Targets daraus macht, ist genau das, was
+// Effective aus dem Zustand macht (TestRescueFrom).
+func RescueFrom(st *State, now time.Time) Rescue {
+	r := Rescue{Schema: Schema, WrittenAt: now.Unix(), Recipients: make([]RescueRecipient, 0, len(st.Recipients))}
+	if st.Demo.Enabled {
+		r.DemoKeyID = st.Demo.KeyID
+	}
+	for _, x := range st.Recipients {
+		r.Recipients = append(r.Recipients, RescueRecipient{
+			ID:            x.ID,
+			Key:           x.Key,
+			Label:         x.Label,
+			Muted:         x.Muted,
+			MutedAt:       x.MutedAt,
+			MuteVolume:    x.MuteVolume,
+			MutePermanent: x.MutePermanent,
+		})
+	}
+	return r
+}
+
 // Targets liefert die Empfänger, an die ein Alarm im Notbetrieb aus dieser
 // Not-Kopie ginge (Spec §6.3) – die Regel gehört hierher, Zeit und
 // Höchstdauer kennt der Aufrufer:

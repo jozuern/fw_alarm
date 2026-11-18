@@ -37,25 +37,28 @@ var ErrInjected = errors.New("storetest: eingebauter Fehler")
 //     Umbenennen, Verweisen, Sperren: "fehlt"), und ReadDir eines fehlenden
 //     Ordners meldet "fehlt". Put und PutDir legen fehlende Ordner mit an.
 //
-// Fehler je Datei: Fail, Hang, ShortWrite, Mangle; für alles: FailCall,
+// Fehler je Datei: Fail, Hang, ShortWrite, Mangle; je Datei und Methode:
+// FailOp (vorher), FailAfter (nach dem Schreiben); für alles: FailCall,
 // CrashAt, ReadOnly, NoLinks; AfterCrash liefert, was ein neuer Prozess
-// danach auf der Platte fände. Heal nimmt alle Fehler zurück (Hänger nicht – die
-// gibt ihre release-Funktion frei).
+// danach auf der Platte fände. Heal nimmt alle Fehler zurück (Hänger nicht –
+// die gibt ihre release-Funktion frei).
 type FaultFS struct {
 	mu    sync.Mutex
 	nodes map[string]*node // bereinigter Pfad → Datei oder Ordner
 	locks map[string]bool  // gehaltene Sperren
 
-	calls    int
-	log      []Call
-	failAt   int
-	crashAt  int
-	fails    map[string]error
-	hangs    map[string]chan struct{}
-	short    map[string]int
-	mangle   map[string]func([]byte) []byte
-	readOnly error
-	noLinks  bool
+	calls      int
+	log        []Call
+	failAt     int
+	crashAt    int
+	fails      map[string]error
+	opFails    map[opKey]error
+	afterFails map[opKey]error
+	hangs      map[string]chan struct{}
+	short      map[string]int
+	mangle     map[string]func([]byte) []byte
+	readOnly   error
+	noLinks    bool
 }
 
 // node ist ein Eintrag im Ordnerbaum. Dateien teilen sich über Link einen
@@ -90,12 +93,14 @@ func (c Call) Writes() bool {
 // New liefert eine leere Dateischicht.
 func New() *FaultFS {
 	return &FaultFS{
-		nodes:  map[string]*node{},
-		locks:  map[string]bool{},
-		fails:  map[string]error{},
-		hangs:  map[string]chan struct{}{},
-		short:  map[string]int{},
-		mangle: map[string]func([]byte) []byte{},
+		nodes:      map[string]*node{},
+		locks:      map[string]bool{},
+		fails:      map[string]error{},
+		opFails:    map[opKey]error{},
+		afterFails: map[opKey]error{},
+		hangs:      map[string]chan struct{}{},
+		short:      map[string]int{},
+		mangle:     map[string]func([]byte) []byte{},
 	}
 }
 
@@ -113,6 +118,37 @@ func (f *FaultFS) Fail(name string, err error) {
 		return
 	}
 	f.fails[clean(name)] = err
+}
+
+// opKey: eine Methode der Dateischicht auf einem Namen.
+type opKey struct{ name, op string }
+
+// FailOp lässt nur die Aufrufe der Methode op (z.B. "Rename") scheitern,
+// die name berühren (bei Rename und Link auch als Ziel); alle anderen
+// Aufrufe auf name laufen normal. err nil nimmt das zurück.
+func (f *FaultFS) FailOp(name, op string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := opKey{clean(name), op}
+	if err == nil {
+		delete(f.opFails, k)
+		return
+	}
+	f.opFails[k] = err
+}
+
+// FailAfter: Aufrufe von WriteFileSync oder AppendSync (op) auf name wirken
+// und melden danach err – wie ein fsync, der scheitert, nachdem die Daten
+// schon in der Datei stehen. err nil nimmt das zurück.
+func (f *FaultFS) FailAfter(name, op string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := opKey{clean(name), op}
+	if err == nil {
+		delete(f.afterFails, k)
+		return
+	}
+	f.afterFails[k] = err
 }
 
 // Hang lässt jeden Aufruf, der name berührt, warten, bis release gerufen
@@ -216,12 +252,14 @@ func (f *FaultFS) NoLinks(on bool) {
 	f.noLinks = on
 }
 
-// Heal nimmt Fail, ShortWrite, Mangle, FailCall, CrashAt, ReadOnly und
-// NoLinks zurück.
+// Heal nimmt Fail, FailOp, FailAfter, ShortWrite, Mangle, FailCall,
+// CrashAt, ReadOnly und NoLinks zurück.
 func (f *FaultFS) Heal() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.fails = map[string]error{}
+	f.opFails = map[opKey]error{}
+	f.afterFails = map[opKey]error{}
 	f.short = map[string]int{}
 	f.mangle = map[string]func([]byte) []byte{}
 	f.failAt = 0
@@ -324,6 +362,9 @@ func (f *FaultFS) begin(op string, writes bool, names ...string) (int, error) {
 		if e, ok := f.fails[name]; ok && err == nil {
 			err = e
 		}
+		if e, ok := f.opFails[opKey{name, op}]; ok && err == nil {
+			err = e
+		}
 		if ch, ok := f.hangs[name]; ok {
 			wait = append(wait, ch)
 		}
@@ -414,6 +455,9 @@ func (f *FaultFS) write(op, name string, data []byte, appendTo bool) error {
 	default:
 		nd.ino.data = data // wie O_TRUNC: trifft auch jeden Hardlink
 		nd.ino.modTime = f.stamp()
+	}
+	if e, ok := f.afterFails[opKey{name, op}]; ok && err == nil {
+		err = pathErr("sync", name, e) // geschrieben ist es schon
 	}
 	f.log[n-1].Err = err
 	return err
