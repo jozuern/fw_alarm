@@ -86,6 +86,14 @@ func mustParse(t testing.TB, data []byte) *Config {
 	return c
 }
 
+func TestEmptyBarkHostWarns(t *testing.T) {
+	c := mustParse(t, tomlFile(map[string]string{"bark_host": `""`})) // die Datei lädt trotzdem
+	w := c.Warnings()
+	if len(w) != 1 || w[0] != "Hinweis: bark_host ist leer – der Server kann nichts senden" {
+		t.Errorf("Hinweise: %q", w)
+	}
+}
+
 func TestGoodFileHasNoWarnings(t *testing.T) {
 	c := mustParse(t, tomlFile(nil))
 	if w := c.Warnings(); len(w) != 0 {

@@ -255,6 +255,9 @@ func (c *Config) Warnings() []string {
 			w = append(w, fmt.Sprintf("bark_keys_alarm: Eintrag %d ist kein gültiger Bark-Key und wird nie alarmiert", i+1))
 		}
 	}
+	if phpTrim(c.BarkHost) == "" {
+		w = append(w, "Hinweis: bark_host ist leer – der Server kann nichts senden")
+	}
 	if c.BarkKeyStatus != "" && !validBarkKey(c.BarkKeyStatus) {
 		w = append(w, "bark_key_status ist kein gültiger Bark-Key – Meldungen an den Admin scheitern")
 	}
