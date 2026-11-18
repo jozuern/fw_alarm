@@ -73,6 +73,7 @@ func writeServerConfig(t *testing.T, dir, name, state string) string {
 	c.BarkHost = ""
 	c.StateDir = state
 	c.Listen = "unix:" + filepath.Join(dir, name+"-h.sock")
+	c.ProxyClientIPHeader = "CF-Connecting-IP" // ein Unix-Socket braucht sie
 	c.ControlSocket = filepath.Join(dir, name+"-c.sock")
 	c.CheckIntervalSeconds = 0
 	path := filepath.Join(dir, name+".toml")

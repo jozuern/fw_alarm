@@ -164,6 +164,110 @@ func TestBarkHostRules(t *testing.T) {
 	}
 }
 
+const unixListenBroken = "listen auf einem Unix-Socket braucht proxy_client_ip_header – sonst teilen sich alle Besucher eine Bremse, und ein Fremder könnte die Anmeldung sperren"
+
+// Über den Unix-Socket gilt jede Anfrage als vom Tunnel. Ohne brauchbare
+// Kopfzeile mit der Adresse des Besuchers wäre jeder "unknown" – alle
+// teilten sich EINE Login-Bremse, ein Fremder sperrte den Admin aus. Das
+// macht die Datei fehlerhaft.
+func TestUnixListenNeedsClientIPHeader(t *testing.T) {
+	const sock = `"unix:/run/fw-alarm/http.sock"`
+	for name, header := range map[string]string{
+		"Kopfzeile fehlt":           absent,
+		"Kopfzeile leer":            `""`,
+		"Kopfzeile nur Leerraum":    `"  "`,
+		"Kopfzeile unbrauchbar":     `"CF Connecting IP"`,
+		"Kopfzeile mit Doppelpunkt": `"CF-Connecting-IP:"`,
+	} {
+		_, err := ParseAt(tomlFile(map[string]string{"listen": sock, "proxy_client_ip_header": header}), loadMoment(t))
+		if err == nil || err.Error() != unixListenBroken {
+			t.Errorf("%s: Fehler %v, erwartet %q", name, err, unixListenBroken)
+		}
+	}
+	for _, header := range []string{`"CF-Connecting-IP"`, `" cf_connecting_ip "`, `"X-Real-IP"`} {
+		c, err := ParseAt(tomlFile(map[string]string{"listen": sock, "proxy_client_ip_header": header}), loadMoment(t))
+		if err != nil {
+			t.Errorf("Kopfzeile %s: %v", header, err)
+			continue
+		}
+		if w := c.Warnings(); len(w) != 0 {
+			t.Errorf("Kopfzeile %s: Hinweise %q", header, w)
+		}
+	}
+	// Über TCP ohne vertraute Proxys braucht es keine Kopfzeile.
+	for _, listen := range []string{`"127.0.0.1:8080"`, `"[::1]:8080"`, `"unixhost:8080"`} {
+		c, err := ParseAt(tomlFile(map[string]string{"listen": listen}), loadMoment(t))
+		if err != nil {
+			t.Errorf("listen %s: %v", listen, err)
+			continue
+		}
+		if w := c.Warnings(); len(w) != 0 {
+			t.Errorf("listen %s: Hinweise %q", listen, w)
+		}
+	}
+}
+
+// Vertraute Proxys ohne brauchbare Kopfzeile: alle Besucher über den Proxy
+// zählen als ein Absender. Kein Fehler (PHP hatte dieselbe Lücke), aber ein
+// Hinweis.
+func TestTrustedProxiesWithoutHeaderWarns(t *testing.T) {
+	const (
+		empty    = "trusted_proxies ist gesetzt, proxy_client_ip_header aber leer: alle Besucher über den Proxy zählen als ein Absender"
+		unusable = "trusted_proxies ist gesetzt, proxy_client_ip_header aber unbrauchbar (nur Buchstaben, Ziffern, - und _): alle Besucher über den Proxy zählen als ein Absender"
+	)
+	proxies := `["127.0.0.1", "::1"]`
+	for _, tc := range []struct {
+		header string
+		want   string // "" = kein Hinweis
+	}{
+		{absent, empty},
+		{`""`, empty},
+		{`" "`, empty},
+		{`"CF Connecting IP"`, unusable},
+		{`"CF-Connecting-IP"`, ""},
+		{`"x_forwarded_for"`, ""},
+	} {
+		c := mustParse(t, tomlFile(map[string]string{"trusted_proxies": proxies, "proxy_client_ip_header": tc.header}))
+		w := c.Warnings()
+		switch {
+		case tc.want == "" && len(w) != 0:
+			t.Errorf("Kopfzeile %q: Hinweise %q, erwartet keine", tc.header, w)
+		case tc.want != "" && (len(w) != 1 || w[0] != tc.want):
+			t.Errorf("Kopfzeile %q: Hinweise %q, erwartet %q", tc.header, w, tc.want)
+		}
+	}
+	// Ohne vertraute Proxys stört eine leere oder unbrauchbare Kopfzeile nicht
+	// (sie wird nie gelesen).
+	for _, header := range []string{absent, `""`, `"CF Connecting IP"`} {
+		if w := mustParse(t, tomlFile(map[string]string{"trusted_proxies": "[]", "proxy_client_ip_header": header})).Warnings(); len(w) != 0 {
+			t.Errorf("ohne Proxys, Kopfzeile %q: Hinweise %q", header, w)
+		}
+	}
+}
+
+// ClientIPHeader: der Name der Kopfzeile, wie net/http ihn führt – "_" wie
+// "-", Groß/klein und Leerraum außen egal (PHP: HTTP_… nach strtoupper);
+// unbrauchbar ist alles außer Buchstaben, Ziffern, "-" und "_".
+func TestClientIPHeader(t *testing.T) {
+	for in, want := range map[string]string{
+		"CF-Connecting-IP":   "Cf-Connecting-Ip",
+		" cf_connecting_ip ": "Cf-Connecting-Ip",
+		"X-FORWARDED-FOR":    "X-Forwarded-For",
+		"x_real_ip":          "X-Real-Ip",
+		"":                   "",
+		"  ":                 "",
+		"X Forwarded For":    "",
+		"CF-Connecting-IP:":  "",
+		"Ä-Header":           "",
+		"ſ":                  "",
+	} {
+		got, ok := (&Config{ProxyClientIPHeader: in}).ClientIPHeader()
+		if got != want || ok != (want != "") {
+			t.Errorf("ClientIPHeader(%q) = %q, %v; erwartet %q", in, got, ok, want)
+		}
+	}
+}
+
 func TestGoodFileHasNoWarnings(t *testing.T) {
 	c := mustParse(t, tomlFile(nil))
 	if w := c.Warnings(); len(w) != 0 {

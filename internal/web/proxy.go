@@ -4,8 +4,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"net/textproto"
-	"regexp"
 	"strings"
 
 	"fwalarm/internal/config"
@@ -64,13 +62,15 @@ func IsHTTPS(c *core.Core, r *http.Request) bool {
 // alles davor kann der Besucher frei erfinden; mehrere Zeilen zählen wie
 // eine). Ist der Eintrag keine gültige Adresse, gilt der Absender. Der
 // Eintrag wird ohne Leerraum außen, sonst wie gesendet geliefert –
-// vereinheitlicht wird erst für die Bremse (ThrottleKey).
+// vereinheitlicht wird erst für die Bremse (ThrottleKey). Welcher Name der
+// Kopfzeile brauchbar ist, sagt config.Config.ClientIPHeader (dieselbe
+// Regel prüft die Konfiguration für einen Unix-Socket).
 func ClientIP(c *core.Core, r *http.Request) string {
 	remote := remoteHost(r)
 	if !FromTunnel(c, r) {
 		return remote
 	}
-	name, ok := clientIPHeader(c.Cfg().ProxyClientIPHeader)
+	name, ok := c.Cfg().ClientIPHeader()
 	if !ok {
 		return remote
 	}
@@ -80,21 +80,6 @@ func ClientIP(c *core.Core, r *http.Request) string {
 		return candidate
 	}
 	return remote
-}
-
-// headerNamePattern: erlaubte Zeichen im Namen der Kopfzeile – PHP prüft
-// nach strtoupper und "-" → "_" auf ^[A-Z0-9_]+$.
-var headerNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
-
-// clientIPHeader macht aus proxy_client_ip_header den Namen der Kopfzeile:
-// "_" wie "-", Groß/klein egal (PHP liest $_SERVER['HTTP_…']). false: leer
-// oder unbrauchbar – dann zählt der Absender.
-func clientIPHeader(configured string) (string, bool) {
-	name := phpTrim(configured)
-	if !headerNamePattern.MatchString(name) {
-		return "", false
-	}
-	return textproto.CanonicalMIMEHeaderKey(strings.ReplaceAll(name, "_", "-")), true
 }
 
 // remoteHost ist der Absender ohne Port (PHP: REMOTE_ADDR). Über den
@@ -119,24 +104,3 @@ func packedIP(s string) (netip.Addr, bool) {
 	}
 	return a.Unmap(), true
 }
-
-// ThrottleKey ist der Schlüssel, unter dem die Bremse einen Absender zählt
-// (PHP: client_throttle_key): IPv4 einzeln, IPv6 als ganzes /64 (sonst
-// bekäme ein Angreifer je Adresse seines Präfixes ein neues Budget),
-// IPv4-in-IPv6 wie die IPv4. Was keine Adresse ist ("unknown"), bleibt,
-// wie es ist.
-func ThrottleKey(ip string) string {
-	a, err := netip.ParseAddr(ip)
-	if err != nil || a.Zone() != "" || !a.Is6() {
-		return ip
-	}
-	if a.Is4In6() {
-		return a.Unmap().String()
-	}
-	b := a.As16()
-	clear(b[8:])
-	return netip.AddrFrom16(b).String() + "/64"
-}
-
-// phpTrim entfernt, was PHPs trim() entfernt (nicht mehr).
-func phpTrim(s string) string { return strings.Trim(s, " \t\n\r\x00\x0b") }

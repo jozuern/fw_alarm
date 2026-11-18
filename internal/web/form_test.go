@@ -462,31 +462,6 @@ func TestFormMakesValidUTF8(t *testing.T) {
 	}
 }
 
-func TestClipBytes(t *testing.T) {
-	for _, c := range []struct {
-		in   string
-		n    int
-		want string
-	}{
-		{"ää", 3, "ä"},
-		{"ää", 4, "ää"},
-		{"ää", 1, ""},
-		{"abc", 2, "ab"},
-		{"abc", 10, "abc"},
-		{"abc", 0, ""},
-		{"abc", -1, ""},
-		{"a€b", 3, "a"},
-		{"a€b", 4, "a€"},
-		{"😀x", 3, ""},
-		{"\xff\xfeab", 2, "\xff\xfe"}, // ungültige Bytes zählen je für sich
-		{"a\xe2\x82", 2, "a\xe2"},
-	} {
-		if got := ClipBytes(c.in, c.n); got != c.want {
-			t.Errorf("ClipBytes(%q, %d) = %q, erwartet %q", c.in, c.n, got, c.want)
-		}
-	}
-}
-
 // Jeder Rumpf: kein Laufzeitfehler; jeder Name einmal, nicht leer, ohne
 // "[", gültiges UTF-8; Get passt zu Each; höchstens 1000 Felder.
 func FuzzParseForm(f *testing.F) {

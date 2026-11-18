@@ -132,39 +132,63 @@ func TestSecurityHeadersSurvivePanic(t *testing.T) {
 	}
 }
 
-// Die Werte stehen wörtlich so in der PHP-Fassung – solange es sie gibt
-// (Aufgabe 37 entfernt sie, dann entfällt dieser Vergleich).
+// Die Kopfzeilen sind genau die aus dem Block "if (!headers_sent()) { … }"
+// ganz oben in common.php – dieselben Namen (keine mehr, keine weniger),
+// dieselben Werte –, dazu Strict-Transport-Security aus load_config().
+// Solange es die PHP-Fassung gibt: Aufgabe 37 entfernt sie, dann entfällt
+// dieser Vergleich (der Test meldet sich dann als übersprungen).
 func TestSecurityHeadersMatchPHP(t *testing.T) {
-	src, err := os.ReadFile("../../nas_dashboard/lib/common.php")
+	data, err := os.ReadFile("../../nas_dashboard/lib/common.php")
 	if os.IsNotExist(err) {
 		t.Skip("PHP-Fassung nicht mehr da")
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := map[string]string{}
+	src := strings.ReplaceAll(string(data), "\r\n", "\n") // unter Windows mit CRLF ausgecheckt
 	// header('Name: Wert'); oder header("Name: Wert"); – der Wert der CSP
 	// steht in doppelten Anführungszeichen und enthält einfache.
 	re := regexp.MustCompile(`header\((?:'([A-Za-z-]+): ([^']*)'|"([A-Za-z-]+): ([^"]*)")\);`)
-	for _, m := range re.FindAllStringSubmatch(string(src), -1) {
+
+	const open = "\nif (!headers_sent()) {\n"
+	start := strings.Index(src, open)
+	if start < 0 {
+		t.Fatal("Block if (!headers_sent()) { … } nicht gefunden")
+	}
+	length := strings.Index(src[start+len(open):], "\n}\n")
+	if length < 0 {
+		t.Fatal("Ende des Blocks nicht gefunden")
+	}
+	block := src[start+len(open) : start+len(open)+length]
+	found := map[string]string{}
+	matches := re.FindAllStringSubmatch(block, -1)
+	for _, m := range matches {
 		name, value := m[1]+m[3], m[2]+m[4]
-		if _, ok := phpSecurityHeaders[name]; ok || name == "Strict-Transport-Security" {
-			if old, dup := found[name]; dup && old != value {
-				t.Fatalf("%s zweimal mit verschiedenen Werten in common.php", name)
-			}
-			found[name] = value
+		if _, dup := found[name]; dup {
+			t.Errorf("%s zweimal im Block", name)
 		}
+		found[name] = value
 	}
-	want := map[string]string{"Strict-Transport-Security": phpHSTS}
+	if calls := strings.Count(block, "header("); calls != len(matches) {
+		t.Errorf("%d Aufrufe von header() im Block, %d davon lesbar", calls, len(matches))
+	}
+	if len(found) != len(phpSecurityHeaders) {
+		t.Errorf("im Block: %q, in Go: %q", found, phpSecurityHeaders)
+	}
 	for name, value := range phpSecurityHeaders {
-		want[name] = value
-	}
-	if len(found) != len(want) {
-		t.Errorf("in common.php gefunden: %v", found)
-	}
-	for name, value := range want {
-		if found[name] != value {
-			t.Errorf("%s: PHP %q, Go %q", name, found[name], value)
+		if got, ok := found[name]; !ok || got != value {
+			t.Errorf("%s: PHP %q, Go %q", name, got, value)
 		}
+	}
+
+	// HSTS steht in load_config(), nur bei HTTPS.
+	var hsts []string
+	for _, m := range re.FindAllStringSubmatch(src, -1) {
+		if m[1]+m[3] == "Strict-Transport-Security" {
+			hsts = append(hsts, m[2]+m[4])
+		}
+	}
+	if len(hsts) != 1 || hsts[0] != phpHSTS {
+		t.Errorf("Strict-Transport-Security in common.php: %q, Go %q", hsts, phpHSTS)
 	}
 }

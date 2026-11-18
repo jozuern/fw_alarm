@@ -134,7 +134,27 @@ func ParseAt(data []byte, now time.Time) (*Config, error) {
 	if err := checkBarkHost(c.BarkHost); err != nil {
 		return nil, err
 	}
+	if err := checkUnixListen(c, c.Listen); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// checkUnixListen: Über einen Unix-Socket (listen = "unix:…") gilt jede
+// Anfrage als vom Tunnel, und es gibt keine Absender-Adresse. Ohne
+// brauchbare Kopfzeile mit der Adresse des Besuchers wäre jeder "unknown" –
+// alle teilten sich EINE Login-Bremse, und ein Fremder könnte mit ein paar
+// Fehlversuchen den Admin aussperren. Das macht die Datei fehlerhaft.
+// listen ist der Wert, auf dem der Server lauscht (im laufenden Server der
+// vom Start, siehe Provider.load).
+func checkUnixListen(c *Config, listen string) error {
+	if !strings.HasPrefix(listen, "unix:") {
+		return nil
+	}
+	if _, ok := c.ClientIPHeader(); ok {
+		return nil
+	}
+	return errors.New("listen auf einem Unix-Socket braucht proxy_client_ip_header – sonst teilen sich alle Besucher eine Bremse, und ein Fremder könnte die Anmeldung sperren")
 }
 
 // barkHostTrimmed bereinigt bark_host wie der Bark-Client vor dem Senden:

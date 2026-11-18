@@ -207,35 +207,3 @@ func TestUnixListenerCountsAsTunnel(t *testing.T) {
 		t.Errorf("über den Unix-Socket: %s", got)
 	}
 }
-
-// PHP: client_throttle_key – IPv4 einzeln, IPv6 als ganzes /64,
-// IPv4-in-IPv6 wie die IPv4; was keine Adresse ist, bleibt, wie es ist.
-func TestThrottleKey(t *testing.T) {
-	for in, want := range map[string]string{
-		"::ffff:1.2.3.4":            "1.2.3.4",
-		"::FFFF:1.2.3.4":            "1.2.3.4",
-		"1.2.3.4":                   "1.2.3.4",
-		"2001:db8:1:2:3:4:5:6":      "2001:db8:1:2::/64",
-		"2001:DB8:1:2:ffff::9":      "2001:db8:1:2::/64",
-		"2001:db8:1:2::":            "2001:db8:1:2::/64",
-		"2001:0:0:1::5":             "2001:0:0:1::/64",
-		"2001:db8::1":               "2001:db8::/64",
-		"::1":                       "::/64",
-		"fe80::1:2:3:4":             "fe80::/64",
-		"1:2:3:4:5:6:7:8":           "1:2:3:4::/64",
-		"unknown":                   "unknown",
-		"fe80::1%eth0":              "fe80::1%eth0",
-		"":                          "",
-		"::ffff:1.2.3.4:5":          "::ffff:1.2.3.4:5",
-		"2001:db8:aaaa:bbbb:cccc::": "2001:db8:aaaa:bbbb::/64",
-	} {
-		if got := ThrottleKey(in); got != want {
-			t.Errorf("ThrottleKey(%q) = %q, erwartet %q", in, got, want)
-		}
-	}
-	// Zwei Adressen desselben /64 zählen als ein Absender, ein anderes /64 nicht.
-	if ThrottleKey("2001:db8:1:2::a") != ThrottleKey("2001:db8:1:2:ffff:ffff:ffff:ffff") ||
-		ThrottleKey("2001:db8:1:2::a") == ThrottleKey("2001:db8:1:3::a") {
-		t.Error("das /64 wird nicht zusammengefasst")
-	}
-}

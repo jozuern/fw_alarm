@@ -193,6 +193,14 @@ func (p *Provider) load() (st stamp, data []byte, c *Config, err error) {
 		return st, nil, nil, err
 	}
 	c, err = ParseAt(data, p.clk.Now())
+	if err == nil && p.fixed.listen != "" {
+		// listen gilt erst nach einem Neustart: Bis dahin lauscht der Server
+		// auf dem Wert vom Start – gegen ihn zählt die Regel für den
+		// Unix-Socket, auch wenn die neue Fassung schon TCP nennt.
+		if err = checkUnixListen(c, p.fixed.listen); err != nil {
+			c = nil
+		}
+	}
 	return st, data, c, err
 }
 

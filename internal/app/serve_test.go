@@ -81,6 +81,7 @@ func (b *bench) configText(set func(c *config.Config)) []byte {
 	c.BarkHost = ""
 	c.StateDir = b.state
 	c.Listen = "unix:" + b.http
+	c.ProxyClientIPHeader = "CF-Connecting-IP" // ein Unix-Socket braucht sie
 	c.ControlSocket = b.ctl
 	c.CheckIntervalSeconds = 0
 	if set != nil {

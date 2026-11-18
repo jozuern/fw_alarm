@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"net/netip"
 	"time"
 
 	"fwalarm/internal/core"
@@ -23,6 +24,24 @@ import (
 // könnte (ausgerechnet, wenn er "Alarm an alle" braucht).
 const maxThrottleSources = 500
 
+// ThrottleKey ist der Schlüssel, unter dem die Bremse einen Absender zählt
+// (PHP: client_throttle_key; Aufrufer: ThrottleKey(ClientIP(c, r))): IPv4
+// einzeln, IPv6 als ganzes /64 (sonst bekäme ein Angreifer je Adresse
+// seines Präfixes ein neues Budget), IPv4-in-IPv6 wie die IPv4. Was keine
+// Adresse ist ("unknown"), bleibt, wie es ist.
+func ThrottleKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil || a.Zone() != "" || !a.Is6() {
+		return ip
+	}
+	if a.Is4In6() {
+		return a.Unmap().String()
+	}
+	b := a.As16()
+	clear(b[8:])
+	return netip.AddrFrom16(b).String() + "/64"
+}
+
 // Hit ist das Ergebnis eines Versuchs: Blocked = der Absender ist gesperrt
 // (der Versuch wurde nicht gezählt); Count = seine Versuche im Fenster (0:
 // nicht gezählt, weil die Bremse voll ist).
@@ -33,18 +52,19 @@ type Hit struct {
 
 // ThrottleHit zählt einen Versuch des Absenders who (ThrottleKey) in der
 // Bremse bucket ("login" oder "mute"; jede andere ist ein Fehler im
-// Programm). Prüfen und Zählen sind ein Schritt – N gleichzeitige Versuche
-// bekommen nicht N Plätze. Abgelaufene Fenster (älter als window, gemessen
-// ab dem ersten Versuch) werden dabei aufgeräumt. Gesperrt bzw. nicht
-// gezählt ändert nichts (es gibt dann auch nichts zu sichern).
-func ThrottleHit(c *core.Core, bucket, who string, max int, window time.Duration) Hit {
+// Programm); ab limit Versuchen im Fenster ist who gesperrt. Prüfen und
+// Zählen sind ein Schritt – N gleichzeitige Versuche bekommen nicht N
+// Plätze. Abgelaufene Einträge (throttleExpired) werden dabei aufgeräumt.
+// Gesperrt bzw. nicht gezählt ändert nichts (es gibt dann auch nichts zu
+// sichern).
+func ThrottleHit(c *core.Core, bucket, who string, limit int, window time.Duration) Hit {
 	pick := throttleBucket(bucket)
 	now := c.Clock.Now().Unix()
 	win := int64(window / time.Second)
 	// Vorab am Schnappschuss: gesperrt oder voll ändert nichts – kein
 	// Kopieren, kein Sichern (unter einem Angriff schriebe der Server sonst
 	// bei jedem Aufruf runtime.json).
-	if _, h, final := throttleDecide(*pick(c.Store.Runtime()), who, max, win, now); final {
+	if _, h, final := throttleDecide(*pick(c.Store.Runtime()), who, limit, win, now); final {
 		return h
 	}
 	var res Hit
@@ -54,13 +74,13 @@ func ThrottleHit(c *core.Core, bucket, who string, max int, window time.Duration
 			*m = map[string]model.ThrottleEntry{}
 		}
 		for k, e := range *m {
-			if now-e.FirstAt > win {
+			if throttleExpired(e, win, now) {
 				delete(*m, k)
 			}
 		}
 		// Zwischen Vorab-Prüfung und hier kann ein anderer Versuch gezählt
 		// haben: noch einmal entscheiden, jetzt unter dem Schreib-Halter.
-		e, h, final := throttleDecide(*m, who, max, win, now)
+		e, h, final := throttleDecide(*m, who, limit, win, now)
 		if final {
 			res = h
 			return
@@ -72,17 +92,28 @@ func ThrottleHit(c *core.Core, bucket, who string, max int, window time.Duration
 	return res
 }
 
+// throttleExpired: Das Fenster des Eintrags ist vorbei – erst NACH window
+// Sekunden ab dem ersten Versuch (wie PHP: genau window Sekunden später
+// noch gesperrt). Bewusst anders als PHP: Ein Eintrag, dessen Anfang nach
+// jetzt liegt, gilt ebenfalls als abgelaufen. Springt die Uhr zurück (ein
+// Start mit falscher Uhr, dann NTP), bliebe er sonst so lange gesperrt, wie
+// der Sprung war, und hielte die Obergrenze von 500 voll – die Zähler
+// überstehen in runtime.json einen Neustart.
+func throttleExpired(e model.ThrottleEntry, win, now int64) bool {
+	return e.FirstAt > now || now-e.FirstAt > win
+}
+
 // throttleDecide entscheidet wie PHPs throttle_hit, ohne etwas zu ändern:
 // e ist der laufende Eintrag von who (ein abgelaufener zählt wie keiner,
 // ein neuer beginnt jetzt). final: Das Ergebnis h steht ohne Zählen fest –
-// who ist neu und die Bremse voll (nicht gezählt, nicht gesperrt), oder who
-// hat schon max Versuche (gesperrt).
-func throttleDecide(m map[string]model.ThrottleEntry, who string, max int, win, now int64) (e model.ThrottleEntry, h Hit, final bool) {
+// who ist neu und die Bremse mit laufenden Einträgen voll (nicht gezählt,
+// nicht gesperrt), oder who hat schon limit Versuche (gesperrt).
+func throttleDecide(m map[string]model.ThrottleEntry, who string, limit int, win, now int64) (e model.ThrottleEntry, h Hit, final bool) {
 	e, ok := m[who]
-	if !ok || now-e.FirstAt > win {
+	if !ok || throttleExpired(e, win, now) {
 		live := 0
 		for _, x := range m {
-			if now-x.FirstAt <= win {
+			if !throttleExpired(x, win, now) {
 				live++
 			}
 		}
@@ -91,7 +122,7 @@ func throttleDecide(m map[string]model.ThrottleEntry, who string, max int, win, 
 		}
 		e = model.ThrottleEntry{FirstAt: now}
 	}
-	if e.Count >= max {
+	if e.Count >= limit {
 		return e, Hit{Blocked: true, Count: e.Count}, true
 	}
 	return e, Hit{}, false

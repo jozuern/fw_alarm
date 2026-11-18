@@ -85,18 +85,20 @@ Fehlversuch. Untergrenzen: 1 Versuch, 60 Sekunden.`,
 	{`==== Nur hinter einem Reverse-Proxy / Tunnel (sonst leer lassen) ==========
 Läuft der Server hinter einem Proxy auf demselben Rechner (Cloudflare
 Tunnel), kommen aus seiner Sicht ALLE Aufrufe von dessen Adresse, und HTTPS
-endet schon am Proxy. Ohne diese beiden Einträge zählt die Login-Sperre alle
+endet schon am Proxy. Ohne diese Einträge zählt die Login-Sperre alle
 Besucher als EINE Adresse (jeder sperrt mit ein paar Fehlversuchen den
 Admin aus), und das Sitzungs-Cookie geht ohne „Secure“ raus.
-trusted_proxies: Adressen, von denen der Proxy den Server anspricht – nur
-von dort (und über einen Unix-Socket, siehe listen) werden
-X-Forwarded-Proto und die unten genannte Kopfzeile angenommen, z.B.
-["127.0.0.1", "::1"]. NIE eintragen, wenn der Server auch
-direkt aus dem Internet erreichbar ist (dann könnte sich jeder eine Adresse
-aussuchen).
+trusted_proxies: Adressen, von denen der Proxy den Server über TCP
+anspricht – nur von dort werden X-Forwarded-Proto und die unten genannte
+Kopfzeile angenommen, z.B. ["127.0.0.1", "::1"]. Über einen Unix-Socket
+(siehe listen) gilt jede Anfrage als vom Proxy; trusted_proxies braucht es
+dann nicht. NIE eintragen, wenn der Server auch direkt aus dem Internet
+erreichbar ist (dann könnte sich jeder eine Adresse aussuchen).
 proxy_client_ip_header: Kopfzeile, in die DIESER Proxy die echte Adresse
 des Besuchers schreibt: "CF-Connecting-IP" (Cloudflare Tunnel), "X-Real-IP"
-oder "X-Forwarded-For" (dort zählt der letzte Eintrag).`,
+oder "X-Forwarded-For" (dort zählt der letzte Eintrag). PFLICHT bei einem
+Unix-Socket – ohne sie ist die Datei fehlerhaft; fehlt sie bei gesetztem
+trusted_proxies, gibt es einen Hinweis.`,
 		[]string{"trusted_proxies", "proxy_client_ip_header"}},
 	{`==== Box ==================================================================
 Nach so vielen Sekunden ohne Status-Push gilt die Box als offline.`,
@@ -211,7 +213,9 @@ KLARTEXT.`,
 dort an) oder "unix:<Pfad>" für einen Unix-Socket. Was über den
 Unix-Socket kommt, gilt als vom Tunnel: X-Forwarded-Proto und
 proxy_client_ip_header zählen dann auch ohne trusted_proxies – den Socket
-darf außer dem Server nur der Benutzer von cloudflared öffnen.`,
+darf außer dem Server nur der Benutzer von cloudflared öffnen. Mit einem
+Unix-Socket MUSS proxy_client_ip_header gesetzt sein, sonst ist die Datei
+fehlerhaft (alle Besucher teilten sich eine Login-Bremse).`,
 		[]string{"listen"}},
 	{`Steuer-Zugang für die Befehle fw-alarm health, check, flush, reload und
 stop (Unix-Socket, nur auf diesem Rechner).`,

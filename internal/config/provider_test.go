@@ -546,7 +546,7 @@ func TestProviderFixedFields(t *testing.T) {
 	p, clk, ch := startProvider(t, d)
 	d.write("config.toml", tomlFile(map[string]string{
 		"state_dir": `"/srv/neu"`, "listen": `"unix:/run/neu.sock"`, "control_socket": `"/run/neu.sock"`,
-		"offline_after_seconds": "240"}))
+		"offline_after_seconds": "240", "proxy_client_ip_header": `"CF-Connecting-IP"`})) // Unix-Socket nur mit Kopfzeile
 	settle(t, clk)
 	c := p.Get()
 	if c.OfflineAfterSeconds != 240 {
@@ -571,6 +571,40 @@ func TestProviderFixedFields(t *testing.T) {
 	settle(t, clk)
 	if len(p.Hints()) != 0 {
 		t.Errorf("Hinweise nach dem Zurückstellen: %q", p.Hints())
+	}
+}
+
+// listen gilt erst nach einem Neustart: Lauscht der Server auf einem
+// Unix-Socket, ist eine neue Fassung ohne Kopfzeile fehlerhaft – auch wenn
+// sie selbst schon wieder TCP nennt (bis zum Neustart lauscht er weiter auf
+// dem Socket). Umgekehrt braucht eine Fassung, die erst nach dem Neustart
+// auf den Socket ginge, die Kopfzeile schon jetzt (ParseAt).
+func TestProviderUnixListenKeepsHeader(t *testing.T) {
+	d := newConfDir(t)
+	d.write("config.toml", tomlFile(map[string]string{
+		"listen": `"unix:/run/fw-alarm/http.sock"`, "proxy_client_ip_header": `"CF-Connecting-IP"`}))
+	p, _, ch := startProvider(t, d)
+	d.write("config.toml", tomlFile(map[string]string{"listen": `"127.0.0.1:8080"`, "offline_after_seconds": "240"}))
+	err := p.Reload()
+	if err == nil || err.Error() != unixListenBroken {
+		t.Fatalf("Reload: %v, erwartet %q", err, unixListenBroken)
+	}
+	if p.OK() || p.Problem() != unixListenBroken {
+		t.Errorf("OK %v, Problem %q", p.OK(), p.Problem())
+	}
+	if c := p.Get(); c.ProxyClientIPHeader != "CF-Connecting-IP" || c.OfflineAfterSeconds != 180 {
+		t.Errorf("es gilt nicht die letzte gute Fassung: %q %d", c.ProxyClientIPHeader, c.OfflineAfterSeconds)
+	}
+	ch.want(t, false)
+
+	// Mit Kopfzeile gilt dieselbe Fassung.
+	d.write("config.toml", tomlFile(map[string]string{"listen": `"127.0.0.1:8080"`, "offline_after_seconds": "240",
+		"proxy_client_ip_header": `"X-Real-IP"`}))
+	if err := p.Reload(); err != nil {
+		t.Fatalf("Reload mit Kopfzeile: %v", err)
+	}
+	if c := p.Get(); c.ProxyClientIPHeader != "X-Real-IP" || c.Listen != "unix:/run/fw-alarm/http.sock" {
+		t.Errorf("neue Fassung: %q %q", c.ProxyClientIPHeader, c.Listen)
 	}
 }
 

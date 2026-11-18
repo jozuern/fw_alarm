@@ -11,9 +11,10 @@
 // "Fehlerhaft" ist eine Datei nur, wenn sie sich nicht lesen lässt, einen
 // Syntaxfehler, einen unbekannten Schlüssel, einen Wert vom falschen Typ,
 // eine unbekannte Zeitzone, eine unzulässige Probe-Sperre oder einen
-// bark_host mit Abfrage, Fragment oder Zugangsdaten hat oder keinen einzigen
-// Wert setzt (Parse liefert dann einen Fehler). Alles andere sind Hinweise
-// (Warnings): Der Server arbeitet mit der Datei.
+// bark_host mit Abfrage, Fragment oder Zugangsdaten hat, keinen einzigen
+// Wert setzt oder auf einem Unix-Socket lauscht, ohne eine brauchbare
+// proxy_client_ip_header zu nennen (Parse liefert dann einen Fehler). Alles
+// andere sind Hinweise (Warnings): Der Server arbeitet mit der Datei.
 //
 // Im laufenden Server hält ein Provider die geltende Fassung im Speicher,
 // prüft die Datei im Hintergrund und legt nach jeder gültig geladenen
@@ -25,6 +26,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/textproto"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -175,6 +177,24 @@ var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // geschütztes Leerzeichen).
 func phpTrim(s string) string { return strings.Trim(s, " \t\n\r\x00\x0b") }
 
+// clientIPHeaderPattern: erlaubte Zeichen im Namen der Kopfzeile aus
+// proxy_client_ip_header – PHP prüft nach strtoupper und "-" → "_" auf
+// ^[A-Z0-9_]+$ (common.php, login_client_ip).
+var clientIPHeaderPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// ClientIPHeader liefert den Namen der Kopfzeile aus
+// proxy_client_ip_header, wie net/http ihn führt: "_" wie "-", Groß/klein
+// und Leerraum außen egal (PHP liest $_SERVER['HTTP_…']). false: leer oder
+// unbrauchbar – dann zählt der Absender selbst, und alle Besucher über den
+// Proxy sind EIN Absender.
+func (c *Config) ClientIPHeader() (string, bool) {
+	name := phpTrim(c.ProxyClientIPHeader)
+	if !clientIPHeaderPattern.MatchString(name) {
+		return "", false
+	}
+	return textproto.CanonicalMIMEHeaderKey(strings.ReplaceAll(name, "_", "-")), true
+}
+
 // Location liefert die Zeitzone der Konfiguration (für Zeitstempel in
 // Meldungen und die Probe-Sperre).
 func (c *Config) Location() *time.Location {
@@ -257,6 +277,16 @@ func (c *Config) Warnings() []string {
 	if (c.DashboardReadonlyUser != "" || c.DashboardReadonlyPasswordHash != "") &&
 		!passwordHashUsable(c.DashboardReadonlyPasswordHash) {
 		w = append(w, "dashboard_readonly_password_hash ist weder ein bcrypt- noch ein Argon2id-Hash – so kann sich der Lese-Benutzer nicht anmelden")
+	}
+	if len(c.TrustedProxies) > 0 {
+		if _, ok := c.ClientIPHeader(); !ok {
+			reason := "leer"
+			if phpTrim(c.ProxyClientIPHeader) != "" {
+				reason = "unbrauchbar (nur Buchstaben, Ziffern, - und _)"
+			}
+			w = append(w, "trusted_proxies ist gesetzt, proxy_client_ip_header aber "+reason+
+				": alle Besucher über den Proxy zählen als ein Absender")
+		}
 	}
 	if !path.IsAbs(c.StateDir) && !filepath.IsAbs(c.StateDir) {
 		w = append(w, "state_dir ist kein absoluter Pfad")

@@ -511,10 +511,17 @@ Unbekannte Schlüssel sind ein Fehler. „Fehlerhaft“ ist eine Datei nur, wenn
 sie sich nicht lesen lässt, einen Syntaxfehler, einen unbekannten Schlüssel,
 einen Wert vom falschen Typ, eine unbekannte Zeitzone, eine unzulässige
 Probe-Sperre (§10) oder einen `bark_host` mit Abfrage, Fragment oder
-Zugangsdaten hat. Alles andere
+Zugangsdaten hat. Fehlerhaft ist sie auch, wenn `listen` ein Unix-Socket ist
+und `proxy_client_ip_header` fehlt oder unbrauchbar ist – dort gilt jede
+Anfrage als vom Tunnel, ohne Absender-Adresse teilten sich alle Besucher
+eine Login-Bremse, und ein Fremder könnte die Anmeldung sperren (im
+laufenden Server zählt dafür das `listen` vom Start). Alles andere
 (ein Hash in falscher Form, `check_interval_seconds = 0`, ein `bark_host` mit
 Pfad oder ohne `http(s)://` …) sind Hinweise:
-`check-config` nennt sie, der Server arbeitet mit der Datei. Fehlt ein
+`check-config` nennt sie, der Server arbeitet mit der Datei. Ein Hinweis ist
+auch ein gesetztes `trusted_proxies` ohne brauchbares
+`proxy_client_ip_header` (alle Besucher über den Proxy zählen dann als ein
+Absender – dieselbe Lücke hatte PHP). Fehlt ein
 Schlüssel, gilt der Wert,
 den der PHP-Code heute dafür nimmt (das `?? …`), nicht der Wert der alten
 Vorlage – das Verhalten soll sich beim Umschalten nicht ändern.
