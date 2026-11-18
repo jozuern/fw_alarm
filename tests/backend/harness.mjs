@@ -462,18 +462,24 @@ function contractHelpers(kind, part, impl, inputs) {
 //                          und warten, bis der Server sie beurteilt hat (höchstens
 //                          10 s, sonst wirft es)
 //   configText(overrides)  der Text, den configure(overrides) schriebe (Vorlage
-//                          dafür; bark_host steht darin zuerst - jeder Anfang bis
-//                          zu einem Zeilenende ist kaputt oder trägt den lokalen Host)
+//                          dafür; seine erste Zeile ist die bark_host-Zeile, also
+//                          trägt jeder Anfang bis zu einem Zeilenende sie)
 //   health()               was fw-alarm health sagt ({ ok, running, state,
 //                          save_ok, config_ok, hints, text })
-//   cli(args)              ein fw-alarm-Befehl mit --config (außer args nennen ein
-//                          eigenes) und, wo er es kennt, --last-good des Prüfstands
+//   cli(args)              ein fw-alarm-Befehl, immer mit --config und (wo er es
+//                          kennt) --last-good des Prüfstands
 //   files                  der Datenordner von Go roh (nur go-*.test.mjs)
 //   startServer({ expectUnhealthy: true })  nach Absicht Kaputtem starten
-// Unter Go zeigt keine Konfiguration, die der Server liest, je auf einen fremden
-// Bark-Server: configure, writeRawConfig und files.write auf *.toml werfen sonst
-// (genau eine Zeile bark_host = "http://127.0.0.1:<port>" oder bark_host = "",
-// nie """ oder '''; Einzelheiten bei HOST_RULE in harness-go.mjs).
+// Unter Go gilt ohne Ausnahme: Jeder Konfigurationstext, gültig oder kaputt, trägt
+// genau eine Zeile bark_host = "http://127.0.0.1:<port>" (oder bark_host = "") und
+// sonst nirgends bark_host vor einem =, nie """ oder ''' - configure, writeRawConfig
+// und files.write/corrupt auf *.toml werfen sonst, bevor etwas geschrieben ist (wer
+// eine kaputte Datei braucht, schreibt die Zeile plus seinen Unsinn; Einzelheiten bei
+// HOST_RULE in harness-go.mjs). Dateinamen in files gibt es nur in einer
+// Schreibweise (klein, a-z 0-9 . _ -, kein Punkt am Ende) - jede Funktion von files
+// wirft sonst. cli wirft bei einem eigenen Schalter für Konfiguration oder Kopie
+// (--config, -config, --config=…, -config=…, ebenso last-good), außer bei
+// check-config, das nur liest und urteilt.
 // Was die Go-Fassung dabei tut und prüft, steht oben in harness-go.mjs.
 //
 // Die Treiber werden erst hier geladen: harness-php.mjs und harness-go.mjs

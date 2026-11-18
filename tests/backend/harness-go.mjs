@@ -35,8 +35,10 @@
 // der Helfer danach, bis zum nächsten startServer() oder reset().
 //
 // Keine Konfiguration, die der Server liest, zeigt je auf einen fremden
-// Bark-Server: Wächter über configure, writeRawConfig und
-// backend.files.write (Regeln unten bei HOST_RULE).
+// Bark-Server: ein Wächter ohne Ausnahme über configure, writeRawConfig,
+// backend.files.write und .corrupt (Regeln unten bei HOST_RULE). Dateinamen
+// in backend.files gibt es nur in einer Schreibweise; backend.cli lässt eine
+// eigene Konfiguration nur check-config durch.
 //
 // storage.fail(what) legt einen nicht leeren Ordner an den festen Namen der
 // Zwischendatei, das Sichern dieses Teils scheitert dann im laufenden
@@ -51,7 +53,7 @@
 // Solange etwas gestört ist, lesen die Helfer, was zuletzt gesichert wurde
 // (fw-alarm flush scheitert dann, das ist erwartet), und der Server darf mit
 // Rückgabe 1 enden (er konnte beim Beenden nicht alles sichern).
-import { execFile, spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
   appendFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync,
@@ -135,40 +137,81 @@ function tomlValue(key, value) {
   throw new Error(`configure: "${key}" lässt sich nicht als TOML schreiben (${JSON.stringify(value)})`);
 }
 
+// Die Schlüssel in der gegebenen Reihenfolge, der Kommentar zuletzt - die
+// erste Zeile ist so immer die erste Zuweisung (bark_host, siehe unten).
 function tomlText(values) {
-  const lines = ['# Konfiguration des Prüfstands (tests/backend/harness-go.mjs)'];
+  const lines = [];
   for (const [key, value] of Object.entries(values)) {
     if (!/^[A-Za-z0-9_-]+$/.test(key)) throw new Error(`configure: Schlüssel "${key}" ist kein einfacher TOML-Name`);
     lines.push(`${key} = ${tomlValue(key, value)}`);
   }
+  lines.push('# Konfiguration des Prüfstands (tests/backend/harness-go.mjs)');
   return `${lines.join('\n')}\n`;
 }
 
 // ---- Wächter über jede Konfiguration -------------------------------------
 // Der Prüfstand schreibt nie eine Konfiguration, mit der der Server an einen
-// echten Bark-Server sendete - über keinen Weg (configure, writeRawConfig,
-// backend.files.write auf *.toml). Regeln (guardConfigText unten):
-//   a) """ oder ''' irgendwo im Text: abgelehnt, ob gültig oder nicht - in
-//      einem mehrzeiligen Text kann eine Zeile wie bark_host = "…" stehen,
-//      die kein Schlüssel ist, und der echte Wert stünde woanders.
-//   b) Nimmt der Parser des Servers den Text an (fw-alarm check-config auf
-//      einer Kopie - der Treiber rät die Gültigkeit nie selbst), muss er
-//      GENAU EINE Zeile bark_host = "http://127.0.0.1:<port>" oder
-//      bark_host = "" enthalten und keine weitere Zeile, auf der bark_host
-//      vor einem = steht (Schlüssel in Anführungszeichen, ohne Leerzeichen,
-//      eingerückt: alles abgelehnt). Ohne die Zeile gälte der Standard des
-//      Servers - der echte Bark-Server.
-//   c) Einen Text, den der Parser ablehnt, schreibt der Treiber, wie er ist
-//      (Tests wollen kaputte Dateien). Das ist sicher: Der Server übernimmt
-//      nur, was config.ParseAt annimmt (beim Start wie beim Prüfer und bei
-//      reload), und check-config urteilt mit genau diesem Parser.
-//   d) Die Fassung des Prüfstands (configText) nennt bark_host als ersten
-//      Schlüssel: Jeder Anfang davon bis zu einem Zeilenende ist kaputt
-//      oder trägt schon den lokalen Host - ein Test, der sie abschneidet
-//      (halb geschriebene Datei), bekommt nie eine gültige Fassung ohne ihn.
+// echten Bark-Server senden könnte - über keinen Weg (configure,
+// writeRawConfig, backend.files.write und .corrupt auf *.toml) und zu
+// keinem Zeitpunkt. Die Regel gilt AUSNAHMSLOS für jeden Text, gültig oder
+// kaputt, auch leer (guardConfigText unten):
+//   - kein """ und kein ''' irgendwo im Text;
+//   - GENAU EINE Zeile (ohne \r am Ende), die genau
+//     bark_host = "http://127.0.0.1:<1–5 Ziffern>" oder bark_host = "" ist;
+//   - keine weitere Zeile, auf der bark_host vor einem = steht (Schlüssel in
+//     Anführungszeichen, ohne Leerzeichen, eingerückt, in einem Kommentar
+//     oder einem anderen Wert: alles abgelehnt).
+// Ob der Parser des Servers den Text annimmt, spielt für den Wächter keine
+// Rolle mehr: Ein "kaputter" Text kann später gültig werden (die
+// Probe-Sperre wird gegen die Uhr geprüft: mehr als 3 h in der Zukunft ist
+// heute kaputt, in einer Minute gültig), und jeder spätere Start oder reload
+// nähme ihn dann.
+// Warum die Regel genügt: Ein Text, der sie erfüllt, wird vom Parser des
+// Servers entweder abgelehnt - jetzt oder später, und dann trägt er immer
+// noch die lokale Zeile - oder angenommen; dann ist die Zeile eine echte
+// Zuweisung auf oberster Ebene. In einem mehrzeiligen Text kann sie nicht
+// stehen (dreifache Anführungszeichen sind verboten); eine Zeile
+// schlüssel = wert in einer mehrzeiligen Liste oder unter einer
+// Tabellen-Überschrift macht den Text für diesen Parser kaputt (er kennt keine
+// Tabellen, unbekannte Schlüssel sind Fehler); eine zweite Zuweisung an
+// bark_host ist ein doppelter Schlüssel - ebenfalls kaputt.
+// Wer eine kaputte Datei braucht, schreibt die Zeile plus seinen Unsinn;
+// configText() beginnt mit der Zeile, also trägt jeder Anfang davon bis zu
+// einem Zeilenende sie (halb geschriebene Datei).
 const BENCH_HOST_LINE = /^bark_host = "(?:http:\/\/127\.0\.0\.1:\d{1,5})?"$/;
 const MENTIONS_HOST = /bark_host[^=]*=/;
 const HOST_RULE = 'muss genau eine Zeile bark_host = "http://127.0.0.1:<port>" enthalten – sonst sendete der Server an das echte Bark';
+
+// Wirft, wenn text nicht geschrieben werden darf (Regel oben).
+function guardConfigText(text, where) {
+  if (typeof text !== 'string') throw new Error(`${where}: die Konfiguration als Text`);
+  if (text.includes('"""') || text.includes("'''")) {
+    throw new Error(`${where}: dreifache Anführungszeichen (""" oder ''') sind im Prüfstand verboten – `
+      + 'in einem mehrzeiligen Text sähe der Wächter nicht sicher, wohin der Server sendet');
+  }
+  const lines = text.split('\n').map((line) => line.replace(/\r$/, ''));
+  const exact = lines.filter((line) => BENCH_HOST_LINE.test(line));
+  const mentions = lines.filter((line) => MENTIONS_HOST.test(line));
+  if (exact.length !== 1 || mentions.length !== 1) {
+    throw new Error(`${where}: jeder Konfigurationstext, gültig oder kaputt, ${HOST_RULE} `
+      + `(gefunden: ${mentions.length ? mentions.join(' | ') : 'keine'})`);
+  }
+}
+
+// Dateinamen in backend.files: genau eine Schreibweise je Datei. Klein,
+// ohne ~ (Kurznamen), : (Datenströme), $, Leerzeichen, Schrägstriche und
+// ohne Punkt am Ende - geprüft unabhängig vom Dateisystem.
+const FILE_NAME = /^[a-z0-9][a-z0-9._-]*$/;
+function checkFileName(name) {
+  if (typeof name !== 'string' || !FILE_NAME.test(name) || name.endsWith('.')) {
+    throw new Error(`backend.files: ${JSON.stringify(name)} ist kein erlaubter Dateiname `
+      + '(klein, a-z 0-9 . _ -, nicht mit . am Ende)');
+  }
+}
+
+// Schalter, die eine andere Konfiguration oder Kopie wählten - in jeder
+// Schreibweise des flag-Pakets von Go (-x, --x, -x=…, --x=…).
+const CONFIG_FLAG = /^--?(?:config|last-good)(?:=|$)/;
 
 // ---- Ports -----------------------------------------------------------------
 function portFree(port) {
@@ -244,13 +287,18 @@ export async function startGo(root, bark, options = {}) {
   const port = options.port || await pickPort();
   const base = `http://127.0.0.1:${port}`;
   // Wie der PHP-Treiber (baseConfig) ohne data_dir und health_check_url, dazu
-  // was nur Go kennt. bark_host steht zuerst (Wächter, Regel d). bark_alarm_title:
-  // PHP nimmt ihn aus config.example.php (dort mit "(manuell)"), Go ohne
-  // Eintrag den Wert aus dem PHP-Code - so sehen die Tests unter beiden
-  // denselben Titel.
+  // was nur Go kennt. bark_host steht als erste Zeile (Wächter), gleich
+  // danach state_dir, listen und control_socket: Ein Anfang des Texts ab vier
+  // Zeilen trägt so alles, was writeRawConfig von einer gültigen Fassung
+  // verlangt. bark_alarm_title: PHP nimmt ihn aus config.example.php (dort mit
+  // "(manuell)"), Go ohne Eintrag den Wert aus dem PHP-Code - so sehen die
+  // Tests unter beiden denselben Titel.
   if (!/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(bark.base)) throw new Error(`Bark-Attrappe nicht lokal: ${bark.base}`);
   const baseConfig = {
     bark_host: bark.base,
+    state_dir: stateDir,
+    listen: `127.0.0.1:${port}`,
+    control_socket: socketPath,
     machine_token_sha256: sha256(MACHINE_TOKEN),
     dashboard_user: ADMIN.user,
     dashboard_password_hash: TEST_PASSWORD_HASH,
@@ -259,19 +307,17 @@ export async function startGo(root, bark, options = {}) {
     bark_key_status: STATUS_KEY,
     bark_keys_alarm: ['startkey0001'],
     bark_alarm_title: 'FEUERWEHR-ALARM (manuell)',
-    state_dir: stateDir,
-    listen: `127.0.0.1:${port}`,
-    control_socket: socketPath,
     check_interval_seconds: 0,
   };
 
   // ---- fw-alarm aufrufen ------------------------------------------------
-  // Jeder Befehl bekommt --config (außer der Aufrufer nennt eine eigene),
-  // --last-good nur die Befehle, die es kennen.
+  // Jeder Befehl bekommt --config des Prüfstands und, wo er es kennt,
+  // --last-good. Nur check-config darf auf eine eigene Datei zeigen (dann
+  // ohne die des Prüfstands - beim flag-Paket gälte sonst die letzte).
   const flagsFor = (args) => {
     const flags = [];
-    if (!args.includes('--config')) flags.push('--config', configPath);
-    if (SERVER_COMMANDS.has(args[0]) && !args.includes('--last-good')) flags.push('--last-good', lastGoodPath);
+    if (!(args[0] === 'check-config' && args.some((arg) => /^--?config(?:=|$)/.test(arg)))) flags.push('--config', configPath);
+    if (SERVER_COMMANDS.has(args[0])) flags.push('--last-good', lastGoodPath);
     return flags;
   };
   // Ein Befehl; liefert { code, stdout, stderr } (code null = abgebrochen).
@@ -285,41 +331,33 @@ export async function startGo(root, bark, options = {}) {
   });
   const cli = (args, { timeoutMs = 30000 } = {}) => run([...args, ...flagsFor(args)], timeoutMs);
   const health = async () => parseHealth(await cli(['health'], { timeoutMs: 20000 }));
-
-  // Der Wächter über jede Konfiguration (Regeln oben bei HOST_RULE). Liefert,
-  // ob der Parser des Servers den Text annimmt; wirft, wenn er nicht
-  // geschrieben werden darf. Synchron, damit auch backend.files.write ihn
-  // nutzen kann. Ein gültiges Urteil wird je Text gemerkt (reset schreibt
-  // immer dieselbe Fassung).
-  const acceptedTexts = new Set();
-  const guardConfigText = (text, where) => {
-    if (typeof text !== 'string') throw new Error(`${where}: die Konfiguration als Text`);
-    if (text.includes('"""') || text.includes("'''")) {
-      throw new Error(`${where}: dreifache Anführungszeichen (""" oder ''') sind im Prüfstand verboten – `
-        + 'in einem mehrzeiligen Text sähe der Wächter nicht sicher, wohin der Server sendet');
+  // Für die Tests: Eine eigene Konfiguration oder Kopie (jede Schreibweise
+  // des Schalters) nur bei check-config - es liest und urteilt nur. Allen
+  // anderen Befehlen gibt der Prüfstand immer seine eigenen Schalter: Sonst
+  // liefe etwa ein serve auf einer Datei, die der Wächter nie sah.
+  const testCli = async (args, opts) => {
+    if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) throw new Error('backend.cli: Argumente als Liste von Texten');
+    if (args[0] !== 'check-config' && args.some((arg) => CONFIG_FLAG.test(arg))) {
+      throw new Error(`backend.cli: eigene --config/--last-good nur für check-config, nicht für ${args[0]} – `
+        + 'die übrigen Befehle laufen immer mit denen des Prüfstands');
     }
-    if (acceptedTexts.has(text)) return true;
-    const probe = join(root, 'config.guard.toml');
+    return cli(args, opts);
+  };
+  // Ob der Parser des Servers den Text gerade annimmt (fw-alarm check-config
+  // auf einer Kopie) - nur, damit writeRawConfig weiß, worauf es wartet; nie
+  // eine Bedingung des Wächters.
+  const parserAccepts = async (text) => {
+    const probe = join(root, 'config.probe.toml');
     writeFileSync(probe, text);
-    let verdict;
     try {
-      verdict = spawnSync(bin, ['check-config', '--config', probe], { cwd: root, encoding: 'utf8', timeout: 30000, windowsHide: true });
+      const verdict = await run(['check-config', '--config', probe], 30000);
+      if (verdict.code !== 0 && verdict.code !== 1) {
+        throw new Error(`fw-alarm check-config urteilte nicht (${verdict.code}): ${verdict.stdout}${verdict.stderr}`);
+      }
+      return verdict.code === 0;
     } finally {
       rmSync(probe, { force: true });
     }
-    if (verdict.error || (verdict.status !== 0 && verdict.status !== 1)) {
-      throw new Error(`${where}: fw-alarm check-config urteilte nicht (${verdict.status ?? verdict.error?.message}): `
-        + `${verdict.stdout ?? ''}${verdict.stderr ?? ''}`);
-    }
-    if (verdict.status !== 0) return false;   // kaputt: geht durch, der Server übernimmt ihn nie (Regel c)
-    const lines = text.split('\n').map((line) => line.replace(/\r$/, ''));
-    const exact = lines.filter((line) => BENCH_HOST_LINE.test(line));
-    const mentions = lines.filter((line) => MENTIONS_HOST.test(line));
-    if (exact.length !== 1 || mentions.length !== 1) {
-      throw new Error(`${where}: eine gültige Konfiguration ${HOST_RULE} (gefunden: ${mentions.length ? mentions.join(' | ') : 'keine'})`);
-    }
-    acceptedTexts.add(text);
-    return true;
   };
 
   // ---- Prozess ------------------------------------------------------------
@@ -492,11 +530,10 @@ export async function startGo(root, bark, options = {}) {
     }
     return tomlText(values);
   };
-  // Schreibt config.toml nur nach dem Wächter; liefert dessen Urteil (gültig?).
+  // Schreibt config.toml nur nach dem Wächter.
   const writeConfigText = (text, where) => {
-    const valid = guardConfigText(text, where);
+    guardConfigText(text, where);
     writeFileSync(configPath, text);
-    return valid;
   };
   const writeConfig = (overrides) => writeConfigText(configText(overrides), 'configure');
   // Die Zeilen, die nach einem Neustart sonst woanders hinzeigten - eine
@@ -867,13 +904,18 @@ export async function startGo(root, bark, options = {}) {
 
   // ---- backend.files (nur go-*.test.mjs) ----------------------------------
   // Roh auf den Datenordner; der Server liest seine Dateien beim Start, also
-  // zwischen stopServer() und startServer() benutzen.
+  // zwischen stopServer() und startServer() benutzen. Jeder Name geht durch
+  // checkFileName (genau eine Schreibweise je Datei - kein Umweg über
+  // Groß/Klein, Kurznamen oder Datenströme), jede *.toml beim Schreiben durch
+  // den Wächter.
   const checkName = (name) => {
-    if (typeof name !== 'string' || !name || /[\\/]/.test(name) || name === '.' || name === '..') {
-      throw new Error(`backend.files: "${name}" ist kein Dateiname im Datenordner`);
-    }
+    checkFileName(name);
     return file(name);
   };
+  // Eine kaputte Konfiguration: die Zeile des Prüfstands, dann Unsinn - geht
+  // durch den Wächter wie jeder andere Text (der Parser lehnt "{kaputt" ab:
+  // eine Inline-Tabelle ohne Schlüssel).
+  const corruptText = (name) => (name.endsWith('.toml') ? `bark_host = "${bark.base}"\n{kaputt\n` : '{kaputt');
   const files = {
     dir: stateDir,
     path: checkName,
@@ -897,7 +939,12 @@ export async function startGo(root, bark, options = {}) {
       writeFileSync(path, text);
       return value;
     },
-    corrupt: (name) => writeFileSync(checkName(name), '{kaputt'),
+    corrupt(name) {
+      const path = checkName(name);
+      const text = corruptText(name);
+      if (name.endsWith('.toml')) guardConfigText(text, `backend.files.corrupt(${name})`);
+      writeFileSync(path, text);
+    },
     remove: (name) => rmBusy(checkName(name)),
   };
 
@@ -920,7 +967,7 @@ export async function startGo(root, bark, options = {}) {
     files,
     words: { configFile: 'config.toml' },
     serverLog: () => log,
-    cli: (args, opts) => cli(args, opts),
+    cli: testCli,
     health,
     startServer: (opts = {}) => serial(async () => {
       if (alive) return;
@@ -946,18 +993,21 @@ export async function startGo(root, bark, options = {}) {
     configText: (overrides = {}) => configText(overrides),
     // config.toml genau so schreiben wie gegeben (ein Tippfehler von Hand) und
     // warten, bis der Server sie beurteilt hat; liefert, was health dann sagt.
-    // Erst der Wächter; eine GÜLTIGE Fassung muss zudem state_dir, listen und
-    // control_socket des Prüfstands behalten. Gewartet wird auf das Urteil
-    // des Prüfers (er übernimmt eine Datei, die 2 s unverändert blieb):
+    // Erst der Wächter (für jeden Text, gültig oder kaputt). Dann sagt
+    // check-config voraus, ob der Parser ihn annimmt - nur, um zu wissen,
+    // worauf zu warten ist; eine gültige Fassung muss zudem state_dir, listen
+    // und control_socket des Prüfstands behalten. Gewartet wird auf das
+    // Urteil des Prüfers (er übernimmt eine Datei, die 2 s unverändert blieb):
     //   gültig: bis config.last-good.toml genau diese Bytes hält (die Kopie
     //           schreibt er nur aus einer übernommenen Fassung) UND health
     //           config_ok=1 sagt; gilt sie schon, sofort;
     //   kaputt: bis health config_ok=0 sagt (kaputt nach kaputt: sofort - der
     //           Hinweis kann dann noch den alten Grund nennen).
-    // Nach 10 s ohne dieses Urteil wirft er mit der letzten Ausgabe von health.
+    // Nach 10 s ohne dieses Urteil wirft er mit der letzten Ausgabe von health
+    // (auch, wenn der Server anders urteilt als vorhergesagt).
     writeRawConfig: (text) => serial(async () => {
-      if (typeof text !== 'string') throw new Error('writeRawConfig: der Inhalt als Text');
-      const valid = guardConfigText(text, 'writeRawConfig');
+      guardConfigText(text, 'writeRawConfig');
+      const valid = await parserAccepts(text);
       const lines = new Set(text.split(/\r?\n/).map((line) => line.trim()));
       const lost = fixedLines.filter((line) => !lines.has(line));
       if (valid && lost.length) {

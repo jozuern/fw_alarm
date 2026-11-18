@@ -124,9 +124,14 @@ geordnet anhält (`fw-alarm stop`), die Dateien des Datenordners ändert und
 neu startet; gelesen wird nach `fw-alarm flush`. Nach jedem Start prüft er,
 dass der Server gesund ist und nichts abgelehnt hat – sonst wirft er mit
 der Ausgabe des Servers (Einzelheiten oben in `harness-go.mjs`). Keine
-Konfiguration, die er schreibt, zeigt auf einen fremden Bark-Server: Eine
-gültige muss genau eine Zeile `bark_host = "http://127.0.0.1:<port>"` (oder
-`bark_host = ""`) tragen, `"""`/`'''` sind ganz verboten. Ein Lauf
+Konfiguration, die er schreibt, zeigt je auf einen fremden Bark-Server: Jeder
+Konfigurationstext, gültig oder kaputt, trägt genau eine Zeile
+`bark_host = "http://127.0.0.1:<port>"` (oder `bark_host = ""`), sonst
+nirgends `bark_host` vor einem `=` und nie `"""`/`'''` – wer eine kaputte
+Datei braucht, schreibt die Zeile plus seinen Unsinn. Dateinamen in
+`backend.files` gibt es nur in einer Schreibweise (klein, `a-z 0-9 . _ -`,
+kein Punkt am Ende). `backend.cli()` nimmt einen eigenen Schalter für
+Konfiguration oder Kopie (jede Schreibweise) nur bei `check-config` an. Ein Lauf
 mit `reset()` vor jedem Fall dauert dadurch etwa eine halbe Sekunde pro Fall
 länger als unter PHP.
 

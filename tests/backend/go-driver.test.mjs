@@ -5,7 +5,7 @@
 // stehen kann. backend.files (der rohe Datenordner) nur hier und in den
 // übrigen go-*.test.mjs.
 import assert from 'node:assert/strict';
-import { readdirSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { after, before, beforeEach, describe, it } from 'node:test';
@@ -17,6 +17,15 @@ const near = (actual, expected, slack = 5) => Math.abs(actual - expected) <= sla
 // Die Absagen des Wächters über jede Konfiguration.
 const ONE_HOST_LINE = /muss genau eine Zeile bark_host = "http:\/\/127\.0\.0\.1:<port>" enthalten – sonst sendete der Server an das echte Bark/;
 const TRIPLE_QUOTES = /dreifache Anführungszeichen/;
+const BAD_NAME = /ist kein erlaubter Dateiname/;
+// "JJJJ-MM-TT HH:MM" in Berlin, seconds Sekunden ab jetzt (die Form von
+// send_guard_until).
+function berlinMinute(seconds) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(Date.now() + seconds * 1000)).map((p) => [p.type, p.value]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}
 const isDir = (path) => {
   try { return statSync(path).isDirectory(); } catch { return false; }
 };
@@ -28,6 +37,10 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
   beforeEach(async () => { await backend.reset(); });
 
   const manifest = () => request(`${backend.base}/manifest.json`);
+  // Die bark_host-Zeile des Prüfstands (zeigt auf die Bark-Attrappe).
+  const hostLine = () => `bark_host = "${backend.bark.base}"`;
+  // config.toml des Prüfstands, wie sie gerade auf der Platte liegt.
+  const configOnDisk = () => readFileSync(join(backend.root, 'config.toml'), 'utf8');
   // Ändert ein Dokument des Servers von Hand, während er steht.
   async function editWhileStopped(name, fn) {
     await backend.stopServer();
@@ -103,7 +116,7 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
       assert.match(backend.files.text('config.last-good.toml'), /^offline_after_seconds = 777$/m,
         'der Server hat die neue Fassung übernommen (Kopie der letzten gültigen)');
 
-      const broken = await backend.writeRawConfig('offline_after_seconds = \n');
+      const broken = await backend.writeRawConfig(`${hostLine()}\noffline_after_seconds = \n`);
       assert.equal(broken.config_ok, '0', broken.text);
       assert.ok(broken.hints.some((h) => /fehlerhaft/.test(h)), broken.text);
       assert.match(backend.files.text('config.last-good.toml'), /^offline_after_seconds = 777$/m, 'die letzte gute gilt weiter');
@@ -210,25 +223,62 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
       await unchanged();
     });
 
-    it('jeder Anfang der Fassung des Prüfstands (bis zu einem Zeilenende) ist kaputt oder trägt den lokalen Host', async () => {
+    it('die Fassung des Prüfstands beginnt mit der bark_host-Zeile: jeder Anfang bis zu einem Zeilenende trägt sie', async () => {
       const lines = backend.configText().split('\n');
-      assert.match(lines.find((line) => /^[a-z]/.test(line)), /^bark_host = /, 'bark_host ist der erste Schlüssel');
+      assert.equal(lines[0], hostLine(), 'die erste Zeile');
       let valid = 0;
       for (let n = 1; n <= lines.length; n++) {
         const prefix = `${lines.slice(0, n).join('\n')}\n`;
-        if (!await parserAccepts(prefix)) continue;
-        valid += 1;
-        assert.match(prefix, new RegExp(`^bark_host = "${backend.bark.base}"$`, 'm'), `Anfang mit ${n} Zeilen`);
+        assert.equal(prefix.split('\n').filter((line) => line.includes('bark_host')).length, 1, `Anfang mit ${n} Zeilen`);
+        if (await parserAccepts(prefix)) valid += 1;
       }
       assert.ok(valid > 0);
+      // Ein abgeschnittener Anfang geht durch den Wächter und wird geschrieben
+      // (ab vier Zeilen trägt er auch state_dir, listen und control_socket).
+      const cut = `${lines.slice(0, 4).join('\n')}\n`;
+      const h = await backend.writeRawConfig(cut);
+      assert.equal(configOnDisk(), cut);
+      assert.equal(h.config_ok, (await parserAccepts(cut)) ? '1' : '0', h.text);
     });
 
-    it('backend.files.write auf config.last-good.toml und config.toml: derselbe Wächter', async () => {
+    it('die Grenze der Probe-Sperre: heute kaputt, in einer Minute gültig - mit fremdem Host abgelehnt, nichts geschrieben', async () => {
+      const before = configOnDisk();
+      const text = `bark_host = "https://example.invalid"\nsend_guard_keys = ["probekey01"]\n`
+        + `send_guard_until = "${berlinMinute(3 * 3600 + 120)}"\n${withoutHost()}`;
+      assert.equal(await parserAccepts(text), false, 'heute: mehr als 3 h in der Zukunft');
+      await assert.rejects(backend.writeRawConfig(text), ONE_HOST_LINE);
+      assert.equal(configOnDisk(), before, 'config.toml unverändert');
+      await unchanged();
+    });
+
+    it('configure ohne bark_host an der Grenze der Probe-Sperre: der Wächter wirft, nicht erst der Server', async () => {
+      const before = configOnDisk();
+      await assert.rejects(backend.configure({
+        bark_host: null, send_guard_keys: ['probekey01'], send_guard_until: berlinMinute(3 * 3600 + 120),
+      }), ONE_HOST_LINE);
+      assert.equal(configOnDisk(), before, 'config.toml unverändert');
+      await unchanged();
+    });
+
+    it('kein TOML, ein leerer Text: ohne die bark_host-Zeile abgelehnt - mit ihr geschrieben, der Server lehnt ab', async () => {
+      const before = configOnDisk();
+      await assert.rejects(backend.writeRawConfig('{{{ kein toml\n'), ONE_HOST_LINE);
+      await assert.rejects(backend.writeRawConfig(''), ONE_HOST_LINE);
+      assert.equal(configOnDisk(), before);
+      await unchanged();
+      const garbage = `${hostLine()}\n{{{ kein toml\n`;
+      const h = await backend.writeRawConfig(garbage);
+      assert.equal(configOnDisk(), garbage);
+      assert.equal(h.config_ok, '0', h.text);
+    });
+
+    it('backend.files.write auf config.last-good.toml und config.toml: derselbe Wächter, auch für kaputte Texte', async () => {
       await backend.stopServer();
       const foreign = `${withoutHost()}bark_host = "https://example.invalid"\n`;
       const before = backend.files.text('config.last-good.toml');
       for (const name of ['config.last-good.toml', 'config.toml']) {
         assert.throws(() => backend.files.write(name, foreign), ONE_HOST_LINE, name);
+        assert.throws(() => backend.files.write(name, 'bark_host = "https://example.invalid"\n= kaputt\n'), ONE_HOST_LINE, name);
         assert.throws(() => backend.files.write(name, `${withoutHost()}x = """y"""\n`), TRIPLE_QUOTES, name);
       }
       assert.equal(backend.files.text('config.last-good.toml'), before);
@@ -238,16 +288,61 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
       await unchanged();
     });
 
-    it('erlaubt: die Fassung des Prüfstands, bark_host = "" (sendet nichts) und kaputte Texte', async () => {
+    it('backend.files.corrupt auf einer Konfiguration: die bark_host-Zeile, dann Unsinn - kaputt, nie fremd', async () => {
+      await backend.stopServer();
+      backend.files.corrupt('config.last-good.toml');
+      const text = backend.files.text('config.last-good.toml');
+      assert.equal(text.split('\n')[0], hostLine());
+      assert.equal(text.split('\n').filter((line) => line.includes('bark_host')).length, 1);
+      assert.equal(await parserAccepts(text), false, 'der Parser lehnt sie ab');
+      backend.files.write('config.last-good.toml', backend.configText());
+      await backend.startServer();
+    });
+
+    it('Dateinamen nur in einer Schreibweise: Großbuchstaben, Kurznamen, Datenströme, Punkt oder Leerzeichen am Ende abgelehnt', async () => {
+      await backend.stopServer();
+      const before = backend.files.text('config.last-good.toml');
+      const aliases = ['config.last-good.TOML', 'CONFIG~1.TOM', 'config~1.tom', 'config.last-good.toml::$DATA',
+        'config.toml.', 'config.toml '];
+      for (const name of aliases) {
+        assert.throws(() => backend.files.write(name, backend.configText()), BAD_NAME, `write ${name}`);
+        for (const fn of ['read', 'text', 'exists', 'remove', 'corrupt', 'path']) {
+          assert.throws(() => backend.files[fn](name), BAD_NAME, `${fn} ${name}`);
+        }
+      }
+      assert.equal(backend.files.text('config.last-good.toml'), before);
+      await backend.startServer();
+      await unchanged();
+    });
+
+    it('erlaubt: die Fassung des Prüfstands, bark_host = "" (sendet nichts) und kaputte Texte mit der Zeile', async () => {
       const empty = `${withoutHost()}bark_host = ""\n`;
       const applied = await backend.writeRawConfig(empty);
       assert.equal(applied.config_ok, '1', applied.text);
       assert.equal(backend.files.text('config.last-good.toml'), empty);
-      const broken = await backend.writeRawConfig('bark_host = "https://example.invalid\n');
-      assert.equal(broken.config_ok, '0', 'ein kaputter Text geht durch - der Server übernimmt ihn nie');
+      const broken = await backend.writeRawConfig(`${hostLine()}\nbark_alarm_title = "offen\n`);
+      assert.equal(broken.config_ok, '0', 'ein kaputter Text mit der Zeile geht durch - der Server übernimmt ihn nicht');
       assert.equal(backend.files.text('config.last-good.toml'), empty);
       await backend.configure({ bark_host: '' });
       await backend.configure({});
+      await unchanged();
+    });
+
+    it('cli: eigene --config/--last-good (jede Schreibweise) nur für check-config', async () => {
+      const other = join(backend.root, 'gibt-es-nicht.toml');
+      for (const command of ['serve', 'reload']) {
+        for (const flag of ['config', 'last-good']) {
+          for (const args of [[`--${flag}`, other], [`-${flag}`, other], [`--${flag}=${other}`], [`-${flag}=${other}`]]) {
+            await assert.rejects(backend.cli([command, ...args]), /eigene --config\/--last-good/, `${command} ${args.join(' ')}`);
+          }
+        }
+      }
+      const broken = join(backend.root, 'kaputt-test.toml');
+      writeFileSync(broken, `${hostLine()}\n= kaputt\n`);
+      for (const args of [['--config', broken], [`-config=${broken}`]]) {
+        assert.equal((await backend.cli(['check-config', ...args])).code, 1, args.join(' '));
+      }
+      assert.equal((await backend.cli(['check-config'])).code, 0, 'ohne Angabe die Fassung des Prüfstands');
       await unchanged();
     });
   });
