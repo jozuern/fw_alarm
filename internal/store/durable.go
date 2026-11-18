@@ -87,6 +87,7 @@ func (s *Store) change(ctx context.Context, fn func(d *model.State) error, mode 
 		if err := fn(d); err != nil {
 			return false, err
 		}
+		s.ensureUIDs(fileState, d.Outbox) // sonst lehnte Validate den Eintrag ab
 		s.noteOverflow(fileState, before, d.Outbox)
 	case modePrune:
 		if pruned == 0 {

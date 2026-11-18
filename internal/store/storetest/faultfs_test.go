@@ -263,6 +263,26 @@ func TestFaults(t *testing.T) {
 		t.Errorf("nach release: %q", b)
 	}
 
+	// HangOp: nur die eine Methode wartet, alle anderen Aufrufe laufen.
+	releaseOp := f.HangOp(a, "AppendSync")
+	appended := make(chan error, 1)
+	go func() { appended <- f.AppendSync(a, []byte("+")) }()
+	if b, err := f.ReadFile(a); err != nil || string(b) != "später" {
+		t.Errorf("HangOp AppendSync trifft ReadFile: %q %v", b, err)
+	}
+	select {
+	case err := <-appended:
+		t.Fatalf("HangOp wartet nicht: %v", err)
+	default:
+	}
+	releaseOp()
+	if err := <-appended; err != nil {
+		t.Errorf("nach release: %v", err)
+	}
+	if b, _ := f.Get(a); string(b) != "später+" {
+		t.Errorf("HangOp nach release: %q", b)
+	}
+
 	denied := errors.New("kein Schreibrecht")
 	f.ReadOnly(denied)
 	for name, err := range map[string]error{

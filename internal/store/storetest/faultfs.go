@@ -38,7 +38,7 @@ var ErrInjected = errors.New("storetest: eingebauter Fehler")
 //     Ordners meldet "fehlt". Put und PutDir legen fehlende Ordner mit an.
 //
 // Fehler je Datei: Fail, Hang, ShortWrite, Mangle; je Datei und Methode:
-// FailOp (vorher), FailAfter (nach dem Schreiben); für alles: FailCall,
+// FailOp (vorher), FailAfter (nach dem Schreiben), HangOp; für alles: FailCall,
 // CrashAt, ReadOnly, NoLinks; AfterCrash liefert, was ein neuer Prozess
 // danach auf der Platte fände. Heal nimmt alle Fehler zurück (Hänger nicht –
 // die gibt ihre release-Funktion frei).
@@ -55,6 +55,7 @@ type FaultFS struct {
 	opFails    map[opKey]error
 	afterFails map[opKey]error
 	hangs      map[string]chan struct{}
+	opHangs    map[opKey]chan struct{}
 	short      map[string]int
 	mangle     map[string]func([]byte) []byte
 	readOnly   error
@@ -99,6 +100,7 @@ func New() *FaultFS {
 		opFails:    map[opKey]error{},
 		afterFails: map[opKey]error{},
 		hangs:      map[string]chan struct{}{},
+		opHangs:    map[opKey]chan struct{}{},
 		short:      map[string]int{},
 		mangle:     map[string]func([]byte) []byte{},
 	}
@@ -164,6 +166,28 @@ func (f *FaultFS) Hang(name string) (release func()) {
 			f.mu.Lock()
 			if f.hangs[clean(name)] == ch {
 				delete(f.hangs, clean(name))
+			}
+			f.mu.Unlock()
+			close(ch)
+		})
+	}
+}
+
+// HangOp lässt nur die Aufrufe der Methode op auf name warten (etwa das
+// Anhängen, während Lesen weiterläuft), bis release gerufen wird; danach
+// laufen sie normal weiter. release ist mehrfach rufbar.
+func (f *FaultFS) HangOp(name, op string) (release func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := opKey{clean(name), op}
+	ch := make(chan struct{})
+	f.opHangs[k] = ch
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			f.mu.Lock()
+			if f.opHangs[k] == ch {
+				delete(f.opHangs, k)
 			}
 			f.mu.Unlock()
 			close(ch)
@@ -364,6 +388,9 @@ func (f *FaultFS) begin(op string, writes bool, names ...string) (int, error) {
 		}
 		if e, ok := f.opFails[opKey{name, op}]; ok && err == nil {
 			err = e
+		}
+		if ch, ok := f.opHangs[opKey{name, op}]; ok {
+			wait = append(wait, ch)
 		}
 		if ch, ok := f.hangs[name]; ok {
 			wait = append(wait, ch)

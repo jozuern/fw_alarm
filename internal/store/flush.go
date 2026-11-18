@@ -21,26 +21,25 @@ var errClosed = errors.New("Ablage geschlossen")
 // outbox; sie laufen bis Close.
 func (s *Store) startWriters() {
 	s.bgCtx, s.bgCancel = context.WithCancel(context.Background())
-	s.life.Lock()
-	s.started = true
-	s.life.Unlock()
+	s.setLife(func() { s.started = true })
 	for _, w := range []*writer{s.rtW, s.ssW, s.rescueW, s.histW} {
 		s.spawn(w.name, func() { s.writerLoop(w) })
 	}
 	s.spawn("Nachsichern der outbox", s.pruneLoop)
+	// Was der Start aus einer gesicherten outbox übernahm, hängt der erste
+	// Durchgang des Verlaufs an – Open selbst wartet nicht darauf.
+	if s.hist.pending() {
+		s.histW.trigger()
+	}
 }
 
 // spawn startet fn als Goroutine der Ablage: Close wartet auf sie, ein
 // Laufzeitfehler darin landet ohne Daten im Journal und beendet nur sie.
 // Nach Close startet nichts mehr (false).
 func (s *Store) spawn(name string, fn func()) bool {
-	s.life.RLock()
-	if s.closed {
-		s.life.RUnlock()
+	if !s.register() {
 		return false
 	}
-	s.wg.Add(1)
-	s.life.RUnlock()
 	go func() {
 		defer s.wg.Done()
 		defer func() {
@@ -51,6 +50,32 @@ func (s *Store) spawn(name string, fn func()) bool {
 		fn()
 	}()
 	return true
+}
+
+// register meldet eine Goroutine bei wg an – nach Close nicht mehr, und nie
+// nach dessen Wait (life schützt beides).
+func (s *Store) register() bool {
+	s.life.RLock()
+	defer s.life.RUnlock()
+	if s.closed {
+		return false
+	}
+	s.wg.Add(1)
+	return true
+}
+
+// setLife ändert started/closed unter life.
+func (s *Store) setLife(fn func()) {
+	s.life.Lock()
+	defer s.life.Unlock()
+	fn()
+}
+
+// isStarted: Laufen die Schreiber (Open kam bis zum Ende)?
+func (s *Store) isStarted() bool {
+	s.life.RLock()
+	defer s.life.RUnlock()
+	return s.started
 }
 
 // isClosed: Lief Close schon so weit, dass nichts Neues mehr beginnt?
@@ -91,9 +116,7 @@ func (s *Store) budget(d time.Duration) (context.Context, context.CancelFunc) {
 // flushWriter stößt w an und wartet auf den ersten Durchgang, der danach
 // begann (er nimmt den neuesten Stand); liefert dessen Fehler.
 func (s *Store) flushWriter(ctx context.Context, w *writer) error {
-	w.mu.Lock()
-	b0, ch := w.begun, w.progress
-	w.mu.Unlock()
+	b0, ch := w.state()
 	w.trigger()
 	for {
 		select {
@@ -103,23 +126,28 @@ func (s *Store) flushWriter(ctx context.Context, w *writer) error {
 		case <-s.stop:
 			return errClosed
 		}
-		w.mu.Lock()
-		if w.ended > b0 {
-			err := w.lastErr
-			w.mu.Unlock()
+		next, done, err := w.result(b0)
+		if done {
 			return err
 		}
-		ch = w.progress
-		w.mu.Unlock()
+		ch = next
 	}
 }
 
 // Flush wartet, bis alles Ausstehende auf der Platte liegt (fw-alarm flush,
 // vor einer Sicherung; Close): ein Sichern der festen Daten, das nach seiner
 // Frist noch läuft, die neuesten flüchtigen Daten und Sitzungen, die Not-Kopie,
-// jeder übergebene Verlaufseintrag – und das Nachsichern der outbox. Ein
-// zuvor gescheitertes Sichern wird dabei wiederholt. Fehler: ErrStorage (was
-// nicht gesichert werden konnte) oder das Ende von ctx.
+// jeder übergebene Verlaufseintrag – und das Nachsichern der outbox.
+//
+// Was die Schreiber nebenher sichern (flüchtige Daten, Sitzungen, Not-Kopie,
+// Verlauf), versucht Flush erneut, auch wenn es vorher scheiterte. Die
+// festen Daten sichert es nur, wenn angehängte Einträge aus ihrer outbox
+// fallen: Ein Zustand, dessen Sichern beim Start scheiterte und der nur im
+// Speicher gilt, bleibt so (das holt Resave nach, wenn SaveHealth es
+// meldet). Fehler: ErrStorage (was nicht gesichert werden konnte); für die
+// festen Daten, was ihr Schreiber meldet (ErrStorage, ErrDropped nach Close,
+// ErrInvalid nur, wenn der geltende Zustand selbst eine Regel verletzte –
+// er wird beim Lesen und vor jedem Sichern geprüft); oder das Ende von ctx.
 //
 // Nach dem ersten Durchgang über alle Schreiber liegt alles, was vor dem
 // Aufruf geschah, auf der Platte. Die weiteren nehmen, was dabei angehängt
@@ -177,17 +205,12 @@ func (s *Store) Close(ctx context.Context) error {
 	}
 	s.done = true
 	var errs []error
-	s.life.RLock()
-	started := s.started
-	s.life.RUnlock()
-	if started {
+	if s.isStarted() {
 		if err := s.Flush(ctx); err != nil {
 			s.log.Error("beim Beenden nicht alles gesichert", "err", err)
 			errs = append(errs, err)
 		}
-		s.life.Lock()
-		s.closed = true
-		s.life.Unlock()
+		s.setLife(func() { s.closed = true })
 		s.bgCancel()
 		close(s.stop)
 		finished := make(chan struct{})

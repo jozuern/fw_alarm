@@ -17,6 +17,25 @@ import (
 	"fwalarm/internal/store/storetest"
 )
 
+// queueProbe ist ein Kontext, der meldet, wann jemand zum ersten Mal auf
+// sein Ende wartet: change fragt vorher nur Err() und ruft Done() erst im
+// select der Warteschlange – ist waiting geschlossen, wartet die Änderung
+// dort (oder hat den Schreiber gerade bekommen).
+type queueProbe struct {
+	context.Context
+	once    sync.Once
+	waiting chan struct{}
+}
+
+func newQueueProbe(ctx context.Context) *queueProbe {
+	return &queueProbe{Context: ctx, waiting: make(chan struct{})}
+}
+
+func (p *queueProbe) Done() <-chan struct{} {
+	p.once.Do(func() { close(p.waiting) })
+	return p.Context.Done()
+}
+
 // Fristen (Spec §6.2): (a) ein Sichern, das über die Frist hängt, meldet
 // ErrLate – und gilt, sobald es fertig ist, samt Verlauf; (b) wer hinter ihm
 // wartet, gibt an seiner Frist auf (ErrDropped), seine Änderung läuft nie;
@@ -34,7 +53,7 @@ func TestUpdateDeadlines(t *testing.T) {
 		go func() { errc <- s.Update(ctx, addRecipient("Dora", e)) }()
 		eventually(t, "Sichern hängt", func() bool { return calledSince(f, base, "WriteFileSync", at("state.json.tmp")) })
 		cancel() // die Frist läuft ab
-		if err := <-errc; !errors.Is(err, store.ErrLate) {
+		if err := recv(t, errc); !errors.Is(err, store.ErrLate) {
 			t.Fatalf("Update über die Frist: %v", err)
 		}
 		if hasLabel(s.State(), "Dora") {
@@ -44,17 +63,29 @@ func TestUpdateDeadlines(t *testing.T) {
 			t.Error("Verlauf zeigt eine Änderung, die noch nicht gilt")
 		}
 
-		// (b) Eine zweite Änderung wartet hinter der hängenden und gibt an
-		// ihrer Frist auf: Sie lief nie.
+		// (b) Eine zweite Änderung stellt sich hinter der hängenden an – die
+		// Sonde meldet, sobald sie in der Schlange auf ihre Frist wartet –
+		// und gibt an ihrer Frist auf: Sie lief nie, und das erste Sichern
+		// hängt noch.
 		var ran atomic.Bool
 		ctx2, cancel2 := context.WithCancel(context.Background())
+		defer cancel2()
+		probe := newQueueProbe(ctx2)
 		errc2 := make(chan error, 1)
 		go func() {
-			errc2 <- s.Update(ctx2, func(d *model.State) error { ran.Store(true); return addRecipient("Emil", nil)(d) })
+			errc2 <- s.Update(probe, func(d *model.State) error { ran.Store(true); return addRecipient("Emil", nil)(d) })
 		}()
+		select {
+		case <-probe.waiting:
+		case <-time.After(10 * time.Second):
+			t.Fatal("die zweite Änderung wartet nicht mit ihrer Frist in der Schlange")
+		}
 		cancel2()
-		if err := <-errc2; !errors.Is(err, store.ErrDropped) {
-			t.Fatalf("wartende Änderung: %v", err)
+		if err := recv(t, errc2); !errors.Is(err, store.ErrDropped) || ran.Load() {
+			t.Fatalf("wartende Änderung: %v, lief %v", err, ran.Load())
+		}
+		if hasLabel(s.State(), "Dora") || calledSince(f, base, "Rename", at("state.json")) {
+			t.Fatal("das erste Sichern hängt nicht mehr – die Probe prüft nichts")
 		}
 
 		release()
@@ -80,7 +111,7 @@ func TestUpdateDeadlines(t *testing.T) {
 		before := s.State()
 		f.Fail(at("state.json.tmp"), errors.New("Platte voll"))
 		e := entry("gescheitert")
-		err := s.Update(context.Background(), addRecipient("Dora", e))
+		err := s.Update(bounded(t), addRecipient("Dora", e))
 		if !errors.Is(err, store.ErrStorage) || errors.Is(err, store.ErrLate) {
 			t.Fatalf("Update: %v", err)
 		}
@@ -121,7 +152,7 @@ func TestUpdateDeadlines(t *testing.T) {
 		base := f.Calls()
 		own := errors.New("abgelehnt")
 		calls := 0
-		if err := s.Update(context.Background(), func(d *model.State) error { calls++; d.KeysVersion = 99; return own }); err != own {
+		if err := s.Update(bounded(t), func(d *model.State) error { calls++; d.KeysVersion = 99; return own }); err != own {
 			t.Errorf("Fehler der Änderung: %v", err)
 		}
 		dup := func(d *model.State) error {
@@ -130,7 +161,7 @@ func TestUpdateDeadlines(t *testing.T) {
 			d.Recipients[1].ID = d.AllocateID()
 			return nil
 		}
-		if err := s.Update(context.Background(), dup); !errors.Is(err, store.ErrInvalid) {
+		if err := s.Update(bounded(t), dup); !errors.Is(err, store.ErrInvalid) {
 			t.Errorf("doppelter Key: %v", err)
 		}
 		if calls != 2 {
@@ -154,7 +185,7 @@ func TestUpdateDeadlines(t *testing.T) {
 			t.Fatal("kein Notbetrieb")
 		}
 		ran := false
-		if err := s.Update(context.Background(), func(d *model.State) error { ran = true; return nil }); !errors.Is(err, store.ErrEmergency) || ran {
+		if err := s.Update(bounded(t), func(d *model.State) error { ran = true; return nil }); !errors.Is(err, store.ErrEmergency) || ran {
 			t.Errorf("Update im Notbetrieb: %v, lief %v", err, ran)
 		}
 	})
@@ -186,9 +217,10 @@ func TestOneWriterAtATime(t *testing.T) {
 			}
 		})
 	}
+	ctx := bounded(t)
 	for i := range 100 {
 		wg.Go(func() {
-			errs <- s.Update(context.Background(), func(d *model.State) error {
+			errs <- s.Update(ctx, func(d *model.State) error {
 				n := inside.Add(1)
 				defer inside.Add(-1)
 				for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() {
@@ -266,7 +298,7 @@ func TestReadersNeverWait(t *testing.T) {
 	release := hang(t, f, at("state.json.tmp"))
 	base = f.Calls()
 	errc := make(chan error, 1)
-	go func() { errc <- s.Update(context.Background(), addRecipient("Dora", entry("fest"))) }()
+	go func() { errc <- s.Update(bounded(t), addRecipient("Dora", entry("fest"))) }()
 	eventually(t, "state.json hängt", func() bool { return calledSince(f, base, "WriteFileSync", at("state.json.tmp")) })
 
 	for name, read := range map[string]func(){
@@ -304,7 +336,7 @@ func TestReadersNeverWait(t *testing.T) {
 		t.Errorf("flüchtige Änderung gilt nicht sofort: %d", got)
 	}
 	release()
-	if err := <-errc; err != nil {
+	if err := recv(t, errc); err != nil {
 		t.Errorf("Update nach dem Lösen: %v", err)
 	}
 }
@@ -319,7 +351,7 @@ func TestWriterSurvivesPanic(t *testing.T) {
 	boom := func([]byte) []byte { panic("Platte explodiert") }
 
 	f.Mangle(at("state.json.tmp"), boom)
-	if err := s.Update(context.Background(), addRecipient("Dora", nil)); !errors.Is(err, store.ErrStorage) {
+	if err := s.Update(bounded(t), addRecipient("Dora", nil)); !errors.Is(err, store.ErrStorage) {
 		t.Errorf("Update mit Laufzeitfehler: %v", err)
 	}
 	f.Mangle(at("state.json.tmp"), nil)
@@ -351,7 +383,7 @@ func TestWriterSurvivesPanic(t *testing.T) {
 		t.Errorf("SaveHealth nach dem Laufzeitfehler im Verlauf: %+v", h)
 	}
 	f.Mangle(at("history.jsonl"), nil)
-	s.Resave(context.Background())
+	s.Resave(bounded(t))
 	flush(t, s)
 	if rt := runtimeIn(f); rt == nil || rt.LifebeatAt != 9 {
 		t.Errorf("runtime.json nach dem Laufzeitfehler: %+v", rt)

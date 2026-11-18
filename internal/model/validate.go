@@ -45,6 +45,13 @@ func (s *State) Validate() error {
 			return fmt.Errorf("Demo-Modus: Key passt nicht zum Empfänger id %d", s.Demo.KeyID)
 		}
 	}
+	// Jeder Verlaufseintrag braucht eine uid: An ihr erkennt die Ablage, was
+	// schon im Verlauf steht (sonst fielen Einträge ohne uid zusammen).
+	for i, e := range s.Outbox {
+		if uid, ok := e["uid"].(string); !ok || uid == "" {
+			return fmt.Errorf("Verlaufseintrag %d der outbox ohne uid", i+1)
+		}
+	}
 	if c := s.Commands.Current; c != nil && c.ID >= s.Commands.NextID {
 		return fmt.Errorf("Befehl %d: Nummer nicht kleiner als commands.next_id (%d)", c.ID, s.Commands.NextID)
 	}

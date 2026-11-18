@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -305,12 +306,64 @@ func hasLabel(st *model.State, label string) bool {
 	return false
 }
 
-// update: Update mit Hintergrund-Kontext; der Test scheitert bei einem Fehler.
+// bounded: ein Kontext mit 10 s Frist – ein klemmender Schreiber wird so
+// zum Fehler mit Meldung statt zum Ende des ganzen Testlaufs.
+func bounded(t testing.TB) context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// recv wartet höchstens 10 s auf ein Ergebnis.
+func recv(t testing.TB, ch <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("kein Ergebnis nach 10 s")
+		return nil
+	}
+}
+
+// update: Update mit 10 s Frist; der Test scheitert bei einem Fehler.
 func update(t testing.TB, s *store.Store, fn func(d *model.State) error) {
 	t.Helper()
-	if err := s.Update(context.Background(), fn); err != nil {
+	if err := s.Update(bounded(t), fn); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
+}
+
+// journal ist ein Journal zum Mitlesen – die Schreiber der Ablage schreiben
+// nebenher hinein, daher mit eigener Sperre.
+type journal struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (j *journal) Write(p []byte) (int, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.buf.Write(p)
+}
+
+// count: wie viele Zeilen des Journals text enthalten.
+func (j *journal) count(text string) int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return strings.Count(j.buf.String(), text)
+}
+
+// openLogged öffnet wie openFake und schreibt das Journal mit.
+func openLogged(t testing.TB, f *storetest.FaultFS) (*store.Store, *journal) {
+	t.Helper()
+	j := &journal{}
+	s, _, err := store.Open(dir, f, clockAt(), slog.New(slog.NewTextHandler(j, nil)))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { closeStore(t, s) })
+	return s, j
 }
 
 // clockAt: eine gestellte Uhr bei t0.

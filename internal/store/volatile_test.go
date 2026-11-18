@@ -191,7 +191,7 @@ func TestRescueFollowsChanges(t *testing.T) {
 		t.Errorf("Not-Kopie trotz Fehler geschrieben: %v", got)
 	}
 	f.Heal()
-	s.Resave(context.Background())
+	s.Resave(bounded(t))
 	if h := s.SaveHealth(); !h.Rescue {
 		t.Errorf("SaveHealth nach Resave: %+v", h)
 	}
@@ -226,7 +226,7 @@ func TestSaveSurvivesOddStrings(t *testing.T) {
 	s.Log(model.NewEntry(model.EvKeyTest, t0, map[string]any{"label": odd}))
 	s.UpdateSessions(func(d *model.Sessions) { x := session("admin"); x.User = odd; d.Sessions["ab12"] = x })
 	s.UpdateRuntime(func(d *model.Runtime) { d.Watch.LastRunLine = odd })
-	if err := s.Close(context.Background()); err != nil {
+	if err := s.Close(bounded(t)); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
@@ -303,7 +303,7 @@ func TestFlush(t *testing.T) {
 	go func() { errc <- s.Flush(ctx) }()
 	eventually(t, "runtime.json hängt", func() bool { return calledSince(f, base, "WriteFileSync", at("runtime.json.tmp")) })
 	cancel()
-	if err := <-errc; !errors.Is(err, context.Canceled) {
+	if err := recv(t, errc); !errors.Is(err, context.Canceled) {
 		t.Errorf("Flush an der Frist: %v", err)
 	}
 	release()
@@ -346,13 +346,13 @@ func TestCloseWritesEverything(t *testing.T) {
 	if !s.LogAndWait(entry("gewartet"), time.Hour) {
 		t.Error("LogAndWait")
 	}
-	if err := s.Close(context.Background()); err != nil {
+	if err := s.Close(bounded(t)); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if err := s.Close(context.Background()); err != nil {
+	if err := s.Close(bounded(t)); err != nil {
 		t.Errorf("zweites Close: %v", err)
 	}
-	if err := s.Update(context.Background(), addRecipient("Emil", nil)); !errors.Is(err, store.ErrDropped) {
+	if err := s.Update(bounded(t), addRecipient("Emil", nil)); !errors.Is(err, store.ErrDropped) {
 		t.Errorf("Update nach Close: %v", err)
 	}
 	eventually(t, "alle Schreiber beendet", func() bool { return runtimeGoroutines() <= baseline })

@@ -84,21 +84,15 @@ func (s *Store) Resave(ctx context.Context) {
 	}
 	var again []*writer
 	if !h.Volatile {
-		s.rtHold.Lock()
-		s.rtVer++ // gilt als ungesichert
-		s.rtHold.Unlock()
+		s.markRuntimeDirty()
 		again = append(again, s.rtW)
 	}
 	if !h.Sessions {
-		s.ssHold.Lock()
-		s.ssVer++
-		s.ssHold.Unlock()
+		s.markSessionsDirty()
 		again = append(again, s.ssW)
 	}
 	if !h.History {
-		s.hist.mu.Lock()
-		s.hist.resync = true
-		s.hist.mu.Unlock()
+		s.hist.setResync()
 		again = append(again, s.histW)
 	}
 	if !h.Rescue && !s.emergency {

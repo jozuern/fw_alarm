@@ -22,6 +22,37 @@ func (s *Store) SetHistoryRotateAt(n int64) {
 	s.hist.rotateAt = n
 }
 
+// SetHistoryMemLimit setzt, wie viele Bytes an Verlaufszeilen der Speicher
+// höchstens hält (sonst etwa 12 MB).
+func (s *Store) SetHistoryMemLimit(n int64) {
+	s.hist.mu.Lock()
+	defer s.hist.mu.Unlock()
+	s.hist.memLimit = n
+}
+
+// SetDefaultHistoryMemLimit setzt die Grenze, mit der Open den Verlauf
+// liest; restore stellt den alten Wert her.
+func SetDefaultHistoryMemLimit(n int64) (restore func()) {
+	old := historyMemLimit
+	historyMemLimit = n
+	return func() { historyMemLimit = old }
+}
+
+// ResyncHistory führt nur den ersten Schritt eines Durchgangs nach einem
+// gescheiterten Anhängen aus: history.jsonl neu lesen und als Wahrheit
+// nehmen – damit ein Test History genau danach aufrufen kann.
+func (s *Store) ResyncHistory() error {
+	batch, _ := s.hist.batch()
+	_, err := s.historyResync(batch)
+	return err
+}
+
+// ParseHistoryLine: der nachsichtige Leser einer Verlaufszeile.
+func ParseHistoryLine(b []byte) (model.Entry, bool) { return parseLine(b) }
+
+// UIDsIn: welche der gesuchten uids unter den Zeilen stehen.
+func UIDsIn(lines [][]byte, want map[string]bool) map[string]bool { return uidsIn(lines, want) }
+
 // MarshalDoc: die Form, in der die Ablage ein Dokument schreibt.
 func MarshalDoc(v any) ([]byte, error) { return marshalDoc(v) }
 

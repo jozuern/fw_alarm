@@ -37,13 +37,13 @@ func TestHistoryAfterSaveOnly(t *testing.T) {
 		e := entry("fest")
 		base := f.Calls()
 		errc := make(chan error, 1)
-		go func() { errc <- s.Update(context.Background(), addRecipient("Dora", e)) }()
+		go func() { errc <- s.Update(bounded(t), addRecipient("Dora", e)) }()
 		eventually(t, "state.json hängt", func() bool { return calledSince(f, base, "WriteFileSync", at("state.json.tmp")) })
 		if calledSince(f, base, "AppendSync", at("history.jsonl")) || uidCount(f, uidOf(e)) != 0 {
 			t.Error("Zeile vor dem Sichern des Dokuments")
 		}
 		release()
-		if err := <-errc; err != nil {
+		if err := recv(t, errc); err != nil {
 			t.Fatal(err)
 		}
 		flush(t, s)
@@ -65,7 +65,7 @@ func TestHistoryAfterSaveOnly(t *testing.T) {
 
 		f.Fail(at("state.json.tmp"), errors.New("Platte voll"))
 		e2 := entry("gescheitert")
-		if err := s.Update(context.Background(), addRecipient("Emil", e2)); !errors.Is(err, store.ErrStorage) {
+		if err := s.Update(bounded(t), addRecipient("Emil", e2)); !errors.Is(err, store.ErrStorage) {
 			t.Fatalf("Update: %v", err)
 		}
 		f.Heal()

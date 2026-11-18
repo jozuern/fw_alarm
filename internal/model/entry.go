@@ -93,12 +93,15 @@ func NewEntry(event string, at time.Time, fields map[string]any) Entry {
 	}
 	e["event"] = event
 	e["log_at"] = json.Number(strconv.FormatInt(at.Unix(), 10))
-	e["uid"] = newUID()
+	e["uid"] = NewUID()
 	return e
 }
 
-// newUID: 16 Zufallsbytes als hex.
-func newUID() string {
+// NewUID: eine neue uid für einen Verlaufseintrag – 16 Zufallsbytes als hex.
+// NewEntry setzt sie selbst; die Ablage braucht sie nur für einen Eintrag,
+// der ohne uid hereinkommt (ein Programmierfehler, der nichts verlieren
+// soll).
+func NewUID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:]) // crypto/rand.Read scheitert nie (Go ≥ 1.24 bricht sonst das Programm ab)
 	return hex.EncodeToString(b[:])

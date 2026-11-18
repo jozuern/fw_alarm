@@ -47,6 +47,9 @@ func TestInvalidListCannotBeSaved(t *testing.T) {
 		{"Demo-Key passt nicht zur id", func(s *State) {
 			s.Demo = Demo{Enabled: true, KeyID: 3, Key: keyBert, Label: "Anna"}
 		}, "Demo"},
+		{"Verlaufseintrag ohne uid", func(s *State) { delete(s.Outbox[0], "uid") }, "uid"},
+		{"Verlaufseintrag mit leerer uid", func(s *State) { s.Outbox[0]["uid"] = "" }, "uid"},
+		{"Verlaufseintrag mit uid als Zahl", func(s *State) { s.Outbox[0]["uid"] = json.Number("17") }, "uid"},
 		{"Befehlsnummer gleich next_id", func(s *State) { s.Commands.Current.ID = s.Commands.NextID }, "Befehl"},
 		{"Befehlsnummer über next_id", func(s *State) { s.Commands.NextID = 2 }, "Befehl"},
 		{"Befehls-Typen nicht nach id geordnet", func(s *State) {

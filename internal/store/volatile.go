@@ -1,9 +1,8 @@
 package store
 
 import (
-	"errors"
 	"fmt"
-	"sync"
+	"slices"
 
 	"fwalarm/internal/model"
 )
@@ -15,13 +14,15 @@ import (
 
 // UpdateRuntime ändert die flüchtigen Daten: Kopie ziehen, fn anwenden,
 // Zeiger umsetzen – nie ein Fehler, nie ein Warten auf die Platte. fn
-// rechnet nur; Verlaufseinträge legt es mit d.Log in die outbox.
+// rechnet nur; Verlaufseinträge legt es mit d.Log in die outbox (ein
+// Eintrag ohne uid bekommt hier eine, mit einer Zeile im Journal).
 func (s *Store) UpdateRuntime(fn func(d *model.Runtime)) {
 	s.rtHold.Lock()
 	defer s.rtHold.Unlock() // auch, wenn fn einen Laufzeitfehler auslöst
 	cur := s.runtime.Load()
 	d := cur.Clone()
 	fn(d)
+	s.ensureUIDs(fileRuntime, d.Outbox)
 	s.noteOverflow(fileRuntime, cur.Outbox, d.Outbox) // cur ist unveränderlich
 	s.runtime.Store(d)
 	s.rtVer++
@@ -49,20 +50,25 @@ func (s *Store) Lifebeat() {
 // Log hält einen Verlaufseintrag ohne eigene Änderung fest (z.B. key_test):
 // Er reist in der outbox der flüchtigen Daten. Gespeichert wird eine eigene
 // Kopie – ändert der Aufrufer seinen Eintrag danach, trifft das nichts.
-func (s *Store) Log(e model.Entry) { s.logEntry(e) }
+func (s *Store) Log(e model.Entry) {
+	if c, ok := s.entryCopy(e); ok {
+		s.UpdateRuntime(func(d *model.Runtime) { d.Log(c) })
+	}
+}
 
-// logEntry legt eine Kopie von e in die outbox der flüchtigen Daten; ihre
-// uid (leer, wenn e keine hat). Ein Eintrag, der sich nicht als JSON
-// schreiben lässt, käme nie auf die Platte und hielte runtime.json auf –
-// er wird mit einer Zeile im Journal verworfen.
-func (s *Store) logEntry(e model.Entry) (uid string, ok bool) {
+// entryCopy: eine eigene Kopie von e mit uid (fehlt sie, eine neue und eine
+// Zeile im Journal). Ein Eintrag, der sich nicht als JSON schreiben lässt,
+// käme nie auf die Platte und hielte runtime.json auf – er wird mit einer
+// Zeile im Journal verworfen (false).
+func (s *Store) entryCopy(e model.Entry) (model.Entry, bool) {
 	c, ok := copyEntry(e)
 	if !ok {
 		s.log.Error("Verlaufseintrag nicht schreibbar – verworfen", "event", e.Str("event"))
-		return "", false
+		return nil, false
 	}
-	s.UpdateRuntime(func(d *model.Runtime) { d.Log(c) })
-	return c.Str("uid"), true
+	box := []model.Entry{c}
+	s.ensureUIDs(fileRuntime, box)
+	return box[0], true
 }
 
 // noteOverflow: Fielen Einträge aus der outbox, weil sie voll war (Spec
@@ -87,74 +93,61 @@ func (s *Store) noteOverflow(file string, before, after []model.Entry) {
 	}
 }
 
-// pruneRuntime nimmt aus den flüchtigen Daten, was der Verlauf schon
-// angehängt hat – sofort im Speicher; gesichert wird mit dem nächsten
-// Durchgang des Schreibers (kick: gleich anstoßen; beim Start nicht).
-func (s *Store) pruneRuntime(kick bool) {
-	drop := s.appendedUIDs(kindRuntime)
-	if len(drop) == 0 {
+// fixRuntimeUIDs: Einträge ohne uid in der outbox der flüchtigen Daten (aus
+// runtime.json beim Start) bekommen eine; so steht es nicht auf der Platte,
+// also gilt der Stand als ungesichert.
+func (s *Store) fixRuntimeUIDs() {
+	s.rtHold.Lock()
+	defer s.rtHold.Unlock()
+	cur := s.runtime.Load()
+	if !slices.ContainsFunc(cur.Outbox, func(e model.Entry) bool { return !hasUID(e) }) {
 		return
 	}
-	s.rtHold.Lock()
-	cur := s.runtime.Load()
-	n := 0
-	for _, e := range cur.Outbox {
-		if drop[e.Str("uid")] {
-			n++
-		}
-	}
-	if n > 0 {
-		d := cur.Clone()
-		keep := d.Outbox[:0] // die Liste gehört der Kopie
-		for _, e := range d.Outbox {
-			if !drop[e.Str("uid")] {
-				keep = append(keep, e)
-			}
-		}
-		d.Outbox = keep
-		s.runtime.Store(d)
-		s.rtVer++
-	}
-	s.rtHold.Unlock()
-	if n > 0 && kick {
+	d := cur.Clone()
+	s.ensureUIDs(fileRuntime, d.Outbox)
+	s.runtime.Store(d)
+	s.rtVer++
+}
+
+// pruneRuntime nimmt aus den flüchtigen Daten, was der Verlauf schon
+// angehängt hat – sofort im Speicher; gesichert wird mit dem nächsten
+// Durchgang des Schreibers (kick: gleich anstoßen).
+func (s *Store) pruneRuntime(kick bool) {
+	drop := s.appendedUIDs(kindRuntime)
+	if len(drop) > 0 && s.dropFromRuntime(drop) && kick {
 		s.rtW.trigger()
 	}
 }
 
-// ---- Hintergrund-Schreiber ------------------------------------------------
-
-// writer ist ein Hintergrund-Schreiber: Er führt run aus, sobald er
-// angestoßen wird – ein Durchgang zur Zeit; was während eines Durchgangs
-// anstößt, löst genau einen weiteren aus, der dann den neuesten Stand nimmt.
-// run liefert, ob es etwas geschrieben hat (zählt in Store.work), und den
-// Fehler; ein Laufzeitfehler darin wird abgefangen (onPanic markiert den
-// Schaden).
-type writer struct {
-	name    string
-	run     func() (did bool, err error)
-	onPanic func()
-	kick    chan struct{} // Platz 1: fasst Anstöße zusammen
-
-	mu       sync.Mutex
-	begun    uint64        // Durchgänge begonnen
-	ended    uint64        // Durchgänge beendet
-	lastErr  error         // Fehler des zuletzt beendeten Durchgangs
-	progress chan struct{} // wird nach jedem Durchgang geschlossen und ersetzt
-}
-
-// errPanic: Ein Durchgang endete mit einem Laufzeitfehler.
-var errPanic = errors.New("Laufzeitfehler beim Sichern (im Journal)")
-
-func newWriter(name string, run func() (bool, error), onPanic func()) *writer {
-	return &writer{name: name, run: run, onPanic: onPanic, kick: make(chan struct{}, 1), progress: make(chan struct{})}
-}
-
-// trigger stößt den Schreiber an; wartet nie.
-func (w *writer) trigger() {
-	select {
-	case w.kick <- struct{}{}:
-	default: // schon angestoßen
+// dropFromRuntime: die Einträge mit diesen uids aus der outbox; true =
+// es fiel etwas heraus.
+func (s *Store) dropFromRuntime(drop map[string]bool) bool {
+	s.rtHold.Lock()
+	defer s.rtHold.Unlock()
+	cur := s.runtime.Load()
+	hit := func(e model.Entry) bool { return drop[e.Str("uid")] }
+	if !slices.ContainsFunc(cur.Outbox, hit) {
+		return false
 	}
+	d := cur.Clone()
+	d.Outbox = slices.DeleteFunc(d.Outbox, hit) // die Liste gehört der Kopie
+	s.runtime.Store(d)
+	s.rtVer++
+	return true
+}
+
+// markRuntimeDirty / markSessionsDirty: Der Stand gilt als ungesichert
+// (Resave nach einem gescheiterten Sichern).
+func (s *Store) markRuntimeDirty() {
+	s.rtHold.Lock()
+	defer s.rtHold.Unlock()
+	s.rtVer++
+}
+
+func (s *Store) markSessionsDirty() {
+	s.ssHold.Lock()
+	defer s.ssHold.Unlock()
+	s.ssVer++
 }
 
 // initWriters legt die Schreiber an (gestartet werden sie in startWriters).
@@ -162,65 +155,32 @@ func (s *Store) initWriters() {
 	s.rtW = newWriter("runtime.json", s.runtimeRun, func() { s.saved.volatile.Store(false) })
 	s.ssW = newWriter("sessions.json", s.sessionsRun, func() { s.saved.sessions.Store(false) })
 	s.rescueW = newWriter("recipients.rescue.json", s.rescueRun, func() { s.saved.rescue.Store(false) })
-	s.histW = newWriter("history.jsonl", func() (bool, error) { return s.historyRun(true) }, func() {
+	s.histW = newWriter("history.jsonl", s.historyRun, func() {
 		// Was beim Anhängen schon in der Datei steht, ist unbekannt: vor
 		// dem nächsten Versuch neu lesen (sonst doppelte Zeilen).
-		s.hist.mu.Lock()
-		s.hist.resync = true
-		s.hist.mu.Unlock()
+		s.hist.setResync()
 		s.saved.history.Store(false)
 	})
 }
 
-// writerLoop: Durchgänge, bis die Ablage geschlossen wird.
-func (s *Store) writerLoop(w *writer) {
-	for {
-		select {
-		case <-w.kick:
-		case <-s.stop:
-			return
-		}
-		s.attempt(w)
-	}
+// runtimeSnapshot: der geltende Stand der flüchtigen Daten und seine Version.
+func (s *Store) runtimeSnapshot() (*model.Runtime, uint64) {
+	s.rtHold.Lock()
+	defer s.rtHold.Unlock()
+	return s.runtime.Load(), s.rtVer
 }
 
-// attempt: ein Durchgang, gezählt; danach erfährt jeder Wartende davon.
-func (s *Store) attempt(w *writer) {
-	w.mu.Lock()
-	w.begun++
-	w.mu.Unlock()
-	did, err := s.runGuarded(w)
-	if did {
-		s.work.Add(1)
-	}
-	w.mu.Lock()
-	w.ended++
-	w.lastErr = err
-	close(w.progress)
-	w.progress = make(chan struct{})
-	w.mu.Unlock()
-}
-
-func (s *Store) runGuarded(w *writer) (did bool, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			s.logPanic(w.name, r)
-			if w.onPanic != nil {
-				w.onPanic()
-			}
-			did, err = false, errPanic
-		}
-	}()
-	return w.run()
+func (s *Store) sessionsSnapshot() (*model.Sessions, uint64) {
+	s.ssHold.Lock()
+	defer s.ssHold.Unlock()
+	return s.sessions.Load(), s.ssVer
 }
 
 // runtimeRun sichert den neuesten Stand der flüchtigen Daten, wenn er noch
 // nicht gesichert ist; danach gehen die Einträge seiner outbox an den
 // Verlauf. rtSaved fasst nur dieser Schreiber an.
 func (s *Store) runtimeRun() (bool, error) {
-	s.rtHold.Lock()
-	doc, ver := s.runtime.Load(), s.rtVer
-	s.rtHold.Unlock()
+	doc, ver := s.runtimeSnapshot()
 	if ver == s.rtSaved {
 		return false, nil
 	}
@@ -234,9 +194,7 @@ func (s *Store) runtimeRun() (bool, error) {
 
 // sessionsRun sichert den neuesten Stand der Sitzungen, wenn nötig.
 func (s *Store) sessionsRun() (bool, error) {
-	s.ssHold.Lock()
-	doc, ver := s.sessions.Load(), s.ssVer
-	s.ssHold.Unlock()
+	doc, ver := s.sessionsSnapshot()
 	if ver == s.ssSaved {
 		return false, nil
 	}
