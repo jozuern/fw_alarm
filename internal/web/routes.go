@@ -1,5 +1,6 @@
-// Package web ist die HTTP-Seite des Servers: die Tabelle der Adressen,
-// Antworten, statische Dateien (hier), später Formulare, Kopfzeilen,
+// Package web ist die HTTP-Seite des Servers: die Tabelle der Adressen
+// (hier), Antworten, statische Dateien, Formulare, Sicherheits-Kopfzeilen,
+// Vertrauen in den Proxy, Bremsen, das Maschinen-Token, Fristen; später
 // Sitzungen, Anmeldung und Seiten.
 //
 // Die Tabelle kennt nur genaue Pfade (Spec §6.4). Mehrfache Schrägstriche
@@ -113,10 +114,16 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			panic(http.ErrAbortHandler)
 		}
 		// Was der Handler schon gesetzt hatte (ein Cookie, eine Weiterleitung,
-		// ein Inhaltstyp), gehört nicht zur 500.
+		// ein Inhaltstyp), gehört nicht zur 500 – wohl aber die
+		// Sicherheits-Kopfzeilen, wenn SecurityHeaders sie gesetzt hatte (in
+		// ihrer eigenen Fassung, nicht in der, die der Handler daraus gemacht
+		// hat).
 		h := w.Header()
 		for name := range h {
 			delete(h, name)
+		}
+		for name, v := range tw.keep {
+			h[name] = v
 		}
 		h.Set("X-Content-Type-Options", "nosniff")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -143,10 +150,13 @@ func mergeSlashes(p string) string {
 	return b.String()
 }
 
-// trackingWriter merkt sich, ob die Antwort schon begonnen hat.
+// trackingWriter merkt sich, ob die Antwort schon begonnen hat, und die
+// Kopfzeilen, die auch eine 500 nach einem Laufzeitfehler tragen soll
+// (keepOnPanic in headers.go).
 type trackingWriter struct {
 	http.ResponseWriter
 	wrote bool
+	keep  http.Header
 }
 
 func (t *trackingWriter) WriteHeader(code int) {

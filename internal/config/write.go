@@ -89,8 +89,9 @@ endet schon am Proxy. Ohne diese beiden Einträge zählt die Login-Sperre alle
 Besucher als EINE Adresse (jeder sperrt mit ein paar Fehlversuchen den
 Admin aus), und das Sitzungs-Cookie geht ohne „Secure“ raus.
 trusted_proxies: Adressen, von denen der Proxy den Server anspricht – nur
-von dort werden X-Forwarded-Proto und die unten genannte Kopfzeile
-angenommen, z.B. ["127.0.0.1", "::1"]. NIE eintragen, wenn der Server auch
+von dort (und über einen Unix-Socket, siehe listen) werden
+X-Forwarded-Proto und die unten genannte Kopfzeile angenommen, z.B.
+["127.0.0.1", "::1"]. NIE eintragen, wenn der Server auch
 direkt aus dem Internet erreichbar ist (dann könnte sich jeder eine Adresse
 aussuchen).
 proxy_client_ip_header: Kopfzeile, in die DIESER Proxy die echte Adresse
@@ -207,7 +208,10 @@ KLARTEXT.`,
 		[]string{"state_dir"}},
 	{`Adresse, auf der der Server lauscht: "host:port" (Standard
 "127.0.0.1:8080": nur auf diesem Rechner, der Cloudflare Tunnel spricht ihn
-dort an) oder "unix:<Pfad>" für einen Unix-Socket.`,
+dort an) oder "unix:<Pfad>" für einen Unix-Socket. Was über den
+Unix-Socket kommt, gilt als vom Tunnel: X-Forwarded-Proto und
+proxy_client_ip_header zählen dann auch ohne trusted_proxies – den Socket
+darf außer dem Server nur der Benutzer von cloudflared öffnen.`,
 		[]string{"listen"}},
 	{`Steuer-Zugang für die Befehle fw-alarm health, check, flush, reload und
 stop (Unix-Socket, nur auf diesem Rechner).`,
