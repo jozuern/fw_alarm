@@ -595,9 +595,11 @@ Passwortprüfungen kosten Rechenzeit und Speicher, deshalb:
   Ausweis sie nicht füllen kann, und Ausweise des Admin-Kontos vor denen
   des Lese-Kontos (wer nur das Lese-Passwort kennt, kann sich beliebig
   viele Ausweise holen – er darf damit den Admin nicht verdrängen). Schickt
-  der Browser mehrere Cookies dieses Namens, zählt der erste GÜLTIGE (ein
-  von einer Nachbar-Adresse untergeschobenes verdeckt den echten Ausweis
-  sonst); dasselbe gilt für das Sitzungs-Cookie. Bremse, Zählung, „eine je Absender“ und
+  der Browser mehrere Cookies dieses Namens, zählt unter den ersten vier
+  der beste GÜLTIGE Ausweis (Admin vor Lese-Konto; ein von einer
+  Nachbar-Adresse untergeschobenes Cookie verdeckt den echten sonst); beim
+  Sitzungs-Cookie zählt entsprechend das erste, das eine lebende Sitzung
+  nennt. Bremse, Zählung, „eine je Absender“ und
   „genau eine Prüfung pro Versuch“ gelten für beide Reihen gleich. Der
   Grund (Durchsicht von Aufgabe 12): In einer einzigen, je Absender
   gerechten Reihe stünde der Admin hinter JEDEM Absender, der gerade einen
