@@ -69,7 +69,8 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
   Dashboard-Aktionen stehen als EINE Tabelle in `internal/dashapi/actions.go`
   (wie `DASHBOARD_ACTIONS`), die Verlaufs-Ereignisse (Kategorie, nur Admin,
   freigegebene Felder) in `internal/logview/events.go` (wie
-  `log_event_types()`; ein neues Ereignis braucht dort eine Zeile und in
+  `log_event_types()`; ein neues Ereignis braucht dort eine Zeile, in
+  `internal/model` seinen Namen samt Eintrag in `AllEvents` und in
   `logic.js` einen Text); Anmeldeseite und App-Hülle kommen aus
   `internal/web/templates/` (Byte für Byte wie `lib/shell.php`, Vergleich mit
   `internal/web/testdata/`). Abhängigkeiten nur

@@ -666,6 +666,7 @@ Alles, was hier NICHT steht, gilt unverändert.
 | `defer_after_response()`/`fastcgi_finish_request()` | Arbeit nach der Antwort läuft nebenher; beim Beenden wird darauf gewartet |
 | PHP-Sitzungen (`gc_maxlifetime`, `use_strict_mode`) | eigene Ablage; alle Regeln der Sitzung bleiben |
 | Tippfehler in `config.php`: jede Anfrage scheitert sofort (unübersehbar) | letzte gute Fassung gilt weiter, alle Sitzungen enden, der Admin wird gewarnt; beim Start notfalls die Kopie `config.last-good.toml` (§6.8) |
+| Verlauf (`log_view`): Ein Eintrag, dessen Ereignis nicht (mehr) in der Tabelle steht, zählt bei `filter=all`/`system` mit und fällt erst danach weg – die Antwort kann kürzer sein als verlangt, „Ältere laden“ verschwindet | solche Einträge fallen VOR dem Abzählen weg, wie die für die Rolle verborgenen (das, was PHP selbst als Absicht nennt); PHPs Umbenennung von Feldnamen und Zahl-zu-Text-Regeln bleiben, soweit ein gespeicherter Eintrag sie treffen kann |
 | Vertraute Proxys: nur über die Adresse (`trusted_proxies`) | zusätzlich: Verbindungen über den Unix-Socket des Servers gelten als vom Tunnel (§10) |
 | Texte mit „config.php“, „PHP-cURL“, `systemctl status nginx php8.3-fpm` | nennen `config.toml` bzw. `systemctl status fw-alarm` |
 | `classic.php`, `assets/classic/` | ist erledigt (17.11.2026): `classic.php` leitet nur noch um |
