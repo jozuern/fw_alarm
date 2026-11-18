@@ -14,6 +14,7 @@ import (
 
 	"fwalarm/internal/bark"
 	"fwalarm/internal/bg"
+	"fwalarm/internal/box"
 	"fwalarm/internal/clock"
 	"fwalarm/internal/config"
 	"fwalarm/internal/control"
@@ -274,6 +275,7 @@ func routes(c *core.Core, rt *web.Router) {
 	rt.Handle("/index.php", index)
 	rt.Handle("/classic.php", web.SecurityHeaders(c, web.ClassicHandler()))
 	rt.Handle("/dashboard_api.php", web.SecurityHeaders(c, dashapi.Handler(c)))
+	rt.Handle("/api/keys.php", web.SecurityHeaders(c, box.KeysHandler(c)))
 }
 
 // errStopping: reload oder flush, während der Server schon schließt.

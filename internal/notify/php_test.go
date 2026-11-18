@@ -14,78 +14,144 @@ import (
 )
 
 // Die Tabellen sind die von PHP: Arten, Optionen, Möglichkeiten, Standards,
-// Texte – abgefragt bei PHP selbst (admin_notify_types und
-// admin_notify_global_specs rechnen ihr Ergebnis aus der Konfiguration und
-// der Empfängerliste, deshalb wird PHP ausgeführt statt die Quelle gelesen).
-// Bewusst anders sind nur der Hinweis von nas_web (Spec §7) und
-// "config.php" → "config.toml" in den Beschriftungen.
+// Texte. Festgehalten in testdata/tables.golden.json – so, wie PHP sie
+// ausgibt (admin_notify_types und admin_notify_global_specs rechnen ihr
+// Ergebnis aus der Konfiguration und der Empfängerliste, deshalb wurde PHP
+// ausgeführt statt die Quelle gelesen), nach genau den zwei Änderungen, die
+// bewusst anders sind: der Hinweis von nas_web (Spec §7) und "config.php" →
+// "config.toml" in den Beschriftungen.
 //
-// Ohne php im PATH (der Job "go" auf GitHub hat keins) oder ohne die
-// PHP-Fassung wird der Test übersprungen; er geht mit der PHP-Fassung
-// (Aufgabe 37).
+// Go wird IMMER mit der Datei verglichen – auch auf GitHub (ohne php) und
+// nachdem die PHP-Fassung fort ist (Aufgabe 37). Solange php im PATH und die
+// PHP-Fassung da ist, wird zusätzlich die Datei mit PHP selbst verglichen, so
+// kann sie nicht unbemerkt von PHP abweichen. Neu schreiben (aus PHP):
+// FW_WRITE_GOLDEN=1 go test ./internal/notify -run TestTablesMatchPHP
 func TestTablesMatchPHP(t *testing.T) {
-	common, err := filepath.Abs(filepath.Join("..", "..", "nas_dashboard", "lib", "common.php"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(common); os.IsNotExist(err) {
-		t.Skip("PHP-Fassung nicht mehr da")
-	}
-	php, err := exec.LookPath("php")
-	if err != nil {
-		t.Skip("php nicht im PATH – der Abgleich mit PHP läuft nur auf dem PC")
-	}
-
-	recipients := []model.Recipient{
-		{ID: 3, Key: annaKey, Label: "Anna Müller", MuteToken: "annatoken03"},
-		{ID: 7, Key: jensKey, Label: "Jens", MuteToken: "jenstoken07"},
-	}
-	cases := []struct {
-		name string
-		php  map[string]any // config.php
-		cfg  *config.Config // dieselben Werte für Go
-	}{
-		{"Standards", map[string]any{},
-			&config.Config{OfflineAfterSeconds: 180, WatchdogOfflineAfterSeconds: 600, DemoReminderAfterSeconds: 14400}},
-		{"eigene Werte, Außen-Wächter", map[string]any{
-			"offline_after_seconds": 240, "watchdog_offline_after_seconds": 777, "demo_reminder_after_seconds": 0,
-			"watcher_token_sha256": strings.Repeat("c", 64)},
-			&config.Config{OfflineAfterSeconds: 240, WatchdogOfflineAfterSeconds: 777, DemoReminderAfterSeconds: 0,
-				WatcherTokenSHA256: strings.Repeat("c", 64)}},
-		{"größere Box-Schwelle, Demo in Minuten", map[string]any{
-			"offline_after_seconds": 5400, "watchdog_offline_after_seconds": 600, "demo_reminder_after_seconds": 5400},
-			&config.Config{OfflineAfterSeconds: 5400, WatchdogOfflineAfterSeconds: 600, DemoReminderAfterSeconds: 5400}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			want := phpTables(t, php, common, tc.php, recipients)
-			st := model.NewState()
-			st.Recipients = recipients
-			got := goTables(typesFor(tc.cfg), globalSpecsFor(st))
-			// Was bewusst anders ist, auf die Go-Form bringen.
-			oldHint := regexp.MustCompile(`\(Login und Status der Box scheitern dann\)\.$`)
-			for i := range want.Types {
-				if want.Types[i].Key == KindNasWeb {
-					if !oldHint.MatchString(want.Types[i].Hint) {
-						t.Fatalf("PHP: Hinweis von nas_web geändert: %q", want.Types[i].Hint)
-					}
-					want.Types[i].Hint = oldHint.ReplaceAllString(want.Types[i].Hint,
-						"(Änderungen werden dann nicht gespeichert, Befehle an die Box nicht ausgeliefert).")
-				}
-				for j := range want.Types[i].Options {
-					for k := range want.Types[i].Options[j].Choices {
-						c := &want.Types[i].Options[j].Choices[k]
-						c[1] = strings.ReplaceAll(c[1], "config.php", "config.toml")
-					}
-				}
+	// Zuerst PHP: Beim Neuschreiben gilt danach schon die neue Datei.
+	t.Run("PHP", func(t *testing.T) {
+		common, err := filepath.Abs(filepath.Join("..", "..", "nas_dashboard", "lib", "common.php"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		write := os.Getenv("FW_WRITE_GOLDEN") == "1"
+		php, err := exec.LookPath("php")
+		_, statErr := os.Stat(common)
+		switch {
+		case write && (err != nil || statErr != nil):
+			t.Fatal("FW_WRITE_GOLDEN=1 braucht php im PATH und die PHP-Fassung")
+		case os.IsNotExist(statErr):
+			t.Skip("PHP-Fassung nicht mehr da – Go wird weiter mit der Datei verglichen")
+		case err != nil:
+			t.Skip("php nicht im PATH – Go wird weiter mit der Datei verglichen")
+		}
+		fromPHP := map[string]tables{}
+		for _, tc := range tableCases {
+			fromPHP[tc.id] = phpAsGo(t, phpTables(t, php, common, tc.php, goldenRecipients))
+		}
+		if write {
+			b, _ := json.MarshalIndent(fromPHP, "", " ") // nur Text, Wahrheitswerte und Listen – geht immer
+			if err := os.WriteFile(goldenPath, append(b, '\n'), 0o644); err != nil {
+				t.Fatal(err)
 			}
-			wb, _ := json.MarshalIndent(want, "", " ") // nur Text, Zahlen und Listen – geht immer
-			gb, _ := json.MarshalIndent(got, "", " ")
-			if string(wb) != string(gb) {
-				t.Errorf("Go weicht von PHP ab:\n%s", firstDifference(string(wb), string(gb)))
+		}
+		golden := readGolden(t)
+		for _, tc := range tableCases {
+			if diff := tablesDiff(golden[tc.id], fromPHP[tc.id]); diff != "" {
+				t.Errorf("%s: %s weicht von PHP ab (neu schreiben mit FW_WRITE_GOLDEN=1, wenn PHP recht hat):\n%s",
+					tc.name, goldenPath, diff)
+			}
+		}
+	})
+	golden := readGolden(t)
+	for _, tc := range tableCases {
+		t.Run(tc.name, func(t *testing.T) {
+			want, ok := golden[tc.id]
+			if !ok {
+				t.Fatalf("%s fehlt in %s", tc.id, goldenPath)
+			}
+			st := model.NewState()
+			st.Recipients = goldenRecipients
+			if diff := tablesDiff(want, goTables(typesFor(tc.cfg), globalSpecsFor(st))); diff != "" {
+				t.Errorf("Go weicht von PHP ab:\n%s", diff)
 			}
 		})
 	}
+}
+
+// goldenPath: die Tabellen von PHP, je Fall (tableCases.id).
+var goldenPath = filepath.Join("testdata", "tables.golden.json")
+
+// goldenRecipients: die Empfängerliste aller Fälle (Stellvertreter-Wahl).
+var goldenRecipients = []model.Recipient{
+	{ID: 3, Key: annaKey, Label: "Anna Müller", MuteToken: "annatoken03"},
+	{ID: 7, Key: jensKey, Label: "Jens", MuteToken: "jenstoken07"},
+}
+
+// tableCases: drei Konfigurationen – für PHP (config.php) und Go dieselben
+// Werte.
+var tableCases = []struct {
+	id, name string
+	php      map[string]any
+	cfg      *config.Config
+}{
+	{"standards", "Standards", map[string]any{},
+		&config.Config{OfflineAfterSeconds: 180, WatchdogOfflineAfterSeconds: 600, DemoReminderAfterSeconds: 14400}},
+	{"eigene-werte-aussen-waechter", "eigene Werte, Außen-Wächter", map[string]any{
+		"offline_after_seconds": 240, "watchdog_offline_after_seconds": 777, "demo_reminder_after_seconds": 0,
+		"watcher_token_sha256": strings.Repeat("c", 64)},
+		&config.Config{OfflineAfterSeconds: 240, WatchdogOfflineAfterSeconds: 777, DemoReminderAfterSeconds: 0,
+			WatcherTokenSHA256: strings.Repeat("c", 64)}},
+	{"groessere-box-schwelle-demo-in-minuten", "größere Box-Schwelle, Demo in Minuten", map[string]any{
+		"offline_after_seconds": 5400, "watchdog_offline_after_seconds": 600, "demo_reminder_after_seconds": 5400},
+		&config.Config{OfflineAfterSeconds: 5400, WatchdogOfflineAfterSeconds: 600, DemoReminderAfterSeconds: 5400}},
+}
+
+// readGolden liest testdata/tables.golden.json.
+func readGolden(t *testing.T) map[string]tables {
+	t.Helper()
+	b, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("%v (schreiben mit FW_WRITE_GOLDEN=1, php im PATH)", err)
+	}
+	var out map[string]tables
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("%s: %v", goldenPath, err)
+	}
+	return out
+}
+
+// phpAsGo bringt, was bewusst anders ist, auf die Go-Form: den Hinweis von
+// nas_web (der alte Klammersatz MUSS bei PHP noch stehen – sonst hat sich
+// PHP geändert) und "config.php" in den Beschriftungen.
+func phpAsGo(t *testing.T, want tables) tables {
+	t.Helper()
+	oldHint := regexp.MustCompile(`\(Login und Status der Box scheitern dann\)\.$`)
+	for i := range want.Types {
+		if want.Types[i].Key == KindNasWeb {
+			if !oldHint.MatchString(want.Types[i].Hint) {
+				t.Fatalf("PHP: Hinweis von nas_web geändert: %q", want.Types[i].Hint)
+			}
+			want.Types[i].Hint = oldHint.ReplaceAllString(want.Types[i].Hint,
+				"(Änderungen werden dann nicht gespeichert, Befehle an die Box nicht ausgeliefert).")
+		}
+		for j := range want.Types[i].Options {
+			for k := range want.Types[i].Options[j].Choices {
+				c := &want.Types[i].Options[j].Choices[k]
+				c[1] = strings.ReplaceAll(c[1], "config.php", "config.toml")
+			}
+		}
+	}
+	return want
+}
+
+// tablesDiff: "" bei Gleichheit, sonst die Zeilen um die erste Abweichung.
+func tablesDiff(want, got tables) string {
+	wb, _ := json.MarshalIndent(want, "", " ") // nur Text, Wahrheitswerte und Listen – geht immer
+	gb, _ := json.MarshalIndent(got, "", " ")
+	if string(wb) == string(gb) {
+		return ""
+	}
+	return firstDifference(string(wb), string(gb))
 }
 
 // tables ist die gemeinsame Form beider Seiten: Möglichkeiten als Paare

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -274,6 +275,86 @@ func TestSendTo(t *testing.T) {
 	b.setAnswer(func(string) int { return 500 })
 	if SendTo(ctx, b.c, annaKey, "T", "B") || len(b.take()) != 2 {
 		t.Error("Fehlschlag nicht gemeldet oder nicht wiederholt")
+	}
+}
+
+// Dieselbe Info an mehrere Betroffene: alle zugleich in EINEM Versand (PHP
+// expire_stale_mutes: ein bark_post_many für alle – nacheinander hielte das
+// bei gestörtem Bark minutenlang auf), je Key ein Ergebnis; ein
+// unbrauchbarer Key wird nicht versucht und hält die anderen nicht auf.
+func TestSendToAll(t *testing.T) {
+	b := newBench(t)
+	ctx := context.Background()
+	// Jens' Key antwortet erst, wenn Annas Anfrage angekommen ist: Nacheinander
+	// gesendet hinge der Versand bis zum Zeitlimit.
+	annaSeen := make(chan struct{})
+	var once sync.Once
+	b.setAnswer(func(key string) int {
+		switch key {
+		case annaKey:
+			once.Do(func() { close(annaSeen) })
+		case jensKey:
+			select {
+			case <-annaSeen:
+			case <-time.After(5 * time.Second):
+				return 503
+			}
+		}
+		return 200
+	})
+	start := time.Now()
+	got := SendToAll(ctx, b.c, []string{jensKey, "x!", annaKey}, "Alarmton wieder LAUT", "Stummschaltung beendet – länger als 12 Std.")
+	if want := []bool{true, false, true}; !slices.Equal(got, want) {
+		t.Errorf("Ergebnisse %v, erwartet %v", got, want)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("nicht zugleich gesendet: %v", d)
+	}
+	reqs := b.take()
+	if len(reqs) != 2 {
+		t.Fatalf("%d Anfragen: %+v", len(reqs), reqs)
+	}
+	for _, r := range reqs {
+		if r.Fields.Get("title") != "Alarmton wieder LAUT" || r.Fields.Get("level") != "passive" ||
+			r.Fields.Get("body") != "Stummschaltung beendet - laenger als 12 Std." || len(r.Fields) != 3 {
+			t.Errorf("%+v", r)
+		}
+	}
+	if got := SendToAll(ctx, b.c, nil, "T", "B"); len(got) != 0 || len(b.take()) != 0 {
+		t.Errorf("ohne Keys: %v", got)
+	}
+}
+
+// Die Möglichkeiten einer Einstellung gehören dem Aufrufer: Ändert er eine,
+// sieht der nächste Aufruf (und LevelText) davon nichts.
+func TestChoicesNotShared(t *testing.T) {
+	b := newBench(t)
+	types := Types(b.c)
+	types[0].Options[0].Choices[0].Text = "verändert"
+	global := GlobalSpecs(b.c)
+	for i := range global {
+		for j := range global[i].Choices {
+			global[i].Choices[j].Text = "verändert"
+		}
+	}
+	for _, typ := range Types(b.c) {
+		for _, o := range typ.Options {
+			for _, c := range o.Choices {
+				if c.Text == "verändert" {
+					t.Errorf("%s/%s: Änderung des Aufrufers sichtbar", typ.Key, o.Key)
+				}
+			}
+		}
+	}
+	for _, o := range GlobalSpecs(b.c) {
+		for _, c := range o.Choices {
+			if c.Text == "verändert" {
+				t.Errorf("global/%s: Änderung des Aufrufers sichtbar", o.Key)
+			}
+		}
+	}
+	if LevelText("passive") != "leise (nur in der Mitteilungszentrale)" {
+		t.Errorf("LevelText: %q", LevelText("passive"))
 	}
 }
 

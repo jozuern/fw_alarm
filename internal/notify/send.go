@@ -135,9 +135,31 @@ func deputyKey(st *model.State, extraID string) string {
 // Versuche; ein unbrauchbarer Key wird gar nicht erst versucht. true = Bark
 // hat angenommen.
 func SendTo(ctx context.Context, c *core.Core, key, title, body string) bool {
-	if !model.ValidKey(key) {
-		return false
-	}
+	return SendToAll(ctx, c, []string{key}, title, body)[0]
+}
+
+// SendToAll schickt dieselbe leise Meldung an mehrere Keys – alle zugleich in
+// EINEM Versand (PHP expire_stale_mutes: ein bark_post_many für alle
+// Betroffenen; nacheinander hielte das bei gestörtem Bark minutenlang auf).
+// Regeln wie SendTo; ein unbrauchbarer Key wird nicht versucht und hält die
+// anderen nicht auf. Je Key (in derselben Reihenfolge): true = Bark hat
+// angenommen.
+func SendToAll(ctx context.Context, c *core.Core, keys []string, title, body string) []bool {
+	out := make([]bool, len(keys))
 	fields := map[string]string{"title": bark.ASCII(title), "body": bark.ASCII(body), "level": "passive"}
-	return c.Bark.PostMany(ctx, []bark.Job{{Key: key, Fields: fields}}, sendTries)[0].OK
+	var jobs []bark.Job
+	var at []int // Stelle in keys je Auftrag
+	for i, key := range keys {
+		if model.ValidKey(key) {
+			jobs = append(jobs, bark.Job{Key: key, Fields: fields})
+			at = append(at, i)
+		}
+	}
+	if len(jobs) == 0 {
+		return out
+	}
+	for j, res := range c.Bark.PostMany(ctx, jobs, sendTries) {
+		out[at[j]] = res.OK
+	}
+	return out
 }

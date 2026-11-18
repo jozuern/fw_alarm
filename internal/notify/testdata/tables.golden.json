@@ -1,0 +1,4044 @@
+{
+ "eigene-werte-aussen-waechter": {
+  "types": [
+   {
+    "key": "box_offline",
+    "label": "Box offline / wieder online",
+    "hint": "Wenn die Box zu lange keinen Status mehr schickt – dann würde ein Relaisalarm nicht ausgelöst.",
+    "important": true,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "offline_after_s",
+      "label": "Als offline melden nach",
+      "default": "777",
+      "choices": [
+       [
+        "300",
+        "5 Min"
+       ],
+       [
+        "600",
+        "10 Min"
+       ],
+       [
+        "777",
+        "777 s (aus config.toml)"
+       ],
+       [
+        "900",
+        "15 Min"
+       ],
+       [
+        "1800",
+        "30 Min"
+       ],
+       [
+        "3600",
+        "1 Std"
+       ],
+       [
+        "7200",
+        "2 Std"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Erinnern, solange sie offline bleibt",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nie (nur einmal)"
+       ],
+       [
+        "1",
+        "jede Stunde"
+       ],
+       [
+        "3",
+        "alle 3 Std"
+       ],
+       [
+        "6",
+        "alle 6 Std"
+       ],
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ]
+      ]
+     },
+     {
+      "key": "recovery",
+      "label": "Auch melden, wenn sie wieder online ist",
+      "default": "1",
+      "choices": [
+       [
+        "1",
+        "ja"
+       ],
+       [
+        "0",
+        "nein"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "nas_web",
+    "label": "Dashboard defekt / wieder in Ordnung",
+    "hint": "Wenn das Dashboard nicht mehr in seinen Datenordner schreiben kann (Änderungen werden dann nicht gespeichert, Befehle an die Box nicht ausgeliefert).",
+    "important": true,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Erinnern, solange die Störung anhält",
+      "default": "24",
+      "choices": [
+       [
+        "0",
+        "nie (nur einmal)"
+       ],
+       [
+        "6",
+        "alle 6 Std"
+       ],
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ]
+      ]
+     },
+     {
+      "key": "recovery",
+      "label": "Auch melden, wenn es wieder geht",
+      "default": "1",
+      "choices": [
+       [
+        "1",
+        "ja"
+       ],
+       [
+        "0",
+        "nein"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "outside_watcher",
+    "label": "Außen-Wächter meldet sich nicht",
+    "hint": "Wenn sich das NAS, das den Server von außen überwacht, nicht mehr meldet – z.B. weil zu Hause Strom oder Internet weg sind. Dann würde ein Ausfall des Servers selbst nicht mehr gemeldet.",
+    "important": true,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "silent_after_s",
+      "label": "Melden nach",
+      "default": "3600",
+      "choices": [
+       [
+        "1800",
+        "30 Min"
+       ],
+       [
+        "3600",
+        "1 Std"
+       ],
+       [
+        "7200",
+        "2 Std"
+       ],
+       [
+        "21600",
+        "6 Std"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Erinnern, solange er stumm bleibt",
+      "default": "72",
+      "choices": [
+       [
+        "0",
+        "nie (nur einmal)"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ],
+       [
+        "72",
+        "alle 3 Tage"
+       ],
+       [
+        "168",
+        "einmal pro Woche"
+       ]
+      ]
+     },
+     {
+      "key": "recovery",
+      "label": "Auch melden, wenn er wieder da ist",
+      "default": "1",
+      "choices": [
+       [
+        "1",
+        "ja"
+       ],
+       [
+        "0",
+        "nein"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "demo_reminder",
+    "label": "Demo-Modus vergessen",
+    "hint": "Erinnerung, wenn der Demo-Modus länger aktiv bleibt – echte Alarme erreichen dann nur den Test-Empfänger.",
+    "important": false,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "after_s",
+      "label": "Erste Erinnerung",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "sofort (aus config.toml)"
+       ],
+       [
+        "3600",
+        "nach 1 Std"
+       ],
+       [
+        "7200",
+        "nach 2 Std"
+       ],
+       [
+        "14400",
+        "nach 4 Std"
+       ],
+       [
+        "28800",
+        "nach 8 Std"
+       ],
+       [
+        "43200",
+        "nach 12 Std"
+       ],
+       [
+        "86400",
+        "nach 24 Std"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Danach wiederholen",
+      "default": "24",
+      "choices": [
+       [
+        "6",
+        "alle 6 Std"
+       ],
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "mute_reminder",
+    "label": "Empfänger sind stumm",
+    "hint": "Erinnerung, solange jemand im Arbeitsmodus stumm ist.",
+    "important": false,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Erinnern",
+      "default": "24",
+      "choices": [
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ],
+       [
+        "48",
+        "alle 2 Tage"
+       ],
+       [
+        "168",
+        "einmal pro Woche"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "permanent_mute_reminder",
+    "label": "Empfänger sind dauerhaft stumm",
+    "hint": "Erinnerung, solange jemand dauerhaft stumm geschaltet ist.",
+    "important": false,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_days",
+      "label": "Erinnern",
+      "default": "7",
+      "choices": [
+       [
+        "7",
+        "einmal pro Woche"
+       ],
+       [
+        "14",
+        "alle 2 Wochen"
+       ],
+       [
+        "30",
+        "einmal im Monat"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "login_lockout",
+    "label": "Login gesperrt",
+    "hint": "Wenn eine Adresse nach zu vielen falschen Anmeldeversuchen gesperrt wurde.",
+    "important": false,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "login_success",
+    "label": "Anmeldung am Dashboard",
+    "hint": "Jedes Mal, wenn sich jemand erfolgreich am Dashboard anmeldet (mit Adresse).",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "who",
+      "label": "Melden bei",
+      "default": "all",
+      "choices": [
+       [
+        "all",
+        "jeder Anmeldung"
+       ],
+       [
+        "readonly",
+        "nur Lese-Benutzer"
+       ],
+       [
+        "admin",
+        "nur Admin"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "mute_changed",
+    "label": "Jemand schaltet sich stumm oder laut",
+    "hint": "Wenn ein Empfänger seinen Kurzbefehl-Link benutzt. Kann bei vielen Kollegen häufig kommen.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "mute_expired",
+    "label": "Stummschaltung automatisch beendet",
+    "hint": "Wenn das Sicherheitsnetz jemanden nach Ablauf des Zeitlimits wieder laut schaltet – meist hat dann dessen Automation gehakt.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "box_restart",
+    "label": "Box neu gestartet",
+    "hint": "Wenn die Box neu startet. Nach Absturz, Watchdog oder Spannungseinbruch deutet das auf ein Problem hin.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "scope",
+      "label": "Melden bei",
+      "default": "abnormal",
+      "choices": [
+       [
+        "abnormal",
+        "nur Absturz, Watchdog, Spannungseinbruch"
+       ],
+       [
+        "all",
+        "jedem Neustart"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "box_health",
+    "label": "Auffälligkeiten an der Box",
+    "hint": "Schwaches WLAN, wenig freier Speicher oder ein gescheiterter Heartbeat-Versand – bevor daraus ein Ausfall wird.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Höchstens",
+      "default": "24",
+      "choices": [
+       [
+        "6",
+        "alle 6 Std"
+       ],
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ],
+       [
+        "168",
+        "einmal pro Woche"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "weekly_report",
+    "label": "Wochenbericht",
+    "hint": "Kurze Zusammenfassung der letzten 7 Tage: Alarme, Entwarnungen, Ausfälle, stumme Empfänger.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "weekday",
+      "label": "Wochentag",
+      "default": "1",
+      "choices": [
+       [
+        "1",
+        "Montag"
+       ],
+       [
+        "2",
+        "Dienstag"
+       ],
+       [
+        "3",
+        "Mittwoch"
+       ],
+       [
+        "4",
+        "Donnerstag"
+       ],
+       [
+        "5",
+        "Freitag"
+       ],
+       [
+        "6",
+        "Samstag"
+       ],
+       [
+        "7",
+        "Sonntag"
+       ]
+      ]
+     },
+     {
+      "key": "hour",
+      "label": "Frühestens um",
+      "default": "8",
+      "choices": [
+       [
+        "0",
+        "00:00 Uhr"
+       ],
+       [
+        "1",
+        "01:00 Uhr"
+       ],
+       [
+        "2",
+        "02:00 Uhr"
+       ],
+       [
+        "3",
+        "03:00 Uhr"
+       ],
+       [
+        "4",
+        "04:00 Uhr"
+       ],
+       [
+        "5",
+        "05:00 Uhr"
+       ],
+       [
+        "6",
+        "06:00 Uhr"
+       ],
+       [
+        "7",
+        "07:00 Uhr"
+       ],
+       [
+        "8",
+        "08:00 Uhr"
+       ],
+       [
+        "9",
+        "09:00 Uhr"
+       ],
+       [
+        "10",
+        "10:00 Uhr"
+       ],
+       [
+        "11",
+        "11:00 Uhr"
+       ],
+       [
+        "12",
+        "12:00 Uhr"
+       ],
+       [
+        "13",
+        "13:00 Uhr"
+       ],
+       [
+        "14",
+        "14:00 Uhr"
+       ],
+       [
+        "15",
+        "15:00 Uhr"
+       ],
+       [
+        "16",
+        "16:00 Uhr"
+       ],
+       [
+        "17",
+        "17:00 Uhr"
+       ],
+       [
+        "18",
+        "18:00 Uhr"
+       ],
+       [
+        "19",
+        "19:00 Uhr"
+       ],
+       [
+        "20",
+        "20:00 Uhr"
+       ],
+       [
+        "21",
+        "21:00 Uhr"
+       ],
+       [
+        "22",
+        "22:00 Uhr"
+       ],
+       [
+        "23",
+        "23:00 Uhr"
+       ]
+      ]
+     }
+    ]
+   }
+  ],
+  "global": [
+   {
+    "key": "quiet_enabled",
+    "label": "Ruhezeit",
+    "default": "0",
+    "choices": [
+     [
+      "0",
+      "aus"
+     ],
+     [
+      "1",
+      "ein"
+     ]
+    ]
+   },
+   {
+    "key": "quiet_from",
+    "label": "Ruhezeit von",
+    "default": "22",
+    "choices": [
+     [
+      "0",
+      "00:00"
+     ],
+     [
+      "1",
+      "01:00"
+     ],
+     [
+      "2",
+      "02:00"
+     ],
+     [
+      "3",
+      "03:00"
+     ],
+     [
+      "4",
+      "04:00"
+     ],
+     [
+      "5",
+      "05:00"
+     ],
+     [
+      "6",
+      "06:00"
+     ],
+     [
+      "7",
+      "07:00"
+     ],
+     [
+      "8",
+      "08:00"
+     ],
+     [
+      "9",
+      "09:00"
+     ],
+     [
+      "10",
+      "10:00"
+     ],
+     [
+      "11",
+      "11:00"
+     ],
+     [
+      "12",
+      "12:00"
+     ],
+     [
+      "13",
+      "13:00"
+     ],
+     [
+      "14",
+      "14:00"
+     ],
+     [
+      "15",
+      "15:00"
+     ],
+     [
+      "16",
+      "16:00"
+     ],
+     [
+      "17",
+      "17:00"
+     ],
+     [
+      "18",
+      "18:00"
+     ],
+     [
+      "19",
+      "19:00"
+     ],
+     [
+      "20",
+      "20:00"
+     ],
+     [
+      "21",
+      "21:00"
+     ],
+     [
+      "22",
+      "22:00"
+     ],
+     [
+      "23",
+      "23:00"
+     ]
+    ]
+   },
+   {
+    "key": "quiet_to",
+    "label": "Ruhezeit bis",
+    "default": "7",
+    "choices": [
+     [
+      "0",
+      "00:00"
+     ],
+     [
+      "1",
+      "01:00"
+     ],
+     [
+      "2",
+      "02:00"
+     ],
+     [
+      "3",
+      "03:00"
+     ],
+     [
+      "4",
+      "04:00"
+     ],
+     [
+      "5",
+      "05:00"
+     ],
+     [
+      "6",
+      "06:00"
+     ],
+     [
+      "7",
+      "07:00"
+     ],
+     [
+      "8",
+      "08:00"
+     ],
+     [
+      "9",
+      "09:00"
+     ],
+     [
+      "10",
+      "10:00"
+     ],
+     [
+      "11",
+      "11:00"
+     ],
+     [
+      "12",
+      "12:00"
+     ],
+     [
+      "13",
+      "13:00"
+     ],
+     [
+      "14",
+      "14:00"
+     ],
+     [
+      "15",
+      "15:00"
+     ],
+     [
+      "16",
+      "16:00"
+     ],
+     [
+      "17",
+      "17:00"
+     ],
+     [
+      "18",
+      "18:00"
+     ],
+     [
+      "19",
+      "19:00"
+     ],
+     [
+      "20",
+      "20:00"
+     ],
+     [
+      "21",
+      "21:00"
+     ],
+     [
+      "22",
+      "22:00"
+     ],
+     [
+      "23",
+      "23:00"
+     ]
+    ]
+   },
+   {
+    "key": "sound",
+    "label": "Ton",
+    "default": "",
+    "choices": [
+     [
+      "",
+      "Standardton"
+     ],
+     [
+      "bell",
+      "Glocke (bell)"
+     ],
+     [
+      "chime",
+      "Klang (chime)"
+     ],
+     [
+      "glass",
+      "Glas (glass)"
+     ],
+     [
+      "minuet",
+      "Menuett (minuet)"
+     ],
+     [
+      "newsflash",
+      "Eilmeldung (newsflash)"
+     ],
+     [
+      "telegraph",
+      "Telegraf (telegraph)"
+     ],
+     [
+      "horn",
+      "Horn (horn)"
+     ],
+     [
+      "electronic",
+      "Elektronisch (electronic)"
+     ]
+    ]
+   },
+   {
+    "key": "critical_volume",
+    "label": "Lautstärke kritischer Meldungen",
+    "default": "5",
+    "choices": [
+     [
+      "0",
+      "0 (lautlos)"
+     ],
+     [
+      "1",
+      "1"
+     ],
+     [
+      "2",
+      "2"
+     ],
+     [
+      "3",
+      "3"
+     ],
+     [
+      "4",
+      "4"
+     ],
+     [
+      "5",
+      "5"
+     ],
+     [
+      "6",
+      "6"
+     ],
+     [
+      "7",
+      "7"
+     ],
+     [
+      "8",
+      "8"
+     ],
+     [
+      "9",
+      "9"
+     ],
+     [
+      "10",
+      "10"
+     ]
+    ]
+   },
+   {
+    "key": "extra_id",
+    "label": "Zusätzlich senden an",
+    "default": "0",
+    "choices": [
+     [
+      "0",
+      "niemand"
+     ],
+     [
+      "3",
+      "Anna Müller"
+     ],
+     [
+      "7",
+      "Jens"
+     ]
+    ]
+   }
+  ]
+ },
+ "groessere-box-schwelle-demo-in-minuten": {
+  "types": [
+   {
+    "key": "box_offline",
+    "label": "Box offline / wieder online",
+    "hint": "Wenn die Box zu lange keinen Status mehr schickt – dann würde ein Relaisalarm nicht ausgelöst.",
+    "important": true,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "offline_after_s",
+      "label": "Als offline melden nach",
+      "default": "5400",
+      "choices": [
+       [
+        "300",
+        "5 Min"
+       ],
+       [
+        "600",
+        "10 Min"
+       ],
+       [
+        "900",
+        "15 Min"
+       ],
+       [
+        "1800",
+        "30 Min"
+       ],
+       [
+        "3600",
+        "1 Std"
+       ],
+       [
+        "5400",
+        "90 Min (aus config.toml)"
+       ],
+       [
+        "7200",
+        "2 Std"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Erinnern, solange sie offline bleibt",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nie (nur einmal)"
+       ],
+       [
+        "1",
+        "jede Stunde"
+       ],
+       [
+        "3",
+        "alle 3 Std"
+       ],
+       [
+        "6",
+        "alle 6 Std"
+       ],
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ]
+      ]
+     },
+     {
+      "key": "recovery",
+      "label": "Auch melden, wenn sie wieder online ist",
+      "default": "1",
+      "choices": [
+       [
+        "1",
+        "ja"
+       ],
+       [
+        "0",
+        "nein"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "nas_web",
+    "label": "Dashboard defekt / wieder in Ordnung",
+    "hint": "Wenn das Dashboard nicht mehr in seinen Datenordner schreiben kann (Änderungen werden dann nicht gespeichert, Befehle an die Box nicht ausgeliefert).",
+    "important": true,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Erinnern, solange die Störung anhält",
+      "default": "24",
+      "choices": [
+       [
+        "0",
+        "nie (nur einmal)"
+       ],
+       [
+        "6",
+        "alle 6 Std"
+       ],
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ]
+      ]
+     },
+     {
+      "key": "recovery",
+      "label": "Auch melden, wenn es wieder geht",
+      "default": "1",
+      "choices": [
+       [
+        "1",
+        "ja"
+       ],
+       [
+        "0",
+        "nein"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "demo_reminder",
+    "label": "Demo-Modus vergessen",
+    "hint": "Erinnerung, wenn der Demo-Modus länger aktiv bleibt – echte Alarme erreichen dann nur den Test-Empfänger.",
+    "important": false,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "after_s",
+      "label": "Erste Erinnerung",
+      "default": "5400",
+      "choices": [
+       [
+        "3600",
+        "nach 1 Std"
+       ],
+       [
+        "5400",
+        "nach 90 Min (aus config.toml)"
+       ],
+       [
+        "7200",
+        "nach 2 Std"
+       ],
+       [
+        "14400",
+        "nach 4 Std"
+       ],
+       [
+        "28800",
+        "nach 8 Std"
+       ],
+       [
+        "43200",
+        "nach 12 Std"
+       ],
+       [
+        "86400",
+        "nach 24 Std"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Danach wiederholen",
+      "default": "24",
+      "choices": [
+       [
+        "6",
+        "alle 6 Std"
+       ],
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "mute_reminder",
+    "label": "Empfänger sind stumm",
+    "hint": "Erinnerung, solange jemand im Arbeitsmodus stumm ist.",
+    "important": false,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Erinnern",
+      "default": "24",
+      "choices": [
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ],
+       [
+        "48",
+        "alle 2 Tage"
+       ],
+       [
+        "168",
+        "einmal pro Woche"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "permanent_mute_reminder",
+    "label": "Empfänger sind dauerhaft stumm",
+    "hint": "Erinnerung, solange jemand dauerhaft stumm geschaltet ist.",
+    "important": false,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_days",
+      "label": "Erinnern",
+      "default": "7",
+      "choices": [
+       [
+        "7",
+        "einmal pro Woche"
+       ],
+       [
+        "14",
+        "alle 2 Wochen"
+       ],
+       [
+        "30",
+        "einmal im Monat"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "login_lockout",
+    "label": "Login gesperrt",
+    "hint": "Wenn eine Adresse nach zu vielen falschen Anmeldeversuchen gesperrt wurde.",
+    "important": false,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "login_success",
+    "label": "Anmeldung am Dashboard",
+    "hint": "Jedes Mal, wenn sich jemand erfolgreich am Dashboard anmeldet (mit Adresse).",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "who",
+      "label": "Melden bei",
+      "default": "all",
+      "choices": [
+       [
+        "all",
+        "jeder Anmeldung"
+       ],
+       [
+        "readonly",
+        "nur Lese-Benutzer"
+       ],
+       [
+        "admin",
+        "nur Admin"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "mute_changed",
+    "label": "Jemand schaltet sich stumm oder laut",
+    "hint": "Wenn ein Empfänger seinen Kurzbefehl-Link benutzt. Kann bei vielen Kollegen häufig kommen.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "mute_expired",
+    "label": "Stummschaltung automatisch beendet",
+    "hint": "Wenn das Sicherheitsnetz jemanden nach Ablauf des Zeitlimits wieder laut schaltet – meist hat dann dessen Automation gehakt.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "box_restart",
+    "label": "Box neu gestartet",
+    "hint": "Wenn die Box neu startet. Nach Absturz, Watchdog oder Spannungseinbruch deutet das auf ein Problem hin.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "scope",
+      "label": "Melden bei",
+      "default": "abnormal",
+      "choices": [
+       [
+        "abnormal",
+        "nur Absturz, Watchdog, Spannungseinbruch"
+       ],
+       [
+        "all",
+        "jedem Neustart"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "box_health",
+    "label": "Auffälligkeiten an der Box",
+    "hint": "Schwaches WLAN, wenig freier Speicher oder ein gescheiterter Heartbeat-Versand – bevor daraus ein Ausfall wird.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Höchstens",
+      "default": "24",
+      "choices": [
+       [
+        "6",
+        "alle 6 Std"
+       ],
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ],
+       [
+        "168",
+        "einmal pro Woche"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "weekly_report",
+    "label": "Wochenbericht",
+    "hint": "Kurze Zusammenfassung der letzten 7 Tage: Alarme, Entwarnungen, Ausfälle, stumme Empfänger.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "weekday",
+      "label": "Wochentag",
+      "default": "1",
+      "choices": [
+       [
+        "1",
+        "Montag"
+       ],
+       [
+        "2",
+        "Dienstag"
+       ],
+       [
+        "3",
+        "Mittwoch"
+       ],
+       [
+        "4",
+        "Donnerstag"
+       ],
+       [
+        "5",
+        "Freitag"
+       ],
+       [
+        "6",
+        "Samstag"
+       ],
+       [
+        "7",
+        "Sonntag"
+       ]
+      ]
+     },
+     {
+      "key": "hour",
+      "label": "Frühestens um",
+      "default": "8",
+      "choices": [
+       [
+        "0",
+        "00:00 Uhr"
+       ],
+       [
+        "1",
+        "01:00 Uhr"
+       ],
+       [
+        "2",
+        "02:00 Uhr"
+       ],
+       [
+        "3",
+        "03:00 Uhr"
+       ],
+       [
+        "4",
+        "04:00 Uhr"
+       ],
+       [
+        "5",
+        "05:00 Uhr"
+       ],
+       [
+        "6",
+        "06:00 Uhr"
+       ],
+       [
+        "7",
+        "07:00 Uhr"
+       ],
+       [
+        "8",
+        "08:00 Uhr"
+       ],
+       [
+        "9",
+        "09:00 Uhr"
+       ],
+       [
+        "10",
+        "10:00 Uhr"
+       ],
+       [
+        "11",
+        "11:00 Uhr"
+       ],
+       [
+        "12",
+        "12:00 Uhr"
+       ],
+       [
+        "13",
+        "13:00 Uhr"
+       ],
+       [
+        "14",
+        "14:00 Uhr"
+       ],
+       [
+        "15",
+        "15:00 Uhr"
+       ],
+       [
+        "16",
+        "16:00 Uhr"
+       ],
+       [
+        "17",
+        "17:00 Uhr"
+       ],
+       [
+        "18",
+        "18:00 Uhr"
+       ],
+       [
+        "19",
+        "19:00 Uhr"
+       ],
+       [
+        "20",
+        "20:00 Uhr"
+       ],
+       [
+        "21",
+        "21:00 Uhr"
+       ],
+       [
+        "22",
+        "22:00 Uhr"
+       ],
+       [
+        "23",
+        "23:00 Uhr"
+       ]
+      ]
+     }
+    ]
+   }
+  ],
+  "global": [
+   {
+    "key": "quiet_enabled",
+    "label": "Ruhezeit",
+    "default": "0",
+    "choices": [
+     [
+      "0",
+      "aus"
+     ],
+     [
+      "1",
+      "ein"
+     ]
+    ]
+   },
+   {
+    "key": "quiet_from",
+    "label": "Ruhezeit von",
+    "default": "22",
+    "choices": [
+     [
+      "0",
+      "00:00"
+     ],
+     [
+      "1",
+      "01:00"
+     ],
+     [
+      "2",
+      "02:00"
+     ],
+     [
+      "3",
+      "03:00"
+     ],
+     [
+      "4",
+      "04:00"
+     ],
+     [
+      "5",
+      "05:00"
+     ],
+     [
+      "6",
+      "06:00"
+     ],
+     [
+      "7",
+      "07:00"
+     ],
+     [
+      "8",
+      "08:00"
+     ],
+     [
+      "9",
+      "09:00"
+     ],
+     [
+      "10",
+      "10:00"
+     ],
+     [
+      "11",
+      "11:00"
+     ],
+     [
+      "12",
+      "12:00"
+     ],
+     [
+      "13",
+      "13:00"
+     ],
+     [
+      "14",
+      "14:00"
+     ],
+     [
+      "15",
+      "15:00"
+     ],
+     [
+      "16",
+      "16:00"
+     ],
+     [
+      "17",
+      "17:00"
+     ],
+     [
+      "18",
+      "18:00"
+     ],
+     [
+      "19",
+      "19:00"
+     ],
+     [
+      "20",
+      "20:00"
+     ],
+     [
+      "21",
+      "21:00"
+     ],
+     [
+      "22",
+      "22:00"
+     ],
+     [
+      "23",
+      "23:00"
+     ]
+    ]
+   },
+   {
+    "key": "quiet_to",
+    "label": "Ruhezeit bis",
+    "default": "7",
+    "choices": [
+     [
+      "0",
+      "00:00"
+     ],
+     [
+      "1",
+      "01:00"
+     ],
+     [
+      "2",
+      "02:00"
+     ],
+     [
+      "3",
+      "03:00"
+     ],
+     [
+      "4",
+      "04:00"
+     ],
+     [
+      "5",
+      "05:00"
+     ],
+     [
+      "6",
+      "06:00"
+     ],
+     [
+      "7",
+      "07:00"
+     ],
+     [
+      "8",
+      "08:00"
+     ],
+     [
+      "9",
+      "09:00"
+     ],
+     [
+      "10",
+      "10:00"
+     ],
+     [
+      "11",
+      "11:00"
+     ],
+     [
+      "12",
+      "12:00"
+     ],
+     [
+      "13",
+      "13:00"
+     ],
+     [
+      "14",
+      "14:00"
+     ],
+     [
+      "15",
+      "15:00"
+     ],
+     [
+      "16",
+      "16:00"
+     ],
+     [
+      "17",
+      "17:00"
+     ],
+     [
+      "18",
+      "18:00"
+     ],
+     [
+      "19",
+      "19:00"
+     ],
+     [
+      "20",
+      "20:00"
+     ],
+     [
+      "21",
+      "21:00"
+     ],
+     [
+      "22",
+      "22:00"
+     ],
+     [
+      "23",
+      "23:00"
+     ]
+    ]
+   },
+   {
+    "key": "sound",
+    "label": "Ton",
+    "default": "",
+    "choices": [
+     [
+      "",
+      "Standardton"
+     ],
+     [
+      "bell",
+      "Glocke (bell)"
+     ],
+     [
+      "chime",
+      "Klang (chime)"
+     ],
+     [
+      "glass",
+      "Glas (glass)"
+     ],
+     [
+      "minuet",
+      "Menuett (minuet)"
+     ],
+     [
+      "newsflash",
+      "Eilmeldung (newsflash)"
+     ],
+     [
+      "telegraph",
+      "Telegraf (telegraph)"
+     ],
+     [
+      "horn",
+      "Horn (horn)"
+     ],
+     [
+      "electronic",
+      "Elektronisch (electronic)"
+     ]
+    ]
+   },
+   {
+    "key": "critical_volume",
+    "label": "Lautstärke kritischer Meldungen",
+    "default": "5",
+    "choices": [
+     [
+      "0",
+      "0 (lautlos)"
+     ],
+     [
+      "1",
+      "1"
+     ],
+     [
+      "2",
+      "2"
+     ],
+     [
+      "3",
+      "3"
+     ],
+     [
+      "4",
+      "4"
+     ],
+     [
+      "5",
+      "5"
+     ],
+     [
+      "6",
+      "6"
+     ],
+     [
+      "7",
+      "7"
+     ],
+     [
+      "8",
+      "8"
+     ],
+     [
+      "9",
+      "9"
+     ],
+     [
+      "10",
+      "10"
+     ]
+    ]
+   },
+   {
+    "key": "extra_id",
+    "label": "Zusätzlich senden an",
+    "default": "0",
+    "choices": [
+     [
+      "0",
+      "niemand"
+     ],
+     [
+      "3",
+      "Anna Müller"
+     ],
+     [
+      "7",
+      "Jens"
+     ]
+    ]
+   }
+  ]
+ },
+ "standards": {
+  "types": [
+   {
+    "key": "box_offline",
+    "label": "Box offline / wieder online",
+    "hint": "Wenn die Box zu lange keinen Status mehr schickt – dann würde ein Relaisalarm nicht ausgelöst.",
+    "important": true,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "offline_after_s",
+      "label": "Als offline melden nach",
+      "default": "600",
+      "choices": [
+       [
+        "300",
+        "5 Min"
+       ],
+       [
+        "600",
+        "10 Min"
+       ],
+       [
+        "900",
+        "15 Min"
+       ],
+       [
+        "1800",
+        "30 Min"
+       ],
+       [
+        "3600",
+        "1 Std"
+       ],
+       [
+        "7200",
+        "2 Std"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Erinnern, solange sie offline bleibt",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nie (nur einmal)"
+       ],
+       [
+        "1",
+        "jede Stunde"
+       ],
+       [
+        "3",
+        "alle 3 Std"
+       ],
+       [
+        "6",
+        "alle 6 Std"
+       ],
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ]
+      ]
+     },
+     {
+      "key": "recovery",
+      "label": "Auch melden, wenn sie wieder online ist",
+      "default": "1",
+      "choices": [
+       [
+        "1",
+        "ja"
+       ],
+       [
+        "0",
+        "nein"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "nas_web",
+    "label": "Dashboard defekt / wieder in Ordnung",
+    "hint": "Wenn das Dashboard nicht mehr in seinen Datenordner schreiben kann (Änderungen werden dann nicht gespeichert, Befehle an die Box nicht ausgeliefert).",
+    "important": true,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Erinnern, solange die Störung anhält",
+      "default": "24",
+      "choices": [
+       [
+        "0",
+        "nie (nur einmal)"
+       ],
+       [
+        "6",
+        "alle 6 Std"
+       ],
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ]
+      ]
+     },
+     {
+      "key": "recovery",
+      "label": "Auch melden, wenn es wieder geht",
+      "default": "1",
+      "choices": [
+       [
+        "1",
+        "ja"
+       ],
+       [
+        "0",
+        "nein"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "demo_reminder",
+    "label": "Demo-Modus vergessen",
+    "hint": "Erinnerung, wenn der Demo-Modus länger aktiv bleibt – echte Alarme erreichen dann nur den Test-Empfänger.",
+    "important": false,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "after_s",
+      "label": "Erste Erinnerung",
+      "default": "14400",
+      "choices": [
+       [
+        "3600",
+        "nach 1 Std"
+       ],
+       [
+        "7200",
+        "nach 2 Std"
+       ],
+       [
+        "14400",
+        "nach 4 Std"
+       ],
+       [
+        "28800",
+        "nach 8 Std"
+       ],
+       [
+        "43200",
+        "nach 12 Std"
+       ],
+       [
+        "86400",
+        "nach 24 Std"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Danach wiederholen",
+      "default": "24",
+      "choices": [
+       [
+        "6",
+        "alle 6 Std"
+       ],
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "mute_reminder",
+    "label": "Empfänger sind stumm",
+    "hint": "Erinnerung, solange jemand im Arbeitsmodus stumm ist.",
+    "important": false,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Erinnern",
+      "default": "24",
+      "choices": [
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ],
+       [
+        "48",
+        "alle 2 Tage"
+       ],
+       [
+        "168",
+        "einmal pro Woche"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "permanent_mute_reminder",
+    "label": "Empfänger sind dauerhaft stumm",
+    "hint": "Erinnerung, solange jemand dauerhaft stumm geschaltet ist.",
+    "important": false,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_days",
+      "label": "Erinnern",
+      "default": "7",
+      "choices": [
+       [
+        "7",
+        "einmal pro Woche"
+       ],
+       [
+        "14",
+        "alle 2 Wochen"
+       ],
+       [
+        "30",
+        "einmal im Monat"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "login_lockout",
+    "label": "Login gesperrt",
+    "hint": "Wenn eine Adresse nach zu vielen falschen Anmeldeversuchen gesperrt wurde.",
+    "important": false,
+    "default_enabled": true,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "login_success",
+    "label": "Anmeldung am Dashboard",
+    "hint": "Jedes Mal, wenn sich jemand erfolgreich am Dashboard anmeldet (mit Adresse).",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "who",
+      "label": "Melden bei",
+      "default": "all",
+      "choices": [
+       [
+        "all",
+        "jeder Anmeldung"
+       ],
+       [
+        "readonly",
+        "nur Lese-Benutzer"
+       ],
+       [
+        "admin",
+        "nur Admin"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "mute_changed",
+    "label": "Jemand schaltet sich stumm oder laut",
+    "hint": "Wenn ein Empfänger seinen Kurzbefehl-Link benutzt. Kann bei vielen Kollegen häufig kommen.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "mute_expired",
+    "label": "Stummschaltung automatisch beendet",
+    "hint": "Wenn das Sicherheitsnetz jemanden nach Ablauf des Zeitlimits wieder laut schaltet – meist hat dann dessen Automation gehakt.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "box_restart",
+    "label": "Box neu gestartet",
+    "hint": "Wenn die Box neu startet. Nach Absturz, Watchdog oder Spannungseinbruch deutet das auf ein Problem hin.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "scope",
+      "label": "Melden bei",
+      "default": "abnormal",
+      "choices": [
+       [
+        "abnormal",
+        "nur Absturz, Watchdog, Spannungseinbruch"
+       ],
+       [
+        "all",
+        "jedem Neustart"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "box_health",
+    "label": "Auffälligkeiten an der Box",
+    "hint": "Schwaches WLAN, wenig freier Speicher oder ein gescheiterter Heartbeat-Versand – bevor daraus ein Ausfall wird.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "repeat_hours",
+      "label": "Höchstens",
+      "default": "24",
+      "choices": [
+       [
+        "6",
+        "alle 6 Std"
+       ],
+       [
+        "12",
+        "alle 12 Std"
+       ],
+       [
+        "24",
+        "einmal pro Tag"
+       ],
+       [
+        "168",
+        "einmal pro Woche"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "key": "weekly_report",
+    "label": "Wochenbericht",
+    "hint": "Kurze Zusammenfassung der letzten 7 Tage: Alarme, Entwarnungen, Ausfälle, stumme Empfänger.",
+    "important": false,
+    "default_enabled": false,
+    "options": [
+     {
+      "key": "level",
+      "label": "Dringlichkeit",
+      "default": "passive",
+      "choices": [
+       [
+        "passive",
+        "leise (nur in der Mitteilungszentrale)"
+       ],
+       [
+        "active",
+        "normal (mit Ton)"
+       ],
+       [
+        "timeSensitive",
+        "dringend (durchbricht Fokus)"
+       ],
+       [
+        "critical",
+        "kritisch (durchbricht auch den Stummschalter)"
+       ]
+      ]
+     },
+     {
+      "key": "ignore_quiet",
+      "label": "In der Ruhezeit",
+      "default": "0",
+      "choices": [
+       [
+        "0",
+        "nur leise zustellen"
+       ],
+       [
+        "1",
+        "wie eingestellt (auch nachts)"
+       ]
+      ]
+     },
+     {
+      "key": "weekday",
+      "label": "Wochentag",
+      "default": "1",
+      "choices": [
+       [
+        "1",
+        "Montag"
+       ],
+       [
+        "2",
+        "Dienstag"
+       ],
+       [
+        "3",
+        "Mittwoch"
+       ],
+       [
+        "4",
+        "Donnerstag"
+       ],
+       [
+        "5",
+        "Freitag"
+       ],
+       [
+        "6",
+        "Samstag"
+       ],
+       [
+        "7",
+        "Sonntag"
+       ]
+      ]
+     },
+     {
+      "key": "hour",
+      "label": "Frühestens um",
+      "default": "8",
+      "choices": [
+       [
+        "0",
+        "00:00 Uhr"
+       ],
+       [
+        "1",
+        "01:00 Uhr"
+       ],
+       [
+        "2",
+        "02:00 Uhr"
+       ],
+       [
+        "3",
+        "03:00 Uhr"
+       ],
+       [
+        "4",
+        "04:00 Uhr"
+       ],
+       [
+        "5",
+        "05:00 Uhr"
+       ],
+       [
+        "6",
+        "06:00 Uhr"
+       ],
+       [
+        "7",
+        "07:00 Uhr"
+       ],
+       [
+        "8",
+        "08:00 Uhr"
+       ],
+       [
+        "9",
+        "09:00 Uhr"
+       ],
+       [
+        "10",
+        "10:00 Uhr"
+       ],
+       [
+        "11",
+        "11:00 Uhr"
+       ],
+       [
+        "12",
+        "12:00 Uhr"
+       ],
+       [
+        "13",
+        "13:00 Uhr"
+       ],
+       [
+        "14",
+        "14:00 Uhr"
+       ],
+       [
+        "15",
+        "15:00 Uhr"
+       ],
+       [
+        "16",
+        "16:00 Uhr"
+       ],
+       [
+        "17",
+        "17:00 Uhr"
+       ],
+       [
+        "18",
+        "18:00 Uhr"
+       ],
+       [
+        "19",
+        "19:00 Uhr"
+       ],
+       [
+        "20",
+        "20:00 Uhr"
+       ],
+       [
+        "21",
+        "21:00 Uhr"
+       ],
+       [
+        "22",
+        "22:00 Uhr"
+       ],
+       [
+        "23",
+        "23:00 Uhr"
+       ]
+      ]
+     }
+    ]
+   }
+  ],
+  "global": [
+   {
+    "key": "quiet_enabled",
+    "label": "Ruhezeit",
+    "default": "0",
+    "choices": [
+     [
+      "0",
+      "aus"
+     ],
+     [
+      "1",
+      "ein"
+     ]
+    ]
+   },
+   {
+    "key": "quiet_from",
+    "label": "Ruhezeit von",
+    "default": "22",
+    "choices": [
+     [
+      "0",
+      "00:00"
+     ],
+     [
+      "1",
+      "01:00"
+     ],
+     [
+      "2",
+      "02:00"
+     ],
+     [
+      "3",
+      "03:00"
+     ],
+     [
+      "4",
+      "04:00"
+     ],
+     [
+      "5",
+      "05:00"
+     ],
+     [
+      "6",
+      "06:00"
+     ],
+     [
+      "7",
+      "07:00"
+     ],
+     [
+      "8",
+      "08:00"
+     ],
+     [
+      "9",
+      "09:00"
+     ],
+     [
+      "10",
+      "10:00"
+     ],
+     [
+      "11",
+      "11:00"
+     ],
+     [
+      "12",
+      "12:00"
+     ],
+     [
+      "13",
+      "13:00"
+     ],
+     [
+      "14",
+      "14:00"
+     ],
+     [
+      "15",
+      "15:00"
+     ],
+     [
+      "16",
+      "16:00"
+     ],
+     [
+      "17",
+      "17:00"
+     ],
+     [
+      "18",
+      "18:00"
+     ],
+     [
+      "19",
+      "19:00"
+     ],
+     [
+      "20",
+      "20:00"
+     ],
+     [
+      "21",
+      "21:00"
+     ],
+     [
+      "22",
+      "22:00"
+     ],
+     [
+      "23",
+      "23:00"
+     ]
+    ]
+   },
+   {
+    "key": "quiet_to",
+    "label": "Ruhezeit bis",
+    "default": "7",
+    "choices": [
+     [
+      "0",
+      "00:00"
+     ],
+     [
+      "1",
+      "01:00"
+     ],
+     [
+      "2",
+      "02:00"
+     ],
+     [
+      "3",
+      "03:00"
+     ],
+     [
+      "4",
+      "04:00"
+     ],
+     [
+      "5",
+      "05:00"
+     ],
+     [
+      "6",
+      "06:00"
+     ],
+     [
+      "7",
+      "07:00"
+     ],
+     [
+      "8",
+      "08:00"
+     ],
+     [
+      "9",
+      "09:00"
+     ],
+     [
+      "10",
+      "10:00"
+     ],
+     [
+      "11",
+      "11:00"
+     ],
+     [
+      "12",
+      "12:00"
+     ],
+     [
+      "13",
+      "13:00"
+     ],
+     [
+      "14",
+      "14:00"
+     ],
+     [
+      "15",
+      "15:00"
+     ],
+     [
+      "16",
+      "16:00"
+     ],
+     [
+      "17",
+      "17:00"
+     ],
+     [
+      "18",
+      "18:00"
+     ],
+     [
+      "19",
+      "19:00"
+     ],
+     [
+      "20",
+      "20:00"
+     ],
+     [
+      "21",
+      "21:00"
+     ],
+     [
+      "22",
+      "22:00"
+     ],
+     [
+      "23",
+      "23:00"
+     ]
+    ]
+   },
+   {
+    "key": "sound",
+    "label": "Ton",
+    "default": "",
+    "choices": [
+     [
+      "",
+      "Standardton"
+     ],
+     [
+      "bell",
+      "Glocke (bell)"
+     ],
+     [
+      "chime",
+      "Klang (chime)"
+     ],
+     [
+      "glass",
+      "Glas (glass)"
+     ],
+     [
+      "minuet",
+      "Menuett (minuet)"
+     ],
+     [
+      "newsflash",
+      "Eilmeldung (newsflash)"
+     ],
+     [
+      "telegraph",
+      "Telegraf (telegraph)"
+     ],
+     [
+      "horn",
+      "Horn (horn)"
+     ],
+     [
+      "electronic",
+      "Elektronisch (electronic)"
+     ]
+    ]
+   },
+   {
+    "key": "critical_volume",
+    "label": "Lautstärke kritischer Meldungen",
+    "default": "5",
+    "choices": [
+     [
+      "0",
+      "0 (lautlos)"
+     ],
+     [
+      "1",
+      "1"
+     ],
+     [
+      "2",
+      "2"
+     ],
+     [
+      "3",
+      "3"
+     ],
+     [
+      "4",
+      "4"
+     ],
+     [
+      "5",
+      "5"
+     ],
+     [
+      "6",
+      "6"
+     ],
+     [
+      "7",
+      "7"
+     ],
+     [
+      "8",
+      "8"
+     ],
+     [
+      "9",
+      "9"
+     ],
+     [
+      "10",
+      "10"
+     ]
+    ]
+   },
+   {
+    "key": "extra_id",
+    "label": "Zusätzlich senden an",
+    "default": "0",
+    "choices": [
+     [
+      "0",
+      "niemand"
+     ],
+     [
+      "3",
+      "Anna Müller"
+     ],
+     [
+      "7",
+      "Jens"
+     ]
+    ]
+   }
+  ]
+ }
+}

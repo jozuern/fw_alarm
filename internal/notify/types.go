@@ -322,10 +322,11 @@ func typesFor(cfg *config.Config) []TypeDef {
 	}
 
 	// Für JEDE Art gleich, und zuerst: Dringlichkeit und Verhalten in der
-	// Ruhezeit.
+	// Ruhezeit. Die Möglichkeiten als eigene Kopie – ändert ein Aufrufer eine,
+	// träfe das sonst jede spätere Antwort (und LevelText).
 	for i := range types {
 		common := []OptionDef{
-			{Key: "level", Label: "Dringlichkeit", Choices: levels, Default: "passive"},
+			{Key: "level", Label: "Dringlichkeit", Choices: slices.Clone(levels), Default: "passive"},
 			{Key: "ignore_quiet", Label: "In der Ruhezeit",
 				Choices: ints(0, "nur leise zustellen", 1, "wie eingestellt (auch nachts)"), Default: "0"},
 		}
@@ -367,7 +368,7 @@ func globalSpecsFor(st *model.State) []OptionDef {
 		{Key: "quiet_enabled", Label: "Ruhezeit", Choices: ints(0, "aus", 1, "ein"), Default: "0"},
 		{Key: "quiet_from", Label: "Ruhezeit von", Choices: hours, Default: "22"},
 		{Key: "quiet_to", Label: "Ruhezeit bis", Choices: hours, Default: "7"},
-		{Key: "sound", Label: "Ton", Choices: sounds, Default: ""},
+		{Key: "sound", Label: "Ton", Choices: slices.Clone(sounds), Default: ""}, // eigene Kopie wie levels
 		{Key: "critical_volume", Label: "Lautstärke kritischer Meldungen", Choices: volumes, Default: "5"},
 		{Key: "extra_id", Label: "Zusätzlich senden an", Choices: extra, Default: "0"},
 	}

@@ -10,7 +10,7 @@ import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import {
-  BACKEND_KIND, COMMAND_FIELDS, MARK_KINDS, RECIPIENT_FIELDS, now, request, sha256, startBackend,
+  BACKEND_KIND, COMMAND_FIELDS, MARK_KINDS, RECIPIENT_FIELDS, now, request, session, sha256, startBackend,
 } from './harness.mjs';
 
 const near = (actual, expected, slack = 5) => Math.abs(actual - expected) <= slack;
@@ -373,6 +373,25 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
       assert.equal(h.state, 'normal');
       await backend.storage.repair('durable');
       assert.equal(backend.files.exists('state.json.tmp'), false);
+    });
+
+    it('durable: keys_add antwortet 500 code storage, health sagt save_ok=0 – nach repair und einer gelungenen Änderung save_ok=1', async () => {
+      const admin = await session(backend);
+      await backend.storage.fail('durable');
+      const failed = await admin.post({ action: 'keys_add', label: 'Anna', key: 'annakey00001' });
+      assert.equal(failed.http, 500, JSON.stringify(failed));
+      assert.equal(failed.code, 'storage');
+      assert.equal(failed.message, 'Fehler: Datenordner nicht beschreibbar (Rechte des Web-Benutzers auf dem Server prüfen).');
+      let h = await backend.health();
+      assert.equal(h.save_ok, '0', h.text);
+      assert.equal(h.state, 'normal');
+      await backend.storage.repair('durable');
+      const added = await admin.post({ action: 'keys_add', label: 'Anna', key: 'annakey00001' });
+      assert.equal(added.ok, true, JSON.stringify(added));
+      h = await backend.health();
+      assert.equal(h.save_ok, '1', h.text);
+      assert.equal(h.ok, true, h.text);
+      assert.deepEqual((await admin.keys()).keys.map((k) => k.label), ['Anna']);
     });
 
     it('history: die Datei wandert beiseite, ein Ordner tritt an ihre Stelle, repair bringt genau sie zurück', async () => {

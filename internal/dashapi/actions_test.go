@@ -163,6 +163,10 @@ func TestAccessOrder(t *testing.T) {
 		}
 		x.W.WriteHeader(http.StatusTeapot)
 	})
+	// Seit Aufgabe 16 hat jede Lese-Aktion ihren Handler – für den Fall
+	// "Lese-Aktion noch ohne Handler" wird einer für die Dauer des Tests
+	// weggenommen.
+	withHandle(t, "settings_list", nil)
 	tok := func(s string) [2]string { return [2]string{"X-CSRF-Token", s} }
 	add := url.Values{"action": {"keys_add"}}
 	cases := []struct {
