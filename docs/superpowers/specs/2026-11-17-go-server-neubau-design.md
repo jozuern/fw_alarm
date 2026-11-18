@@ -746,7 +746,11 @@ lokaler Benutzer auf der VM; Fehler in Fremdbibliotheken.
 Regeln, jede für sich ausreichend:
 
 1. **Echte Bark-Keys gibt es nur auf dem laufenden Server.** Auf dem PC und
-   bei GitHub sind die Keys erfunden, und Bark ist eine Attrappe. In jeder
+   bei GitHub sind die Keys erfunden, und Bark ist eine Attrappe – der
+   Prüfstand schreibt keine Konfiguration, deren `bark_host` nicht genau
+   die Attrappe (`http://127.0.0.1:<Port>`) oder leer ist, auch keine
+   absichtlich kaputte (der Treiber weist sie ab, bevor ein Byte auf der
+   Platte liegt). In jeder
    KOPIE echter Daten (Gleichlauf auf dem PC, Probe auf der VM) werden vor
    dem ersten Start alle Bark-Keys durch erfundene ersetzt; der Schritt
    prüft selbst, dass keiner übrig ist, und es gibt keinen Schalter, ihn zu
