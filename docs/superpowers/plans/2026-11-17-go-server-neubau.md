@@ -570,7 +570,7 @@ func (s *Store) Lifebeat()                             // lifebeat_at = jetzt (f
 ```go
 type Job struct{ Key string; Fields map[string]string }
 type Result struct{ OK bool; HTTP int; Err string }
-func New(cfg func() *config.Config, clk clock.Clock) *Client   // die Uhr für die Probe-Sperre und die Pause zwischen den Runden
+func New(cfg func() *config.Config, clk clock.Clock, log *slog.Logger) *Client   // die Uhr für die Probe-Sperre und die Pause zwischen den Runden; das Journal für gescheiterte Versuche (Key nur maskiert)
 func (c *Client) PostMany(ctx context.Context, jobs []Job, tries int) []Result   // PHP: bark_post_many
 func ASCII(s string) string                    // PHP: bark_ascii
 func MaskKey(k string) string                  // reicht an model.MaskKey weiter (eine Fassung)
@@ -579,6 +579,7 @@ func FalseAlarmFields(cfg *config.Config, title, body string, muted bool, muteVo
 func TestFields(cfg *config.Config, now time.Time) map[string]string             // PHP: bark_send_test
 ```
 
+- An empty or invalid `bark_host` sends nothing (fixed error per job) — there is no fallback to the real server inside the client; the default exists only in the configuration loader for a MISSING key. A field named `device_key`/`device_keys` in a job is refused. `PostMany` does not check keys (like PHP's `bark_post_many`): callers that take a key from outside check it with `model.ValidKey` first, as PHP's `bark_send_status`/`bark_send_test` do.
 - Client: connect 5 s, whole request 10 s, no redirects followed, response body never read (closed at once), `POST <bark_host>/<key>` urlencoded, only status 200 counts, 4xx never retried, 500 ms between rounds, every open job of a round at the same time, `bark_host` read anew for every send. Each job runs under `recover`.
 - **Send lock** — enforced here, in the one function every send of the server passes (`PostMany`), so that no mistake above it can get past: while `cfg().SendGuard(now)` is active, a job whose key is not in the list is NOT sent — no connection is opened for it — and its result is `Result{OK: false, HTTP: 0, Err: "Probe-Sperre: nicht gesendet"}`. Jobs to listed keys go out as always. Without an active lock the code path is not taken at all. `func (c *Client) Guard() (until time.Time, active bool)` tells callers that it is on.
 
