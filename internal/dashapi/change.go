@@ -23,20 +23,24 @@ import (
 
 // answered ist eine Antwort ohne Sichern (PHP: ein Ergebnis von
 // mutate_alarm_keys ohne 'write') – eine Ablehnung oder "ist bereits so".
-// Sie bricht die Änderung ab; nichts wird gesichert.
-type answered struct{ obj web.Object }
+// Sie bricht die Änderung ab; nichts wird gesichert. status 0 = 200 (wie
+// PHP für Ablehnungen); 409 für "Modus geändert" (checkExpectedMode).
+type answered struct {
+	obj    web.Object
+	status int
+}
 
 func (a *answered) Error() string { return "beantwortet ohne Änderung" }
 
 // refuse: abgelehnt, nichts geändert – {"ok":false,"message":…} mit Status
 // 200 wie PHP.
 func refuse(message string) error {
-	return &answered{web.Object{{Key: "ok", Value: false}, {Key: "message", Value: message}}}
+	return &answered{obj: web.Object{{Key: "ok", Value: false}, {Key: "message", Value: message}}}
 }
 
 // same: schon so – {"ok":true,"changed":false,"message":…}, nichts gesichert.
 func same(message string) error {
-	return &answered{web.Object{{Key: "ok", Value: true}, {Key: "changed", Value: false}, {Key: "message", Value: message}}}
+	return &answered{obj: web.Object{{Key: "ok", Value: true}, {Key: "changed", Value: false}, {Key: "message", Value: message}}}
 }
 
 // reply beantwortet die Anfrage mit {"ok":false,"message":…} (Prüfungen VOR
@@ -89,7 +93,11 @@ func applyWithin(ctx context.Context, x *Ctx, fn func(d *model.State) (web.Objec
 	var a *answered
 	switch {
 	case errors.As(err, &a):
-		web.JSON(x.W, http.StatusOK, a.obj)
+		status := a.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		web.JSON(x.W, status, a.obj)
 	case err != nil:
 		web.StorageError(x.W, err, true)
 	default:

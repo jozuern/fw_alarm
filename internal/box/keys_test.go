@@ -55,6 +55,8 @@ type bench struct {
 	cfg    atomic.Pointer[config.Config]
 	keys   web.Handler
 	status web.Handler
+	poll   web.Handler
+	ack    web.Handler
 
 	barkMu   sync.Mutex
 	barkReqs []barkReq // was die Bark-Attrappe bekam
@@ -97,11 +99,14 @@ func newBenchOn(t *testing.T, f *storetest.FaultFS) *bench {
 	sum := sha256.Sum256([]byte(machineToken))
 	b.cfg.Store(&config.Config{Timezone: "Europe/Berlin", BarkHost: srv.URL, MuteMaxSeconds: 43200, OfflineAfterSeconds: 180,
 		MachineTokenSHA256: " " + strings.ToUpper(hex.EncodeToString(sum[:])) + " ", BarkKeysAlarm: []string{"notkey00001"},
-		DashboardUser: "admin", DashboardPasswordHash: "hash", WatchdogOfflineAfterSeconds: 600, BarkKeyStatus: statusKey})
+		DashboardUser: "admin", DashboardPasswordHash: "hash", WatchdogOfflineAfterSeconds: 600, BarkKeyStatus: statusKey,
+		PendingCommandTTLSeconds: 300, DeliveredCommandLockSeconds: 120})
 	b.c = &core.Core{Cfg: b.cfg.Load, CfgOK: func() bool { return true }, Store: st,
 		Bark: bark.New(b.cfg.Load, clock.Real(), log), Clock: clock.NewFake(t0), Bg: group, Log: log, Version: "test"}
 	b.keys = web.SecurityHeaders(b.c, KeysHandler(b.c))
 	b.status = web.SecurityHeaders(b.c, StatusHandler(b.c))
+	b.poll = web.SecurityHeaders(b.c, PollHandler(b.c))
+	b.ack = web.SecurityHeaders(b.c, AckHandler(b.c))
 	return b
 }
 
@@ -122,9 +127,25 @@ func (b *bench) sent() []barkReq {
 	return slices.Clone(b.barkReqs)
 }
 
+// update ändert den festen Zustand am Handler vorbei und wartet, bis die
+// Ablage auch nebenher nichts mehr sichert (quiet).
 func (b *bench) update(fn func(d *model.State)) {
 	b.t.Helper()
 	if err := b.c.Store.Update(context.Background(), func(d *model.State) error { fn(d); return nil }); err != nil {
+		b.t.Fatal(err)
+	}
+	b.quiet()
+}
+
+// quiet wartet, bis die Ablage alles gesichert hat, auch das Nachsichern der
+// outbox, das jeder Änderung nebenher folgt – sonst erwischte ein Test, der
+// danach die Platte anhält oder Schreibvorgänge zählt, womöglich dieses
+// Sichern statt des eigenen.
+func (b *bench) quiet() {
+	b.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := b.c.Store.Flush(ctx); err != nil {
 		b.t.Fatal(err)
 	}
 }

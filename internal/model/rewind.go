@@ -40,7 +40,7 @@ func (s *State) Rewind(src RewindSource, now time.Time) {
 		cancelled.CancelledBy = "system"
 		cancelled.CancelReason = RewindCancelReason
 		s.Commands.Current = &cancelled
-		s.Log(NewEntry(EvCancelled, now, map[string]any{"command": cancelled}))
+		s.Log(commandEntry(EvCancelled, cancelled, now))
 	}
 	s.Log(NewEntry(EvStateRewound, now, map[string]any{"source": string(src), "by": "system"}))
 }

@@ -7,3 +7,5 @@ tests/backend/dashboard-settings.test.mjs
 tests/backend/box-status.test.mjs
 tests/backend/go-box.test.mjs
 tests/backend/go-storage.test.mjs
+tests/backend/box-poll-ack.test.mjs
+tests/backend/box-keys.test.mjs

@@ -189,7 +189,7 @@ func TestAccessOrder(t *testing.T) {
 		{"Token der anderen Sitzung", req("POST", "", add, admin, tok(readerSess.CSRF)), 403, bodyCSRF},
 		{"Lese-Rolle mit Token", req("POST", "", add, reader, tok(readerSess.CSRF)), 403, bodyReadonly},
 		{"Lese-Rolle, admin-Aktion per GET", req("GET", "action=notify_list", nil, reader), 403, bodyReadonly},
-		{"Admin, Aktion noch ohne Handler", req("POST", "", url.Values{"action": {"enqueue"}}, admin, tok(adminSess.CSRF)), 501, body501},
+		{"Admin, Aktion noch ohne Handler", req("POST", "", url.Values{"action": {"alarm"}}, admin, tok(adminSess.CSRF)), 501, body501},
 		{"Admin, Lese-Aktion noch ohne Handler", req("GET", "action=settings_list", nil, admin), 501, body501},
 	}
 	for _, tc := range cases {

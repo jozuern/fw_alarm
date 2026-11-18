@@ -77,12 +77,20 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
   `mutes.Expire` (Meldungen, die erst nach dem Sichern hinausdürfen, hängen
   über `Store.UpdateThen` am Sichern – auch an einem, das erst nach der Frist
   landet), die Regeln des Status-Pushs (Relaisalarm je Board, Quelle,
-  veralteter Push, Neustart, fremdes Board, Hinweis auf mehrere Boards) als
-  reine Rechnung in `internal/model/status.go` (`EvaluatePush`, je Regel eine
-  Zeile in `TestEvaluatePush` für alte und neue Firmware; `api/status.php`
+  veralteter Push, Neustart, fremdes Board) als reine Rechnung in
+  `internal/model/status.go` (`EvaluatePush`, je Regel eine Zeile in
+  `TestEvaluatePush` für alte und neue Firmware; `api/status.php`
   beantwortet jeden angenommenen Push sofort mit 200 `OK` – vor der Antwort
   nur Flüchtiges; die Übernahme einer höheren Listen-Version der Box läuft
-  danach), die Verlaufs-Ereignisse (Kategorie, nur Admin,
+  danach), der Hinweis auf mehrere Boards in `internal/model/devices.go`,
+  der Lebenslauf eines Befehls an die Box (anlegen, ausliefern, quittieren,
+  verfallen, abbrechen, Nummern der Box, Sicherung des Demo-Alarms) als
+  reine Regeln in `internal/model/command.go` (je Übergang eine Zeile in
+  `TestCommandLifeCycle`; `api/poll.php` trägt einen Befehl nur, wenn
+  „ausgeliefert“ innerhalb der Frist der Box gesichert ist, sonst 200
+  `type=NONE` mit `keys_version` – höchstens einmal, auch wenn das Sichern
+  erst nach der Frist landet; ein Poll ohne Neues sichert nichts;
+  `api/ack.php` antwortet immer `OK`), die Verlaufs-Ereignisse (Kategorie, nur Admin,
   freigegebene Felder) in `internal/logview/events.go` (wie
   `log_event_types()`; ein neues Ereignis braucht dort eine Zeile, in
   `internal/model` seinen Namen samt Eintrag in `AllEvents` und in

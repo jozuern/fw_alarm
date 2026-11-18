@@ -42,7 +42,7 @@ die Chrome-Szenarien (`tests/dashboard/e2e/run.mjs`, README unter `tests/dashboa
 | `php-storage.test.mjs` | Nur PHP (unter einer anderen Fassung übersprungen): was allein an PHPs Ablage hängt (Sperren, kaputte Dateien, `.bak`, `health_check_url`, Wächter als eigener Prozess) und was die Go-Fassung bewusst anders regelt – die Fälle stehen unverändert so da wie in ihrer Herkunftsdatei |
 | `php-health.test.mjs` | Nur PHP: Selbsttest des Datenordners (`api/health.php`): Antwort, Störungen, über einen Proxy 404 |
 | `go-box.test.mjs` | Nur Go: Box-Protokoll, wo die Go-Fassung bewusst anders regelt – eine höhere Listen-Version der Box hebt die des Servers sofort darüber (nur die eingestellte Box) |
-| `go-storage.test.mjs` | Nur Go: die Gegenstücke zu `php-storage.test.mjs` – was gilt, wenn nichts gesichert werden kann (der Status-Push gilt im Speicher und wird mit 200 bestätigt) |
+| `go-storage.test.mjs` | Nur Go: die Gegenstücke zu `php-storage.test.mjs` – was gilt, wenn nichts gesichert werden kann (der Status-Push gilt im Speicher und wird mit 200 bestätigt; der Poll antwortet 200 `type=NONE` und liefert einen Befehl erst aus, wenn „ausgeliefert“ gesichert ist) |
 | `go-session.test.mjs` | Nur Go: keine gespeicherte Sitzung für Unbekannte (`sessions.json` des Servers), welche Antwort welches Cookie setzt – Sitzung und Geräte-Ausweis `boss925_device` (Sitzung zuerst), Abmelden löscht nur die Sitzung |
 | `go-driver.test.mjs` | Nur Go: der Treiber selbst – Starten, Anhalten, hartes Beenden, zweiter Server auf demselben Ordner, Konfiguration und der Wächter, der nie ein fremdes `bark_host` schreibt, Neustarts ohne tote Verbindungen, jeder Helfer schreibt, was der Server annimmt, die Prüfung nach jedem Start, Sichern scheitern lassen |
 

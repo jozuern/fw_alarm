@@ -58,4 +58,40 @@ describe('Ablage (nur Go)', { skip: BACKEND_KIND !== 'go' && 'nur Go' }, () => {
       assert.deepEqual(saved, ['17.11.2026 10:05:00', '17.11.2026 10:09:00']);
     });
   });
+
+  describe('box-poll-ack.test.mjs', () => {
+    // Gegenstück zu PHPs Poll bei klemmendem Datenordner (je nach Ursache
+    // HTTP 500 "ok=0" oder type=NONE): immer 200 type=NONE mit der
+    // Listen-Version - ein Befehl geht nur hinaus, wenn "ausgeliefert"
+    // gesichert ist (Entwurf §6.2, §7), sonst wartet er weiter. Auch die
+    // Quittung bleibt 200 OK.
+    it('Poll liefert ohne Speichern keinen Befehl aus', async () => {
+      await admin.addKey('Anna', 'annakey00001');
+      const version = (await admin.keys()).version;
+      assert.ok(version >= 1);
+      assert.equal((await admin.post({ action: 'enqueue', type: 'TEST' })).ok, true);
+      const none = (nonce) => `ok=1\nnonce=${nonce}\nid=0\ntype=NONE\nkeys_version=${version}\n`;
+      await backend.storage.fail('durable');
+      try {
+        for (const nonce of ['s1', 's2']) {
+          const r = await b.poll({ nonce });
+          assert.equal(r.status, 200);
+          assert.equal(r.text, none(nonce));
+          assert.match(r.headers.get('content-type'), /^text\/plain/);
+        }
+        assert.equal((await admin.get('status')).command.state, 'pending', 'der Befehl wartet weiter');
+        const ack = await b.ack({ id: 1, result: 'executed' });
+        assert.equal(ack.status, 200);
+        assert.equal(ack.text, 'OK\n');
+      } finally {
+        await backend.storage.repair('durable');
+      }
+      assert.equal((await b.poll({ nonce: 's3' })).text, `ok=1\nnonce=s3\nid=1\ntype=TEST\nkeys_version=${version}\n`,
+        'danach liefert der nächste Poll ihn aus');
+      assert.equal((await b.poll({ nonce: 's4' })).text, none('s4'), 'und nur einmal');
+      assert.equal((await admin.get('status')).command.state, 'delivered');
+      const delivered = (await backend.state.log()).filter((e) => e.event === 'delivered');
+      assert.equal(delivered.length, 1);
+    });
+  });
 });

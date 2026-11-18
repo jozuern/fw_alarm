@@ -13,6 +13,6 @@ import (
 func init() {
 	dashapi.StatusPart("device_hint", func(x *dashapi.Ctx) any {
 		cfg := x.Core.Cfg()
-		return model.DeviceHintAfter(x.Core.Store.Runtime(), cfg.BoxDeviceID, x.Core.Clock.Now(), cfg.OfflineAfterSeconds)
+		return model.DeviceHint(x.Core.Store.Runtime(), cfg.BoxDeviceID, x.Core.Clock.Now(), cfg.OfflineAfterSeconds)
 	})
 }
