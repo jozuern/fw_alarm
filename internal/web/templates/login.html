@@ -1,0 +1,42 @@
+{{/*
+Anmeldeseite (PHP: render_login_page in nas_dashboard/lib/shell.php) – ein
+reines HTML-Formular, geht auch ohne JavaScript. Leerraum genau wie PHP ihn
+ausgibt (TestPagesEqualPHP). .: loginData – Error = Meldung des letzten
+Versuchs ("" = keine), User = stehen gebliebener Benutzername.
+Benutzername da (Fehlversuch): der Cursor springt ins Passwortfeld, sonst ins
+Namensfeld; die Meldung ist mit dem Passwortfeld verknüpft.
+*/ -}}
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+{{template "head" .Head}}  <title>Anmelden – Alarm-Wächter</title>
+</head>
+<body class="login-page">
+<main class="login">
+    <header class="login-brand">
+    <span class="lamp lamp-brand" aria-hidden="true"></span>
+    <h1 class="login-title">Alarm-Wächter</h1>
+    <p class="login-sub">BOSS-925 · Feuerwehr-Zusatzalarmierung</p>
+  </header>
+    <form class="login-form" method="post">
+    <input type="hidden" name="action" value="login">
+    <div class="login-card">
+      <div class="login-field">
+        <label class="login-label" for="user">Benutzer</label>
+                <input class="login-input" id="user" name="user" required autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
+               value="{{.User}}"{{if not .User}} autofocus{{end}}>
+      </div>
+      <div class="login-field">
+        <label class="login-label" for="password">Passwort</label>
+                <input class="login-input" id="password" name="password" type="password" required autocomplete="current-password"{{if .User}} autofocus{{end}}{{if .Error}} aria-invalid="true" aria-describedby="login-error"{{end}}>
+      </div>
+    </div>
+{{if .Error}}        <p class="msg msg-error login-error" id="login-error" role="alert"><span class="msg-sym" aria-hidden="true">✕</span><span class="msg-text">{{.Error}}</span></p>
+{{end}}        <button type="submit" class="btn btn-danger btn-block login-submit">Anmelden</button>
+  </form>
+  <p class="login-foot">Zusatzalarmierung – ersetzt nicht den Melder.</p>
+  <noscript><p class="login-foot">Nach der Anmeldung braucht das Dashboard JavaScript – ohne läuft die Live-Anzeige nicht.</p></noscript>
+</main>
+</body>
+</html>

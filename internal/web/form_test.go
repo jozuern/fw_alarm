@@ -543,3 +543,80 @@ func FuzzParseForm(f *testing.F) {
 		}
 	})
 }
+
+// Query liest einen Parameter der Adresse wie PHP $_GET: der letzte zählt,
+// entschlüsselt wie urldecode, ein name[…] wird die Liste "Array".
+func TestQueryLikePHP(t *testing.T) {
+	cases := []struct {
+		raw   string
+		value string
+		ok    bool
+	}{
+		{"", "", false},
+		{"action=status", "status", true},
+		{"action=", "", true},
+		{"action", "", true},
+		{"x=1&action=keys_list&action=status", "status", true},
+		{"action=keys_list+&y=2", "keys_list ", true},
+		{"action=a%2Bb%zz%4", "a+b%zz%4", true},
+		{"%61ction=log_view", "log_view", true},
+		{"action=a;b", "a;b", true},
+		{"action[]=status", "Array", true},
+		{"action[x]=status", "Array", true},
+		{"action=status&action[]=x", "Array", true},
+		{"action[]=x&action=status", "status", true},
+		{"action[=status", "", false}, // PHP: Name "action_"
+		{"[action]=status", "", false},
+		{"Action=status&ACTION=x", "", false},
+		{"action=%ff", "�", true},
+		{"&&action=status&&", "status", true},
+	}
+	for _, tc := range cases {
+		r := httptest.NewRequest(http.MethodGet, "/dashboard_api.php?"+tc.raw, nil)
+		if v, ok := Query(r, "action"); v != tc.value || ok != tc.ok {
+			t.Errorf("%q: %q %v, erwartet %q %v", tc.raw, v, ok, tc.value, tc.ok)
+		}
+	}
+	// Nur die ersten 1000 Paare zählen.
+	raw := strings.Repeat("x=1&", 1000) + "action=spaet"
+	r := httptest.NewRequest(http.MethodGet, "/?"+raw, nil)
+	if v, ok := Query(r, "action"); ok {
+		t.Errorf("Paar 1001 gelesen: %q", v)
+	}
+	// Der Rumpf eines POST zählt nie.
+	r = httptest.NewRequest(http.MethodPost, "/", strings.NewReader("action=status"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if _, ok := Query(r, "action"); ok {
+		t.Error("Rumpf als Query gelesen")
+	}
+}
+
+// Query ohne Laufzeitfehler; ok=false heißt leer; ein angehängter letzter
+// Parameter gewinnt (solange er unter den ersten 1000 Paaren ist); Werte
+// sind gültiges UTF-8.
+func FuzzQuery(f *testing.F) {
+	for _, seed := range [][2]string{
+		{"", "status"}, {"action=x", ""}, {"action[]=1&action[x", "a b"}, {"%zz=%&&=", "\xff"},
+		{"action=%61%2", "ü+&="}, {strings.Repeat("a&", 10), "keys_list "},
+	} {
+		f.Add(seed[0], seed[1])
+	}
+	f.Fuzz(func(t *testing.T, raw, v string) {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.URL.RawQuery = raw
+		got, ok := Query(r, "action")
+		if !ok && got != "" || !utf8.ValidString(got) {
+			t.Fatalf("%q: %q %v", raw, got, ok)
+		}
+		if !strings.Contains(raw, "action") && !strings.Contains(raw, "%") && ok {
+			t.Fatalf("%q: gefunden ohne den Namen", raw)
+		}
+		if strings.Count(raw, "&") >= maxFormPairs-1 {
+			return
+		}
+		r.URL.RawQuery = raw + "&action=" + url.QueryEscape(v)
+		if got, ok := Query(r, "action"); !ok || got != strings.ToValidUTF8(v, "�") {
+			t.Fatalf("%q + %q: %q %v", raw, v, got, ok)
+		}
+	})
+}

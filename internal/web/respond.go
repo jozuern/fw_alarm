@@ -67,3 +67,45 @@ func asciiJSON(b []byte) []byte {
 	}
 	return out
 }
+
+// Object ist ein JSON-Objekt, dessen Schlüssel in der gegebenen Reihenfolge
+// geschrieben werden – wie PHP ein Array mit json_encode ausgibt
+// (encoding/json sortiert die Schlüssel einer Map). Jeder Schlüssel steht
+// höchstens einmal darin; dafür sorgt, wer es baut. Werte schreibt es mit
+// denselben Regeln wie JSON ("/" und <>& roh); leer ist es {}.
+type Object []Member
+
+// Member ist ein Eintrag eines Object.
+type Member struct {
+	Key   string
+	Value any
+}
+
+// MarshalJSON schreibt die Einträge in ihrer Reihenfolge.
+func (o Object) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	put := func(v any) error {
+		if err := enc.Encode(v); err != nil {
+			return err
+		}
+		buf.Truncate(buf.Len() - 1) // das Zeilenende von Encode
+		return nil
+	}
+	buf.WriteByte('{')
+	for i, m := range o {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		if err := put(m.Key); err != nil {
+			return nil, err
+		}
+		buf.WriteByte(':')
+		if err := put(m.Value); err != nil {
+			return nil, err
+		}
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}

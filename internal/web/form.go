@@ -219,3 +219,35 @@ func (f *Form) parseMultipart(ctype string, body []byte) {
 		}
 	}
 }
+
+// Query liefert den Parameter name aus der Adresse, wie PHP ihn in
+// $_GET[name] sieht (main/php_variables.c): getrennt nur an "&", Name und
+// Wert am ersten "=", beides entschlüsselt wie phpURLDecode, beim selben
+// Namen zählt der letzte. Ein name[…] machte daraus in PHP eine Liste – als
+// Text gelesen "Array" (so liest dashboard_api.php sie mit (string)); ein
+// "[" ohne "]" gehört in PHP zu einem anderen Namen (name[x → name_x). ok:
+// es gibt ihn (auch leer). Wie bei Formularen zählen höchstens die ersten
+// 1000 Paare, Werte sind gültiges UTF-8, Namen bleiben wie gesendet. Nie aus
+// dem Rumpf.
+func Query(r *http.Request, name string) (value string, ok bool) {
+	s := r.URL.RawQuery
+	for n := 0; s != "" && n < maxFormPairs; n++ {
+		var pair string
+		pair, s, _ = strings.Cut(s, "&")
+		rawName, rawValue, _ := strings.Cut(pair, "=")
+		key := phpURLDecode(rawName)
+		switch {
+		case key == name:
+			value, ok = strings.ToValidUTF8(phpURLDecode(rawValue), "�"), true
+		case isListOf(key, name):
+			value, ok = "Array", true
+		}
+	}
+	return value, ok
+}
+
+// isListOf: key ist name[…] – in PHP ein Eintrag der Liste name.
+func isListOf(key, name string) bool {
+	rest, found := strings.CutPrefix(key, name+"[")
+	return found && name != "" && strings.Contains(rest, "]")
+}

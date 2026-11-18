@@ -41,6 +41,7 @@ die Chrome-Szenarien (`tests/dashboard/e2e/run.mjs`, README unter `tests/dashboa
 | `dashboard-log.test.mjs` | Verlauf im Dashboard: freigegebene Felder, Filter, Menge, rotierte Datei |
 | `php-storage.test.mjs` | Nur PHP (unter einer anderen Fassung übersprungen): was allein an PHPs Ablage hängt (Sperren, kaputte Dateien, `.bak`, `health_check_url`, Wächter als eigener Prozess) und was die Go-Fassung bewusst anders regelt – die Fälle stehen unverändert so da wie in ihrer Herkunftsdatei |
 | `php-health.test.mjs` | Nur PHP: Selbsttest des Datenordners (`api/health.php`): Antwort, Störungen, über einen Proxy 404 |
+| `go-session.test.mjs` | Nur Go: keine gespeicherte Sitzung für Unbekannte (`sessions.json` des Servers), welche Antwort welches Cookie setzt – Sitzung und Geräte-Ausweis `boss925_device` (Sitzung zuerst), Abmelden löscht nur die Sitzung |
 | `go-driver.test.mjs` | Nur Go: der Treiber selbst – Starten, Anhalten, hartes Beenden, zweiter Server auf demselben Ordner, Konfiguration und der Wächter, der nie ein fremdes `bark_host` schreibt, Neustarts ohne tote Verbindungen, jeder Helfer schreibt, was der Server annimmt, die Prüfung nach jedem Start, Sichern scheitern lassen |
 
 ## Regeln für neue Tests

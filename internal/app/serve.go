@@ -18,6 +18,7 @@ import (
 	"fwalarm/internal/config"
 	"fwalarm/internal/control"
 	"fwalarm/internal/core"
+	"fwalarm/internal/dashapi"
 	"fwalarm/internal/store"
 	"fwalarm/internal/web"
 )
@@ -95,6 +96,7 @@ func Serve(ctx context.Context, o ServeOptions) error {
 	}
 	watchConfig(c, prov)
 	rt := web.NewRouter(c)
+	routes(c, rt)
 
 	stopRequested := make(chan struct{})
 	var stopOnce sync.Once
@@ -243,6 +245,17 @@ func watchConfig(c *core.Core, prov *config.Provider) {
 	if !prov.OK() {
 		web.EndAll(c)
 	}
+}
+
+// routes trägt die dynamischen Adressen ein (die statischen Dateien hat
+// NewRouter schon), jede mit den Sicherheits-Kopfzeilen: "/" wie index.php
+// (bei Nginx die Index-Datei), classic.php leitet nur um.
+func routes(c *core.Core, rt *web.Router) {
+	index := web.SecurityHeaders(c, web.IndexHandler(c))
+	rt.Handle("/", index)
+	rt.Handle("/index.php", index)
+	rt.Handle("/classic.php", web.SecurityHeaders(c, web.ClassicHandler()))
+	rt.Handle("/dashboard_api.php", web.SecurityHeaders(c, dashapi.Handler(c)))
 }
 
 // errStopping: reload oder flush, während der Server schon schließt.

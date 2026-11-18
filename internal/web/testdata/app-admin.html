@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark light">
+    <link rel="manifest" href="manifest.json">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Alarm-Wächter">
+  <link rel="icon" href="assets/favicon.svg?v=1794954641" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png?v=1785458886">
+    <script src="assets/app/theme-boot.js?v=1794783453"></script>
+  <link rel="stylesheet" href="assets/app.css?v=1794953651">
+  <meta name="csrf" content="0123456789abcdef0123456789abcdef0123456789abcdef">
+  <meta name="role" content="admin">
+  <meta name="user" content="admin">
+    <meta name="public-base" content="https://alarm.example.org">
+    <meta name="mute-max" content="14400">
+  <title>Alarm-Wächter</title>
+</head>
+<body class="app">
+<noscript><p class="noscript">Dieses Dashboard braucht JavaScript – ohne läuft die Live-Anzeige nicht.</p></noscript>
+<div id="app">
+  <div class="boot">
+    <p class="boot-title">Alarm-Wächter wird geladen…</p>
+    <p class="boot-help">Bleibt diese Seite so stehen, bitte neu laden.</p>
+    <div class="boot-links">
+      <a class="btn btn-tinted btn-block" href="index.php">Neu laden</a>
+    </div>
+  </div>
+</div>
+<form id="logout-form" method="post" action="index.php" hidden>
+  <input type="hidden" name="action" value="logout">
+  <input type="hidden" name="csrf" value="0123456789abcdef0123456789abcdef0123456789abcdef">
+</form>
+<script src="assets/vendor/htm-preact-3.1.1.umd.js?v=1794756933" defer></script>
+<script src="assets/app/logic.js?v=1794953651" defer></script>
+<script src="assets/app/api.js?v=1794953651" defer></script>
+<script src="assets/app/store.js?v=1794953651" defer></script>
+<script src="assets/app/ui.js?v=1794953651" defer></script>
+<script src="assets/app/view-overview.js?v=1794953651" defer></script>
+<script src="assets/app/view-recipients.js?v=1794953651" defer></script>
+<script src="assets/app/view-log.js?v=1794953651" defer></script>
+<script src="assets/app/view-settings.js?v=1794953651" defer></script>
+<script src="assets/app/main.js?v=1794953651" defer></script>
+</body>
+</html>

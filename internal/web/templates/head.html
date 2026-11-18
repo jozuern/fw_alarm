@@ -1,0 +1,19 @@
+{{/*
+Gemeinsamer Kopf von Anmeldeseite und App-Hülle (PHP: render_head_tags in
+nas_dashboard/lib/shell.php), nach <meta charset>. Leerraum genau wie PHP ihn
+ausgibt – auch die eingerückten Zeilen, vor denen dort ein PHP-Kommentar
+steht (TestPagesEqualPHP vergleicht Byte für Byte). .: headAssets.
+*/ -}}
+{{define "head"}}    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark light">
+    <link rel="manifest" href="manifest.json">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Alarm-Wächter">
+  <link rel="icon" href="{{.Favicon}}" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="{{.TouchIcon}}">
+    <script src="{{.ThemeBoot}}"></script>
+  <link rel="stylesheet" href="{{.CSS}}">
+{{end}}

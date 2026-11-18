@@ -16,9 +16,10 @@ import (
 // maxSameNameCookies: So viele Cookies eines Namens sieht der Server an.
 // Schickt der Browser mehrere (eine Seite unter einer Nachbar-Adresse kann
 // eines mit längerem Pfad unterschieben, das er dann zuerst schickt), zählt
-// unter ihnen das erste, das passt – so verdeckt ein untergeschobenes das
-// echte nicht. Die Grenze hält die Arbeit je Anfrage klein (je Wert höchstens
-// zwei HMAC bzw. ein SHA-256).
+// unter ihnen beim Sitzungs-Cookie das erste, das eine lebende Sitzung nennt,
+// beim Geräte-Ausweis der gültige der besten Klasse (Admin vor Lese-Konto) –
+// so verdeckt ein untergeschobenes das echte nicht. Die Grenze hält die
+// Arbeit je Anfrage klein (je Wert höchstens zwei HMAC bzw. ein SHA-256).
 const maxSameNameCookies = 4
 
 // firstCookies liefert die Werte der ersten maxSameNameCookies Cookies namens

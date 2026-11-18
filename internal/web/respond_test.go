@@ -48,3 +48,27 @@ func TestJSONLikePHP(t *testing.T) {
 		t.Errorf("nicht darstellbarer Wert: %d %q", rec.Code, rec.Body.String())
 	}
 }
+
+// Object schreibt die Schlüssel in der gegebenen Reihenfolge (wie ein
+// PHP-Array), auch verschachtelt, mit denselben Regeln wie JSON.
+func TestObjectKeepsOrder(t *testing.T) {
+	v := Object{
+		{"ok", false},
+		{"code", "csrf"},
+		{"message", "Gr\xc3\xbc\xc3\x9fe/<&>"},
+		{"inner", Object{{"z", 1}, {"a", nil}}},
+		{"leer", Object{}},
+		{"liste", []any{}},
+	}
+	rec := httptest.NewRecorder()
+	JSON(rec, 200, v)
+	want := strings.ReplaceAll(`{"ok":false,"code":"csrf","message":"Gr~u00fc~u00dfe/<&>","inner":{"z":1,"a":null},"leer":{},"liste":[]}`, "~", `\`)
+	if rec.Body.String() != want {
+		t.Errorf("%s\nerwartet %s", rec.Body.String(), want)
+	}
+	rec = httptest.NewRecorder()
+	JSON(rec, 200, Object{{"kanal", make(chan int)}})
+	if rec.Code != 500 || rec.Body.Len() != 0 {
+		t.Errorf("nicht darstellbarer Wert: %d %q", rec.Code, rec.Body.String())
+	}
+}

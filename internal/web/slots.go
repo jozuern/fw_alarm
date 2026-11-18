@@ -13,7 +13,7 @@ import (
 // Plätze für Passwortprüfungen (Spec §6.8). Eine Prüfung kostet Rechenzeit
 // und Speicher (Argon2id bis 64 MiB), deshalb:
 //   - höchstens zwei zugleich, höchstens eine je Absender (ThrottleKey) – in
-//     beiden Reihen zusammen;
+//     allen Reihen zusammen;
 //   - wer warten muss, wartet höchstens 5 s, danach LoginBusy (503), nicht
 //     gezählt (der Versuch wurde nie geprüft);
 //   - drei Reihen, bedient in fester Folge: Versuche mit gültigem

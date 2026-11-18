@@ -1,8 +1,9 @@
 // Package web ist die HTTP-Seite des Servers: die Tabelle der Adressen
 // (hier), Antworten, statische Dateien, Formulare, Sicherheits-Kopfzeilen,
-// Vertrauen in den Proxy, Bremsen, das Maschinen-Token, Fristen, Sitzungen
-// und die Anmeldung samt begrenzter Passwortprüfungen und Geräte-Ausweis;
-// später die Seiten.
+// Vertrauen in den Proxy, Bremsen, das Maschinen-Token, Fristen, Sitzungen,
+// die Anmeldung samt begrenzter Passwortprüfungen und Geräte-Ausweis, die
+// Seiten (Anmeldeseite, App-Hülle, index.php und classic.php) und die
+// Antworten, wenn eine Änderung nicht gesichert wurde (StorageError).
 //
 // Die Tabelle kennt nur genaue Pfade (Spec §6.4). Mehrfache Schrägstriche
 // werden wie bei Nginx zusammengezogen; umgeleitet wird nie (eine Umleitung

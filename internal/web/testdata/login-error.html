@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark light">
+    <link rel="manifest" href="manifest.json">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Alarm-Wächter">
+  <link rel="icon" href="assets/favicon.svg?v=1794954641" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png?v=1785458886">
+    <script src="assets/app/theme-boot.js?v=1794783453"></script>
+  <link rel="stylesheet" href="assets/app.css?v=1794953651">
+  <title>Anmelden – Alarm-Wächter</title>
+</head>
+<body class="login-page">
+<main class="login">
+    <header class="login-brand">
+    <span class="lamp lamp-brand" aria-hidden="true"></span>
+    <h1 class="login-title">Alarm-Wächter</h1>
+    <p class="login-sub">BOSS-925 · Feuerwehr-Zusatzalarmierung</p>
+  </header>
+    <form class="login-form" method="post">
+    <input type="hidden" name="action" value="login">
+    <div class="login-card">
+      <div class="login-field">
+        <label class="login-label" for="user">Benutzer</label>
+                <input class="login-input" id="user" name="user" required autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
+               value="admin">
+      </div>
+      <div class="login-field">
+        <label class="login-label" for="password">Passwort</label>
+                <input class="login-input" id="password" name="password" type="password" required autocomplete="current-password" autofocus aria-invalid="true" aria-describedby="login-error">
+      </div>
+    </div>
+        <p class="msg msg-error login-error" id="login-error" role="alert"><span class="msg-sym" aria-hidden="true">✕</span><span class="msg-text">Login fehlgeschlagen.</span></p>
+        <button type="submit" class="btn btn-danger btn-block login-submit">Anmelden</button>
+  </form>
+  <p class="login-foot">Zusatzalarmierung – ersetzt nicht den Melder.</p>
+  <noscript><p class="login-foot">Nach der Anmeldung braucht das Dashboard JavaScript – ohne läuft die Live-Anzeige nicht.</p></noscript>
+</main>
+</body>
+</html>

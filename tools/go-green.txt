@@ -1,1 +1,3 @@
 tests/backend/go-driver.test.mjs
+tests/backend/session.test.mjs
+tests/backend/go-session.test.mjs

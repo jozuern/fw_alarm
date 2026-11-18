@@ -1,0 +1,36 @@
+{{/*
+App-Hülle der Oberfläche (PHP: render_app_page in nas_dashboard/lib/shell.php):
+die Startwerte als meta-Tags (die CSP verbietet Skript-Inhalte im HTML), in
+#app eine Ersatzanzeige mit "Neu laden", bis main.js die App zeichnet, das
+Abmelde-Formular (POST + CSRF) und die Skripte in fester Reihenfolge, alle
+defer. Leerraum genau wie PHP ihn ausgibt (TestPagesEqualPHP). .: appData.
+*/ -}}
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+{{template "head" .Head}}  <meta name="csrf" content="{{.CSRF}}">
+  <meta name="role" content="{{.Role}}">
+  <meta name="user" content="{{.User}}">
+    <meta name="public-base" content="{{.PublicBase}}">
+    <meta name="mute-max" content="{{.MuteMax}}">
+  <title>Alarm-Wächter</title>
+</head>
+<body class="app">
+<noscript><p class="noscript">Dieses Dashboard braucht JavaScript – ohne läuft die Live-Anzeige nicht.</p></noscript>
+<div id="app">
+  <div class="boot">
+    <p class="boot-title">Alarm-Wächter wird geladen…</p>
+    <p class="boot-help">Bleibt diese Seite so stehen, bitte neu laden.</p>
+    <div class="boot-links">
+      <a class="btn btn-tinted btn-block" href="index.php">Neu laden</a>
+    </div>
+  </div>
+</div>
+<form id="logout-form" method="post" action="index.php" hidden>
+  <input type="hidden" name="action" value="logout">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+</form>
+{{range .Scripts}}<script src="{{.}}" defer></script>
+{{end}}</body>
+</html>
