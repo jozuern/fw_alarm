@@ -381,7 +381,10 @@ Sicherheits-Kopfzeilen an jeder dynamischen Antwort wie heute,
 doppelten Feldern zählt das letzte, die Reihenfolge der Felder bleibt
 erhalten (der Status-Push behält die ersten 40). Feldnamen mit Klammern
 (`a[]`, `a[b]`) ergäben in PHP eine Liste – solche Felder werden wie dort
-übergangen; ein Rumpf mit anderem Inhaltstyp hat keine Felder. Statische
+übergangen; ein Rumpf mit anderem Inhaltstyp hat keine Felder. Dass PHP in
+Feldnamen Punkt und Leerzeichen zu `_` macht und führende Leerzeichen
+streicht, wird NICHT nachgebaut (kein Aufrufer sendet solche Namen; Go ist
+damit strenger). Statische
 Dateien aus dem eingebetteten `assets/` mit fester Typ-Tabelle; der
 Versions-Parameter `?v=` ist ein Inhalts-Hash als Dezimalzahl (die Szenarien
 verlangen Ziffern). Seiten über `html/template`.
