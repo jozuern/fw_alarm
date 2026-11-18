@@ -1,23 +1,8 @@
 package web
 
-import "unicode/utf8"
+import "fwalarm/internal/model"
 
 // ClipBytes kürzt s auf höchstens n Bytes, nie mitten in einem Zeichen
-// (ein ungültiges Byte zählt als eigenes Zeichen).
-func ClipBytes(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	if len(s) <= n {
-		return s
-	}
-	end := 0
-	for end < len(s) {
-		_, size := utf8.DecodeRuneInString(s[end:])
-		if end+size > n {
-			break
-		}
-		end += size
-	}
-	return s[:end]
-}
+// (ein ungültiges Byte zählt als eigenes Zeichen). Die Regel steht einmal,
+// in model.ClipBytes – der Status-Push der Box kürzt dort die device_id.
+func ClipBytes(s string, n int) string { return model.ClipBytes(s, n) }

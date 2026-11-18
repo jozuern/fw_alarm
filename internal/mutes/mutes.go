@@ -21,6 +21,7 @@ import (
 	"fwalarm/internal/core"
 	"fwalarm/internal/model"
 	"fwalarm/internal/notify"
+	"fwalarm/internal/store"
 	"fwalarm/internal/textde"
 )
 
@@ -78,14 +79,25 @@ func Expire(ctx context.Context, c *core.Core) error {
 		return nil
 	case err != nil:
 		// Der Server rechnet die Betroffenen trotzdem schon als laut, die Box
-		// nicht: Sie holt die Liste nur bei neuer Version.
-		if ok, suppressed := warnings(c).allow(now); ok {
-			c.Log.Warn("überfällige Stummschaltung nicht gesichert – die Box alarmiert die Betroffenen bis dahin weiter stumm",
-				"err", err, "unterdrueckt", suppressed)
+		// nicht: Sie holt die Liste nur bei neuer Version. Die Bremse misst
+		// mit der Uhr JETZT, nicht mit now vom Beginn: Zwei Aufrufe, die in
+		// umgekehrter Reihenfolge fertig werden, sähen sonst wie eine
+		// zurückgesprungene Uhr aus.
+		if ok, suppressed := warnings(c).allow(c.Clock.Now()); ok {
+			c.Log.Warn(warningText(err), "err", err, "unterdrueckt", suppressed)
 		}
 		return err
 	}
 	return nil
+}
+
+// warningText: die Zeile im Journal, wenn die Rückschaltung nicht galt. Nach
+// ErrLate kann das Sichern noch landen – dann gilt sie doch.
+func warningText(err error) string {
+	if errors.Is(err, store.ErrLate) {
+		return "überfällige Stummschaltung nicht rechtzeitig gesichert – landet das Sichern noch, gilt sie; bis dahin alarmiert die Box die Betroffenen weiter stumm"
+	}
+	return "überfällige Stummschaltung nicht gesichert – die Box alarmiert die Betroffenen bis dahin weiter stumm"
 }
 
 // warnEvery: so oft steht die Warnung höchstens im Journal.

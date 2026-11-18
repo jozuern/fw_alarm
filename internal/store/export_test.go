@@ -47,6 +47,17 @@ func (s *Store) ResyncHistory() error {
 	return err
 }
 
+// Closing: Läuft gerade ein Close? Close hält closeMu vom Anfang bis zum
+// Ende – ist sie nicht zu haben, steckt es mittendrin (vorher und nachher
+// ist sie frei).
+func (s *Store) Closing() bool {
+	if s.closeMu.TryLock() {
+		s.closeMu.Unlock()
+		return false
+	}
+	return true
+}
+
 // ParseHistoryLine: der nachsichtige Leser einer Verlaufszeile.
 func ParseHistoryLine(b []byte) (model.Entry, bool) { return parseLine(b) }
 

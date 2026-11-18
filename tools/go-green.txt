@@ -4,3 +4,6 @@ tests/backend/go-session.test.mjs
 tests/backend/dashboard-log.test.mjs
 tests/backend/dashboard-notify.test.mjs
 tests/backend/dashboard-settings.test.mjs
+tests/backend/box-status.test.mjs
+tests/backend/go-box.test.mjs
+tests/backend/go-storage.test.mjs

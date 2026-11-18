@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,11 +49,21 @@ var (
 )
 
 type bench struct {
-	t     *testing.T
-	c     *core.Core
-	fs    *storetest.FaultFS
-	keys  web.Handler
-	barkN atomic.Int64
+	t      *testing.T
+	c      *core.Core
+	fs     *storetest.FaultFS
+	cfg    atomic.Pointer[config.Config]
+	keys   web.Handler
+	status web.Handler
+
+	barkMu   sync.Mutex
+	barkReqs []barkReq // was die Bark-Attrappe bekam
+}
+
+// barkReq: eine Anfrage an die Bark-Attrappe (Key aus dem Pfad, Felder).
+type barkReq struct {
+	Key    string
+	Fields url.Values
 }
 
 func newBench(t *testing.T) *bench { return newBenchOn(t, storetest.New()) }
@@ -61,7 +72,12 @@ func newBenchOn(t *testing.T, f *storetest.FaultFS) *bench {
 	t.Helper()
 	log := slog.New(slog.DiscardHandler)
 	b := &bench{t: t, fs: f}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { b.barkN.Add(1) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm() // die Attrappe nimmt, was kommt; ein kaputter Rumpf fiele im Test auf
+		b.barkMu.Lock()
+		b.barkReqs = append(b.barkReqs, barkReq{Key: strings.TrimPrefix(r.URL.Path, "/"), Fields: r.PostForm})
+		b.barkMu.Unlock()
+	}))
 	t.Cleanup(srv.Close)
 	st, _, err := store.Open(dir, f, clock.NewFake(t0), log)
 	if err != nil {
@@ -79,13 +95,31 @@ func newBenchOn(t *testing.T, f *storetest.FaultFS) *bench {
 		}
 	})
 	sum := sha256.Sum256([]byte(machineToken))
-	cfg := &config.Config{Timezone: "Europe/Berlin", BarkHost: srv.URL, MuteMaxSeconds: 43200, OfflineAfterSeconds: 180,
+	b.cfg.Store(&config.Config{Timezone: "Europe/Berlin", BarkHost: srv.URL, MuteMaxSeconds: 43200, OfflineAfterSeconds: 180,
 		MachineTokenSHA256: " " + strings.ToUpper(hex.EncodeToString(sum[:])) + " ", BarkKeysAlarm: []string{"notkey00001"},
-		DashboardUser: "admin", DashboardPasswordHash: "hash", WatchdogOfflineAfterSeconds: 600}
-	b.c = &core.Core{Cfg: func() *config.Config { return cfg }, CfgOK: func() bool { return true }, Store: st,
-		Bark: bark.New(func() *config.Config { return cfg }, clock.Real(), log), Clock: clock.NewFake(t0), Bg: group, Log: log, Version: "test"}
+		DashboardUser: "admin", DashboardPasswordHash: "hash", WatchdogOfflineAfterSeconds: 600, BarkKeyStatus: statusKey})
+	b.c = &core.Core{Cfg: b.cfg.Load, CfgOK: func() bool { return true }, Store: st,
+		Bark: bark.New(b.cfg.Load, clock.Real(), log), Clock: clock.NewFake(t0), Bg: group, Log: log, Version: "test"}
 	b.keys = web.SecurityHeaders(b.c, KeysHandler(b.c))
+	b.status = web.SecurityHeaders(b.c, StatusHandler(b.c))
 	return b
+}
+
+// statusKey: der (erfundene) Status-Key des Admins.
+const statusKey = "statuskey0001"
+
+// configure ändert die Konfiguration (auf einer Kopie, wie ein Neuladen).
+func (b *bench) configure(fn func(cfg *config.Config)) {
+	c := *b.cfg.Load()
+	fn(&c)
+	b.cfg.Store(&c)
+}
+
+// sent: was die Bark-Attrappe bisher bekam.
+func (b *bench) sent() []barkReq {
+	b.barkMu.Lock()
+	defer b.barkMu.Unlock()
+	return slices.Clone(b.barkReqs)
 }
 
 func (b *bench) update(fn func(d *model.State)) {

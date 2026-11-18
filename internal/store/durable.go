@@ -156,6 +156,13 @@ func (s *Store) change(ctx context.Context, fn func(d *model.State) error, mode 
 func (s *Store) saveAndCommit(prev, draft *model.State, done chan<- error, after func()) {
 	err := fmt.Errorf("%w: Laufzeitfehler beim Sichern", ErrStorage)
 	committed := false
+	// Das Ergebnis in einem eigenen defer, als ERSTES angemeldet, läuft also
+	// zuletzt: Beendet after die Goroutine mit runtime.Goexit, bricht das den
+	// defer darunter mitten in runAfter ab – dieser hier läuft trotzdem, und
+	// der Aufrufer wartet nicht bis zum Ende seiner Frist.
+	defer func() {
+		done <- err // Platz 1: wartet nie, auch wenn der Aufrufer schon fort ist
+	}()
 	defer func() {
 		if r := recover(); r != nil {
 			s.logPanic("Sichern der festen Daten", r)
@@ -165,7 +172,6 @@ func (s *Store) saveAndCommit(prev, draft *model.State, done chan<- error, after
 		if committed && after != nil {
 			s.runAfter(after)
 		}
-		done <- err // Platz 1: wartet nie, auch wenn der Aufrufer schon fort ist
 	}()
 	doc, serr := s.saveStateDoc(draft)
 	if serr != nil {

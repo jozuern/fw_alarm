@@ -76,7 +76,11 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
   das Zurückschalten überfälliger Stummschaltungen samt Meldungen danach in
   `mutes.Expire` (Meldungen, die erst nach dem Sichern hinausdürfen, hängen
   über `Store.UpdateThen` am Sichern – auch an einem, das erst nach der Frist
-  landet), die Verlaufs-Ereignisse (Kategorie, nur Admin,
+  landet), die Regeln des Status-Pushs (Relaisalarm je Board, Quelle,
+  veralteter Push, Neustart, fremdes Board, Hinweis auf mehrere Boards) als
+  reine Rechnung in `internal/model/status.go` (`EvaluatePush`, je Regel eine
+  Zeile in `TestEvaluatePush` für alte und neue Firmware; `api/status.php`
+  fasst nur Flüchtiges an und antwortet immer 200 `OK`), die Verlaufs-Ereignisse (Kategorie, nur Admin,
   freigegebene Felder) in `internal/logview/events.go` (wie
   `log_event_types()`; ein neues Ereignis braucht dort eine Zeile, in
   `internal/model` seinen Namen samt Eintrag in `AllEvents` und in
@@ -822,8 +826,9 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   ändert — gemerkt pro `device_id` in `alarm_seen.json`, damit ein zweites
   Board mit demselben Token nichts unterdrückt; Wechsel zu „nie" =
   ESP32-Reboot, kein Alarm; `source=remote` = Demo-Alarm, wenn die Box den
-  ALARM-Befehl kurz zuvor (≤ 300 s) mit `executed` quittiert hat ODER er vor
-  ≤ 60 s ausgeliefert und noch nicht quittiert ist (die Box pusht ihren Status
+  ALARM-Befehl kurz zuvor (< 300 s nach der Auslieferung) mit `executed`
+  quittiert hat ODER er vor < 60 s ausgeliefert und noch nicht quittiert ist
+  (die Box pusht ihren Status
   VOR der ACK – das ist der Normalfall) — sonst `relay`; die Fenster setzen
   `COOLDOWN_MS` ≥ 300 s voraus. Ein VERALTETER Push (traf früher ein als der
   gespeicherte, kleinere Laufzeit, < 60 s Versatz – passiert, wenn das NAS

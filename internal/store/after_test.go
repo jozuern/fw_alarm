@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -232,6 +233,31 @@ func TestUpdateThenPanicInAfter(t *testing.T) {
 	}
 }
 
+// Beendet after seine Goroutine mit runtime.Goexit (so endet etwa t.FailNow
+// in einem after eines Tests), bekommt der Aufrufer sein Ergebnis trotzdem –
+// sonst wartete er bis zum Ende seiner Frist und hielte eine gesicherte
+// Änderung für verspätet. Die Änderung gilt, der Schreiber ist frei. Goexit
+// trifft hier die Goroutine der Ablage, nie die des Tests.
+func TestUpdateThenGoexitInAfter(t *testing.T) {
+	s, _ := openFake(t, storetest.New())
+	errc := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		errc <- s.UpdateThen(ctx, addRecipient("Dora", nil), func() { runtime.Goexit() })
+	}()
+	if err := recv(t, errc); err != nil {
+		t.Fatalf("UpdateThen mit after, das Goexit ruft: %v", err)
+	}
+	if !hasLabel(s.State(), "Dora") {
+		t.Error("Änderung gilt nicht")
+	}
+	update(t, s, addRecipient("Emil", nil))
+	if !hasLabel(s.State(), "Emil") {
+		t.Error("nächste Änderung geht nicht")
+	}
+}
+
 // Close und ein after, das noch aussteht: (a) Landet das hängende Sichern,
 // solange Close wartet, läuft after einmal und Close endet sauber. (b) Gibt
 // Close den Schreiber auf (Frist um), läuft after nie mehr – auch wenn das
@@ -252,7 +278,10 @@ func TestUpdateThenClose(t *testing.T) {
 			defer cancel()
 			closed <- s.Close(ctx)
 		}()
-		time.Sleep(50 * time.Millisecond) // Close wartet jetzt auf den Schreiber
+		// Close läuft (es hält seine Sperre bis zum Ende). Fertig werden kann
+		// es nicht, solange das Sichern hängt – Flush braucht den Schreiber –,
+		// also landet das Sichern sicher, während Close wartet.
+		eventually(t, "Close läuft", s.Closing)
 		release()
 		if err := recv(t, errc); err != nil {
 			t.Errorf("UpdateThen: %v", err)

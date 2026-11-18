@@ -276,6 +276,7 @@ func routes(c *core.Core, rt *web.Router) {
 	rt.Handle("/classic.php", web.SecurityHeaders(c, web.ClassicHandler()))
 	rt.Handle("/dashboard_api.php", web.SecurityHeaders(c, dashapi.Handler(c)))
 	rt.Handle("/api/keys.php", web.SecurityHeaders(c, box.KeysHandler(c)))
+	rt.Handle("/api/status.php", web.SecurityHeaders(c, box.StatusHandler(c)))
 }
 
 // errStopping: reload oder flush, während der Server schon schließt.

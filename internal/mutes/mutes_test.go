@@ -447,3 +447,79 @@ func TestExpireWarningAtMostOncePerMinute(t *testing.T) {
 		t.Fatalf("nach weiteren 60 s: %q", got)
 	}
 }
+
+// Zwei gescheiterte Aufrufe, die in umgekehrter Reihenfolge fertig werden:
+// A beginnt und hängt am Sichern, 30 s später scheitert B (die Frist lief ab,
+// bevor B an der Reihe war) und schreibt die Warnung; dann gibt A auf
+// (ErrLate). Die Bremse misst mit der Uhr beim Schreiben, nicht mit der vom
+// Beginn – sonst sähe A wie eine zurückgesprungene Uhr aus und käme durch.
+// A sagt "nicht rechtzeitig gesichert" (das Sichern kann noch landen), B
+// "nicht gesichert".
+func TestExpireWarningClockAtLogTime(t *testing.T) {
+	b := newBench(t)
+	b.three(43201)
+	release := b.fs.Hang(filepath.Join(dir, "state.json.tmp"))
+	t.Cleanup(release)
+	ctxA, cancelA := context.WithCancel(context.Background())
+	defer cancelA()
+	saves := b.stateSaves()
+	errA := make(chan error, 1)
+	go func() { errA <- Expire(ctxA, b.c) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for b.stateSaves() == saves { // FaultFS hält den Aufruf fest, bevor er hängt
+		if time.Now().After(deadline) {
+			t.Fatal("A hängt nie am Sichern")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	b.clk.Advance(30 * time.Second)
+	ctxB, cancelB := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelB()
+	if err := Expire(ctxB, b.c); !errors.Is(err, store.ErrDropped) {
+		t.Fatalf("B: %v, erwartet ErrDropped", err)
+	}
+	cancelA()
+	select {
+	case err := <-errA:
+		if !errors.Is(err, store.ErrLate) {
+			t.Fatalf("A: %v, erwartet ErrLate", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("A kehrt nicht zurück")
+	}
+	got := b.journal.lines("überfällige Stummschaltung nicht")
+	if len(got) != 1 || !strings.Contains(got[0], "überfällige Stummschaltung nicht gesichert") {
+		t.Fatalf("Warnungen: %q", got)
+	}
+	// Eine Minute nach B darf die nächste durch – A meldet sich als
+	// verspätet, mit der einen unterdrückten Zeile.
+	release()
+	b.three(43201) // wieder überfällig (das späte Sichern hat A erledigt)
+	b.fs.Fail(filepath.Join(dir, "state.json.tmp"), store.ErrStorage)
+	b.clk.Advance(time.Minute)
+	if err := Expire(context.Background(), b.c); !errors.Is(err, store.ErrStorage) {
+		t.Fatalf("C: %v", err)
+	}
+	b.fs.Heal() // Close am Ende sichert noch einmal
+	got = b.journal.lines("überfällige Stummschaltung nicht")
+	if len(got) != 2 || !strings.Contains(got[1], "unterdrueckt=1") {
+		t.Fatalf("nach einer Minute: %q", got)
+	}
+}
+
+// Die Zeile bei ErrLate sagt, dass die Rückschaltung noch gelten kann.
+func TestExpireWarningLateWording(t *testing.T) {
+	b := newBench(t)
+	b.three(43201)
+	release := b.fs.Hang(filepath.Join(dir, "state.json.tmp"))
+	t.Cleanup(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := Expire(ctx, b.c); !errors.Is(err, store.ErrLate) {
+		t.Fatalf("Fehler %v, erwartet ErrLate", err)
+	}
+	got := b.journal.lines("überfällige Stummschaltung")
+	if len(got) != 1 || !strings.Contains(got[0], "überfällige Stummschaltung nicht rechtzeitig gesichert") {
+		t.Fatalf("Warnung: %q", got)
+	}
+}
