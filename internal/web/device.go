@@ -42,24 +42,27 @@ var devicePassLen = len(deviceVersion+".a.") + deviceText.EncodedLen(deviceIDByt
 
 // devicePass ist ein gültiger Ausweis.
 type devicePass struct {
-	id   string // <id> wie im Cookie – Schlüssel der Vorzugsreihe
+	id   string // <id> wie im Cookie – mit der Rolle Schlüssel des Platzes in der Vorzugsreihe
 	role string // "admin" oder "readonly"
 }
 
-// devicePassOf liefert den Ausweis der Anfrage, wenn er für ein Konto der
-// Fassung cfg gilt. Kostet höchstens zwei HMAC (Schlüssel und Prüfsumme),
-// nie eine Passwortprüfung. Bei mehreren Cookies dieses Namens zählt das
-// erste.
-func devicePassOf(r *http.Request, cfg *config.Config) (devicePass, bool) {
-	ck, err := r.Cookie(deviceCookie)
-	if err != nil {
-		return devicePass{}, false
+// devicePassesOf liefert die Ausweise der Anfrage, die für ein Konto der
+// Fassung cfg gelten: unter den ersten vier Cookies dieses Namens
+// (cookies.go) die gültigen, in ihrer Reihenfolge – ein untergeschobenes
+// Cookie verdeckt so den echten Ausweis nicht. Kostet je Cookie höchstens
+// zwei HMAC (Schlüssel und Prüfsumme), nie eine Passwortprüfung.
+func devicePassesOf(r *http.Request, cfg *config.Config) []devicePass {
+	var passes []devicePass
+	for _, v := range firstCookies(r, deviceCookie) {
+		if p, ok := parseDevicePass(v, cfg); ok {
+			passes = append(passes, p)
+		}
 	}
-	return parseDevicePass(ck.Value, cfg)
+	return passes
 }
 
 // parseDevicePass prüft einen Ausweis streng: genau vier Teile in genau der
-// Form, die mintDevicePass schreibt (jede andere Schreibweise derselben Bytes
+// Form, die devicePassFor schreibt (jede andere Schreibweise derselben Bytes
 // ist keiner), Prüfsumme in konstanter Zeit verglichen. Alles andere ist kein
 // Ausweis – nie ein Fehler.
 func parseDevicePass(v string, cfg *config.Config) (devicePass, bool) {

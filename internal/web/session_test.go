@@ -449,32 +449,118 @@ func TestSessionCSRFMatches(t *testing.T) {
 	}
 }
 
-// Jeder Wert des Sitzungs-Cookies: kein Absturz, keine Sitzung, kein
-// Set-Cookie, nichts geschrieben.
+// Jede Cookie-Kopfzeile, auch mit mehreren Sitzungs-Cookies: kein Absturz;
+// angemeldet genau dann, wenn die echte ID unter den ersten vier
+// Sitzungs-Cookies steht; sonst kein Set-Cookie; nie etwas geschrieben.
 func FuzzSessionCookie(f *testing.F) {
 	b := newAuthBench(f, nil, true)
 	real, _ := b.begin(adminUser, "admin")
-	for _, seed := range []string{real[:42], real + "x", strings.ToUpper(real), keyOfValue(real), "",
-		"abcdefabcdefabcdefabcdefabcdef12", sessionIDText.EncodeToString(make([]byte, 32)), `"` + real[:41] + `"`,
-		"a; " + sessionCookie + "=b", strings.Repeat("A", 43), "\x00\xff"} {
+	several := func(values ...string) string {
+		parts := make([]string, len(values))
+		for i, v := range values {
+			parts[i] = sessionCookie + "=" + v
+		}
+		return strings.Join(parts, "; ")
+	}
+	forged := sessionIDText.EncodeToString(make([]byte, 32))
+	for _, seed := range []string{several(real[:42]), several(real + "x"), several(strings.ToUpper(real)),
+		several(keyOfValue(real)), "", several(""), several("abcdefabcdefabcdefabcdefabcdef12"), several(forged),
+		several(`"` + real[:41] + `"`), several("a") + "; " + sessionCookie + "=b", several(strings.Repeat("A", 43)),
+		several("\x00\xff"), several("x", real), several("x", "y", "z", forged, real), several(forged, forged, forged, real),
+		deviceCookie + "=" + real, several(real, "x")} {
 		f.Add(seed)
 	}
-	f.Fuzz(func(t *testing.T, v string) {
-		if strings.Contains(v, real) {
-			return // die eine echte ID (der Fuzzer findet sie nicht)
+	f.Fuzz(func(t *testing.T, header string) {
+		req := httptest.NewRequest(http.MethodGet, "/index.php", nil)
+		req.Header.Set("Cookie", header)
+		want := false
+		for i, ck := range req.CookiesNamed(sessionCookie) {
+			if i < maxSameNameCookies && ck.Value == real {
+				want = true
+			}
 		}
 		before := b.c.Store.Sessions()
-		req := httptest.NewRequest(http.MethodGet, "/index.php", nil)
-		req.Header.Set("Cookie", sessionCookie+"="+v)
 		rec := httptest.NewRecorder()
-		if s, ok := Resume(b.c, rec, req); ok || s != nil {
-			t.Fatalf("Cookie %q: Sitzung %+v", v, s)
+		s, ok := Resume(b.c, rec, req)
+		if ok != want {
+			t.Fatalf("Kopfzeile %q: angemeldet %v, erwartet %v", header, ok, want)
 		}
-		if got := rec.Header()["Set-Cookie"]; len(got) != 0 {
-			t.Fatalf("Cookie %q: Set-Cookie %q", v, got)
+		ck := sessionCookieOf(t, rec)
+		switch {
+		case ok && (s.Role != "admin" || ck == nil || ck.Value != real):
+			t.Fatalf("Kopfzeile %q: Sitzung %+v, Cookie %v", header, s, ck)
+		case !ok && len(rec.Header()["Set-Cookie"]) != 0:
+			t.Fatalf("Kopfzeile %q: Set-Cookie %q", header, rec.Header()["Set-Cookie"])
 		}
 		if b.c.Store.Sessions() != before {
-			t.Fatalf("Cookie %q: Sitzungen verändert", v)
+			t.Fatalf("Kopfzeile %q: Sitzungen verändert", header)
 		}
 	})
+}
+
+// Schickt der Browser mehrere Sitzungs-Cookies, zählt unter den ersten 4
+// das erste, das eine LEBENDE Sitzung nennt (Spec §6.8): Ein von einer
+// Nachbar-Adresse untergeschobenes verdeckt das echte nicht; mehr als 4
+// werden nicht angesehen; End entfernt genau die, die Resume fortsetzt.
+func TestSessionCookieAmongSeveral(t *testing.T) {
+	b := newAuthBench(t, nil, true)
+	admin, sa := b.begin(adminUser, "admin")
+	reader, _ := b.begin(readerUser, "readonly")
+	forged := sessionIDText.EncodeToString(make([]byte, 32))
+	req := func(values ...string) *http.Request {
+		r := b.request(http.MethodPost, "192.0.2.1", "", nil)
+		parts := make([]string, len(values))
+		for i, v := range values {
+			parts[i] = sessionCookie + "=" + v
+		}
+		r.Header.Set("Cookie", strings.Join(parts, "; "))
+		return r
+	}
+	rec := httptest.NewRecorder()
+	s, ok := Resume(b.c, rec, req("x", forged, admin))
+	if !ok || s.CSRF != sa.CSRF || sessionCookieOf(t, rec) == nil || sessionCookieOf(t, rec).Value != admin {
+		t.Errorf("Müll davor: %v %q", ok, rec.Header()["Set-Cookie"])
+	}
+	// Vier davor: das fünfte wird nicht angesehen – und nichts gesetzt.
+	before := b.c.Store.Sessions()
+	rec = httptest.NewRecorder()
+	if _, ok := Resume(b.c, rec, req("x", "y", forged, "z", admin)); ok || len(rec.Header()["Set-Cookie"]) != 0 {
+		t.Errorf("an fünfter Stelle gefunden: %v %q", ok, rec.Header()["Set-Cookie"])
+	}
+	if b.c.Store.Sessions() != before {
+		t.Error("Suche hat geschrieben")
+	}
+	// Eine abgelaufene davor wird entfernt, die lebende dahinter gilt.
+	idle, _ := b.begin(adminUser, "admin")
+	b.c.Store.UpdateSessions(func(d *model.Sessions) {
+		e := d.Sessions[keyOfValue(idle)]
+		e.LastSeen = t0.Unix() - 43201
+		d.Sessions[keyOfValue(idle)] = e
+	})
+	if s, ok, _ := func() (*Session, bool, *httptest.ResponseRecorder) {
+		rec := httptest.NewRecorder()
+		s, ok := Resume(b.c, rec, req(idle, admin))
+		return s, ok, rec
+	}(); !ok || s.CSRF != sa.CSRF {
+		t.Errorf("abgelaufene davor: %v", ok)
+	}
+	if _, there := b.c.Store.Sessions().Sessions[keyOfValue(idle)]; there {
+		t.Error("die abgelaufene bleibt gespeichert")
+	}
+	// Zwei lebende: die erste gilt, End entfernt genau sie.
+	r := req(reader, admin)
+	rec = httptest.NewRecorder()
+	if s, ok := Resume(b.c, rec, r); !ok || s.Role != "readonly" {
+		t.Fatalf("zwei lebende: %v %+v", ok, s)
+	}
+	End(b.c, rec, r)
+	if ck := sessionCookieOf(t, rec); ck == nil || ck.MaxAge >= 0 {
+		t.Errorf("End: %q", rec.Header()["Set-Cookie"])
+	}
+	if _, there := b.c.Store.Sessions().Sessions[keyOfValue(reader)]; there {
+		t.Error("End ließ die fortgesetzte Sitzung stehen")
+	}
+	if _, there := b.c.Store.Sessions().Sessions[keyOfValue(admin)]; !there {
+		t.Error("End entfernte auch die zweite Sitzung")
+	}
 }

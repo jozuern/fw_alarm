@@ -197,7 +197,7 @@ func withDevice(pass string) [2]string { return [2]string{"Cookie", deviceCookie
 // testID: eine feste Ausweis-id (16 Bytes aus n).
 func testID(n byte) []byte { return bytes.Repeat([]byte{n}, deviceIDBytes) }
 
-// laneWaiting: Wartende in der Vorzugsreihe und in der allgemeinen Reihe
+// laneWaiting: Wartende in den Ausweis-Reihen und in der allgemeinen Reihe
 // (unter der Sperre gelesen, damit der Race-Detektor durchsieht).
 func laneWaiting(c *core.Core) (prio, general int) {
 	q := slotsFor(c)
@@ -206,7 +206,18 @@ func laneWaiting(c *core.Core) (prio, general int) {
 	for _, w := range q.waiting {
 		general += len(w)
 	}
-	return len(q.prio), general
+	for _, p := range q.prio {
+		prio += len(p)
+	}
+	return prio, general
+}
+
+// classWaiting: Wartende in der Admin- und in der Lese-Ausweis-Reihe.
+func classWaiting(c *core.Core) (admin, reader int) {
+	q := slotsFor(c)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.prio[classAdmin]), len(q.prio[classReader])
 }
 
 // advanceQuiet stellt die Uhr um d weiter und verlangt, dass dabei kein

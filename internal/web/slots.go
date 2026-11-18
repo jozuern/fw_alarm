@@ -16,13 +16,18 @@ import (
 //     beiden Reihen zusammen;
 //   - wer warten muss, wartet höchstens 5 s, danach LoginBusy (503), nicht
 //     gezählt (der Versuch wurde nie geprüft);
-//   - zwei Reihen: Versuche mit gültigem Geräte-Ausweis (device.go) warten
-//     in der Vorzugsreihe, die zuerst bedient wird – der Reihe nach je
-//     Ausweis, je Ausweis höchstens ein Platz darin (wartend oder in
-//     Prüfung), höchstens 16 Wartende; alle anderen in der allgemeinen Reihe
-//     – der Reihe nach je Absender, höchstens 64 Wartende, höchstens 2 je
-//     Absender. Wer in der Vorzugsreihe keinen Platz findet, wartet in der
+//   - drei Reihen, bedient in fester Folge: Versuche mit gültigem
+//     Geräte-Ausweis (device.go) des Admin-Kontos, dann die mit einem des
+//     Lese-Kontos, dann alle anderen. In den beiden Ausweis-Reihen geht es
+//     der Reihe nach je Ausweis, je Ausweis höchstens ein Platz (wartend oder
+//     in Prüfung), höchstens 16 Wartende je Reihe; in der allgemeinen der
+//     Reihe nach je Absender, höchstens 64 Wartende, höchstens 2 je Absender.
+//     Wer in seiner Ausweis-Reihe keinen Platz findet, wartet in der
 //     allgemeinen; wer dort keinen findet, bekommt sofort LoginBusy.
+//   - Admin vor Lese-Konto: Wer nur das Lese-Passwort kennt, kann sich
+//     beliebig viele Ausweise holen – er darf damit den Admin nicht
+//     verdrängen (Durchsicht von Aufgabe 12). Die Rolle eines Ausweises ist
+//     echt: Sein Schlüssel hängt am Passwort-Hash seines Kontos.
 //
 // Der Grund für die Vorzugsreihe (Durchsicht von Aufgabe 12): In einer
 // einzigen, je Absender gerechten Reihe stünde der Admin hinter JEDEM
@@ -34,22 +39,41 @@ const (
 	verifyMaxWait       = 5 * time.Second // längstes Warten auf einen Platz
 	maxGeneralWaiting   = 64              // Wartende in der allgemeinen Reihe (mehr ließe sich in 5 s nicht prüfen)
 	maxWaitingPerSender = 2               // davon je Absender
-	maxPriorityWaiting  = 16              // Wartende in der Vorzugsreihe
+	maxPriorityWaiting  = 16              // Wartende je Ausweis-Reihe
 )
 
-// slotQueue verteilt die Plätze. Zustände eines Versuchs: wartend in der
-// Vorzugsreihe (prio) oder in der allgemeinen (waiting/turn), prüfend (sein
-// Absender in busy; mit Ausweis dessen id in seated), fertig. Nach jeder
+// Ausweis-Reihen in der Folge, in der sie bedient werden.
+const (
+	classAdmin  = iota // Ausweise des Admin-Kontos
+	classReader        // Ausweise des Lese-Kontos
+	passClasses
+)
+
+// passClass: die Reihe eines Ausweises.
+func passClass(p devicePass) int {
+	if p.role == "admin" {
+		return classAdmin
+	}
+	return classReader
+}
+
+// seatKey: der Platz eines Ausweises in seiner Reihe – Rolle und id.
+func seatKey(p devicePass) string { return p.role + ":" + p.id }
+
+// slotQueue verteilt die Plätze. Zustände eines Versuchs: wartend in einer
+// Ausweis-Reihe (prio) oder in der allgemeinen (waiting/turn), prüfend (sein
+// Absender in busy; mit Ausweis dessen Platz in seated), fertig. Nach jeder
 // Änderung gilt: Ist ein Platz frei, wartet niemand, der ihn nehmen dürfte
 // (dispatch hat ihn vergeben).
 type slotQueue struct {
 	mu   sync.Mutex
 	free int             // freie Plätze
-	busy map[string]bool // Absender mit laufender Prüfung (beide Reihen)
+	busy map[string]bool // Absender mit laufender Prüfung (alle Reihen)
 
-	// Vorzugsreihe: Wartende in Ankunftsfolge, je Ausweis-id höchstens einer;
-	// seated: ids mit Platz darin – wartend oder in Prüfung.
-	prio   []*slotWaiter
+	// Ausweis-Reihen (classAdmin, classReader): Wartende in Ankunftsfolge, je
+	// Ausweis höchstens einer; seated: Ausweise (seatKey) mit Platz darin –
+	// wartend oder in Prüfung.
+	prio   [passClasses][]*slotWaiter
 	seated map[string]bool
 
 	// Allgemeine Reihe: Wartende je Absender in Ankunftsfolge; turn sind die
@@ -62,7 +86,8 @@ type slotQueue struct {
 
 type slotWaiter struct {
 	who   string        // Absender
-	pass  string        // Ausweis-id in der Vorzugsreihe, "" = allgemeine Reihe
+	seat  string        // Platz in einer Ausweis-Reihe (seatKey), "" = allgemeine Reihe
+	class int           // seine Ausweis-Reihe (nur mit seat)
 	ready chan struct{} // geschlossen = Platz zugeteilt
 }
 
@@ -79,31 +104,33 @@ func slotsFor(c *core.Core) *slotQueue {
 	return q.(*slotQueue)
 }
 
-// acquire wartet auf einen Platz für den Absender who; pass ist die id
-// eines gültigen Ausweises ("" = keiner). Höchstens 5 s auf der Uhr clk und
-// nur, solange der Aufrufer noch da ist (ctx). ok: zugeteilt; release gibt
-// den Platz zurück (mehrfach rufbar). Sonst – Frist abgelaufen, Aufrufer
-// fort oder die allgemeine Reihe voll (dann sofort, ohne Zeitgeber) – steht
-// der Versuch in keiner Reihe mehr.
-func (q *slotQueue) acquire(ctx context.Context, clk clock.Clock, who, pass string) (release func(), ok bool) {
+// acquire wartet auf einen Platz für den Absender who; passes sind die
+// gültigen Ausweise der Anfrage (devicePassesOf, leer = keiner). Höchstens
+// 5 s auf der Uhr clk und nur, solange der Aufrufer noch da ist (ctx). ok:
+// zugeteilt; release gibt den Platz zurück (mehrfach rufbar). Sonst – Frist
+// abgelaufen, Aufrufer fort oder die allgemeine Reihe voll (dann sofort,
+// ohne Zeitgeber) – steht der Versuch in keiner Reihe mehr.
+//
+// Welche Reihe: der erste Ausweis der besten Klasse (Admin vor Lese-Konto),
+// dessen Platz noch frei ist (sonst hielte ein Ausweis zwei Plätze); ist
+// seine Reihe voll (16), die allgemeine.
+func (q *slotQueue) acquire(ctx context.Context, clk clock.Clock, who string, passes []devicePass) (release func(), ok bool) {
 	q.mu.Lock()
-	if pass != "" && q.seated[pass] {
-		pass = "" // dieser Ausweis hat seinen Platz schon: allgemeine Reihe
-	}
+	seat, class := q.pickSeat(passes)
 	if q.free > 0 && !q.busy[who] {
 		// Frei und who prüft gerade nicht: Dann wartet auch niemand, der dran
 		// wäre (dispatch hätte ihm den Platz schon gegeben) – kein Zeitgeber.
-		q.take(who, pass)
+		q.take(who, seat)
 		q.mu.Unlock()
-		return q.releaser(who, pass), true
+		return q.releaser(who, seat), true
 	}
-	if pass != "" && len(q.prio) >= maxPriorityWaiting {
-		pass = "" // Vorzugsreihe voll: allgemeine Reihe
+	if seat != "" && len(q.prio[class]) >= maxPriorityWaiting {
+		seat = "" // Ausweis-Reihe voll: allgemeine Reihe
 	}
-	w := &slotWaiter{who: who, pass: pass, ready: make(chan struct{})}
-	if pass != "" {
-		q.seated[pass] = true
-		q.prio = append(q.prio, w)
+	w := &slotWaiter{who: who, seat: seat, class: class, ready: make(chan struct{})}
+	if seat != "" {
+		q.seated[seat] = true
+		q.prio[class] = append(q.prio[class], w)
 	} else {
 		if q.general >= maxGeneralWaiting || len(q.waiting[who]) >= maxWaitingPerSender {
 			q.mu.Unlock()
@@ -119,7 +146,7 @@ func (q *slotQueue) acquire(ctx context.Context, clk clock.Clock, who, pass stri
 
 	select {
 	case <-w.ready:
-		return q.releaser(who, pass), true
+		return q.releaser(who, seat), true
 	case <-clk.After(verifyMaxWait):
 	case <-ctx.Done():
 	}
@@ -128,25 +155,38 @@ func (q *slotQueue) acquire(ctx context.Context, clk clock.Clock, who, pass stri
 	select {
 	case <-w.ready:
 		// Genau beim Ablauf zugeteilt: Der Platz gehört schon diesem Versuch.
-		return q.releaser(who, pass), true
+		return q.releaser(who, seat), true
 	default:
 	}
 	q.leave(w)
 	return nil, false
 }
 
-// take belegt einen Platz für who; mit Ausweis hält dessen id ihren Platz
-// in der Vorzugsreihe, bis die Prüfung endet (unter mu).
-func (q *slotQueue) take(who, pass string) {
+// pickSeat: der Platz (seatKey) und die Reihe für die Ausweise passes – der
+// erste der besten Klasse, dessen Platz frei ist; "" = keiner (unter mu).
+func (q *slotQueue) pickSeat(passes []devicePass) (seat string, class int) {
+	for class := range passClasses {
+		for _, p := range passes {
+			if passClass(p) == class && !q.seated[seatKey(p)] {
+				return seatKey(p), class
+			}
+		}
+	}
+	return "", 0
+}
+
+// take belegt einen Platz für who; mit Ausweis hält dieser seinen Platz in
+// seiner Reihe, bis die Prüfung endet (unter mu).
+func (q *slotQueue) take(who, seat string) {
 	q.free--
 	q.busy[who] = true
-	if pass != "" {
-		q.seated[pass] = true
+	if seat != "" {
+		q.seated[seat] = true
 	}
 }
 
 // releaser: die Rückgabe des Platzes von who, höchstens einmal wirksam.
-func (q *slotQueue) releaser(who, pass string) func() {
+func (q *slotQueue) releaser(who, seat string) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -154,26 +194,22 @@ func (q *slotQueue) releaser(who, pass string) func() {
 			defer q.mu.Unlock()
 			q.free++
 			delete(q.busy, who)
-			if pass != "" {
-				delete(q.seated, pass)
+			if seat != "" {
+				delete(q.seated, seat)
 			}
 			q.dispatch()
 		})
 	}
 }
 
-// dispatch gibt freie Plätze an Wartende (unter mu): zuerst die
-// Vorzugsreihe (der älteste, dessen Absender gerade nicht prüft), dann die
-// allgemeine reihum je Absender – der erste in turn, der gerade nicht prüft,
-// bekommt seinen ältesten Wartenden und rückt ans Ende, wenn er noch weitere
-// hat.
+// dispatch gibt freie Plätze an Wartende (unter mu): zuerst die Ausweis-
+// Reihen in ihrer Folge (je Reihe der älteste, dessen Absender gerade nicht
+// prüft), dann die allgemeine reihum je Absender – der erste in turn, der
+// gerade nicht prüft, bekommt seinen ältesten Wartenden und rückt ans Ende,
+// wenn er noch weitere hat.
 func (q *slotQueue) dispatch() {
 	for q.free > 0 {
-		if i := slices.IndexFunc(q.prio, func(w *slotWaiter) bool { return !q.busy[w.who] }); i >= 0 {
-			w := q.prio[i]
-			q.prio = slices.Delete(q.prio, i, i+1)
-			q.take(w.who, w.pass)
-			close(w.ready)
+		if q.dispatchPass() {
 			continue
 		}
 		i := slices.IndexFunc(q.turn, func(who string) bool { return !q.busy[who] })
@@ -196,12 +232,30 @@ func (q *slotQueue) dispatch() {
 	}
 }
 
+// dispatchPass gibt einen freien Platz an den ersten Wartenden der ersten
+// Ausweis-Reihe, dessen Absender gerade nicht prüft; false = keiner (unter
+// mu).
+func (q *slotQueue) dispatchPass() bool {
+	for class := range passClasses {
+		i := slices.IndexFunc(q.prio[class], func(w *slotWaiter) bool { return !q.busy[w.who] })
+		if i < 0 {
+			continue
+		}
+		w := q.prio[class][i]
+		q.prio[class] = slices.Delete(q.prio[class], i, i+1)
+		q.take(w.who, w.seat)
+		close(w.ready)
+		return true
+	}
+	return false
+}
+
 // leave nimmt den Wartenden w aus seiner Reihe (unter mu). Kosten: höchstens
 // die Länge einer Reihe (16 bzw. 2 je Absender plus 64 in turn).
 func (q *slotQueue) leave(w *slotWaiter) {
-	if w.pass != "" {
-		q.prio = slices.DeleteFunc(q.prio, func(x *slotWaiter) bool { return x == w })
-		delete(q.seated, w.pass)
+	if w.seat != "" {
+		q.prio[w.class] = slices.DeleteFunc(q.prio[w.class], func(x *slotWaiter) bool { return x == w })
+		delete(q.seated, w.seat)
 		return
 	}
 	q.general--

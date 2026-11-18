@@ -10,8 +10,30 @@ import (
 	"fwalarm/internal/core"
 )
 
-// Was Sitzungs-Cookie und Geräte-Ausweis teilen: Eigenschaften und Setzen
-// eines Cookies, Zufall.
+// Was Sitzungs-Cookie und Geräte-Ausweis teilen: Lesen und Setzen eines
+// Cookies, Zufall.
+
+// maxSameNameCookies: So viele Cookies eines Namens sieht der Server an.
+// Schickt der Browser mehrere (eine Seite unter einer Nachbar-Adresse kann
+// eines mit längerem Pfad unterschieben, das er dann zuerst schickt), zählt
+// unter ihnen das erste, das passt – so verdeckt ein untergeschobenes das
+// echte nicht. Die Grenze hält die Arbeit je Anfrage klein (je Wert höchstens
+// zwei HMAC bzw. ein SHA-256).
+const maxSameNameCookies = 4
+
+// firstCookies liefert die Werte der ersten maxSameNameCookies Cookies namens
+// name, in der Reihenfolge der Anfrage (jedes zählt, auch eines, das danach
+// nicht passt).
+func firstCookies(r *http.Request, name string) []string {
+	var vals []string
+	for _, ck := range r.CookiesNamed(name) {
+		if len(vals) == maxSameNameCookies {
+			break
+		}
+		vals = append(vals, ck.Value)
+	}
+	return vals
+}
 
 // putCookie ergänzt ck um die Eigenschaften, die jedes Cookie des Servers
 // trägt (PHP: dashboard_cookie_options – Pfad hier "/", der Server hat nur

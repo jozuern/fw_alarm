@@ -3,6 +3,7 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -85,15 +86,15 @@ const (
 //     des Admins Fehlversuche absenden und sperrte ihn aus).
 //  2. Ist der Absender gesperrt → Blocked: keine Prüfung, kein Platz.
 //  3. Platz für die Prüfung (slots.go): mit gültigem Geräte-Ausweis
-//     (device.go) in der Vorzugsreihe, sonst in der allgemeinen; höchstens
-//     5 s, und ist die allgemeine Reihe voll, sofort → sonst Busy, nicht
-//     gezählt.
+//     (device.go) in der Vorzugsreihe seines Kontos (Admin vor Lese-Konto),
+//     sonst in der allgemeinen; höchstens 5 s, und ist die allgemeine Reihe
+//     voll, sofort → sonst Busy, nicht gezählt.
 //  4. Der Versuch wird gezählt (ThrottleHit), VOR der Prüfung: gleichzeitige
 //     Versuche bekommen nicht mehr Versuche als erlaubt. Wurde der Absender
 //     inzwischen gesperrt → Blocked.
 //  5. Genau EINE Prüfung (passwordTarget), dann ist der Platz wieder frei.
 //  6. Erfolg: Zähler des Absenders zurück, neue Sitzung (Begin), und – wenn
-//     die Anfrage keinen gültigen Ausweis für diese Rolle trug – ein neuer
+//     unter den ersten vier Ausweis-Cookies keiner für diese Rolle gilt – ein neuer
 //     Geräte-Ausweis → OK. Fehlschlag: hat er die Sperre ausgelöst,
 //     OnLockout; dann 1 s Pause (außerhalb der Plätze) → Failed.
 //
@@ -120,12 +121,8 @@ func Login(c *core.Core, w http.ResponseWriter, r *http.Request, f *Form) (Login
 	if throttleBlocked(c, "login", who, limit, window) {
 		return LoginBlocked, shown
 	}
-	device, known := devicePassOf(r, cfg)
-	lane := "" // allgemeine Reihe
-	if known {
-		lane = device.id
-	}
-	release, ok := slotsFor(c).acquire(r.Context(), c.Clock, who, lane)
+	passes := devicePassesOf(r, cfg)
+	release, ok := slotsFor(c).acquire(r.Context(), c.Clock, who, passes)
 	if !ok {
 		return LoginBusy, shown
 	}
@@ -136,7 +133,7 @@ func Login(c *core.Core, w http.ResponseWriter, r *http.Request, f *Form) (Login
 	if good {
 		ThrottleClear(c, "login", who)
 		begin(c, w, r, cfg, user, role)
-		if !known || device.role != role {
+		if !slices.ContainsFunc(passes, func(p devicePass) bool { return p.role == role }) {
 			setDeviceCookie(c, w, r, cfg, role) // ein vorhandener gültiger bleibt (keine neuen ids)
 		}
 		if fn := OnLogin; fn != nil {

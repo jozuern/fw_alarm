@@ -71,32 +71,36 @@ func (s *Session) CSRFMatches(sent string) bool {
 // dann ist last_seen erneuert (höchstens einmal pro Minute geschrieben) und
 // das Cookie für weitere 12 h gesetzt.
 //
-// Kein Cookie, eine ID ohne Sitzung (erfunden, abgemeldet, beendet) → false,
-// es entsteht nichts. Eine Sitzung, die nicht mehr gilt – 12 h ohne Anfrage,
+// Bringt die Anfrage mehrere Sitzungs-Cookies, zählt unter den ersten vier
+// das erste, das eine lebende Sitzung nennt (cookies.go). Kein Cookie, eine
+// ID ohne Sitzung (erfunden, abgemeldet, beendet) → false, es entsteht
+// nichts. Eine Sitzung, die nicht mehr gilt – 12 h ohne Anfrage,
 // Benutzername bzw. Passwort-Hash ihres Kontos haben sich geändert, oder ihr
 // fehlt Benutzer, CSRF-Token oder Stempel (eine von Hand bearbeitete Datei) –,
 // wird gelöscht. In keinem dieser Fälle sendet Resume ein Cookie, auch kein
 // Lösch-Cookie: Trifft eine noch laufende Anfrage mit einer ALTEN ID erst
 // nach einer Neuanmeldung ein, überschriebe es das gerade vergebene neue.
 func Resume(c *core.Core, w http.ResponseWriter, r *http.Request) (*Session, bool) {
-	key, value, ok := sessionOf(r)
-	if !ok {
-		return nil, false
-	}
-	s, found := c.Store.Sessions().Sessions[key]
-	if !found {
+	refs := sessionRefsOf(r)
+	if len(refs) == 0 {
 		return nil, false
 	}
 	cfg := c.Cfg()
 	now := c.Clock.Now().Unix()
-	if !sessionLive(s, cfg, now) {
+	ref, s, ok, dead := liveSession(c.Store.Sessions(), refs, cfg, now)
+	if len(dead) > 0 {
 		c.Store.UpdateSessions(func(d *model.Sessions) {
-			if cur, ok := d.Sessions[key]; ok && !sessionLive(cur, cfg, now) {
-				delete(d.Sessions, key)
+			for _, key := range dead {
+				if cur, there := d.Sessions[key]; there && !sessionLive(cur, cfg, now) {
+					delete(d.Sessions, key)
+				}
 			}
 		})
+	}
+	if !ok {
 		return nil, false
 	}
+	key, value := ref.key, ref.value
 	// Ein last_seen in der Zukunft (die Uhr sprang zurück) zählt als jetzt
 	// und wird auf jetzt gesetzt – sonst lebte die Sitzung um den Sprung
 	// länger als 12 h nach dieser Anfrage.
@@ -118,9 +122,9 @@ func Resume(c *core.Core, w http.ResponseWriter, r *http.Request) (*Session, boo
 // Begin legt nach einer erfolgreichen Anmeldung eine neue Sitzung an (PHP:
 // start_dashboard_session, session_regenerate_id(true), ensure_csrf): neue
 // ID, neues CSRF-Token, gebunden an die Zugangsdaten des Kontos in der
-// geltenden Konfiguration; das Cookie gilt 12 h. Eine Sitzung, deren Cookie
-// die Anfrage mitbringt, endet dabei – eine mitgeschickte alte ID wird nie
-// übernommen. Jede Rolle außer "admin" wird die Lese-Rolle.
+// geltenden Konfiguration; das Cookie gilt 12 h. Die Sitzungen, deren Cookies
+// die Anfrage mitbringt (die ersten vier), enden dabei – eine mitgeschickte
+// alte ID wird nie übernommen. Jede Rolle außer "admin" wird die Lese-Rolle.
 func Begin(c *core.Core, w http.ResponseWriter, r *http.Request, user, role string) *Session {
 	return begin(c, w, r, c.Cfg(), user, role)
 }
@@ -134,11 +138,11 @@ func begin(c *core.Core, w http.ResponseWriter, r *http.Request, cfg *config.Con
 	csrf := hex.EncodeToString(randomBytes(csrfBytes))
 	now := c.Clock.Now().Unix()
 	s := model.Session{User: user, Role: role, CSRF: csrf, AuthStamp: cfg.AuthStamp(role), CreatedAt: now, LastSeen: now}
-	old, _, hadOld := sessionOf(r)
+	old := sessionRefsOf(r)
 	key := sessionKey(value)
 	c.Store.UpdateSessions(func(d *model.Sessions) {
-		if hadOld {
-			delete(d.Sessions, old)
+		for _, ref := range old {
+			delete(d.Sessions, ref.key)
 		}
 		d.Sessions[key] = s
 	})
@@ -150,19 +154,17 @@ func begin(c *core.Core, w http.ResponseWriter, r *http.Request, cfg *config.Con
 // geprüft, dass die Anfrage eine gültige Sitzung hat (Resume → true) und
 // das mitgeschickte Token passt (Session.CSRFMatches) – sonst ruft er End
 // nicht (ein fremdes Formular soll niemanden abmelden). End löscht die
-// Sitzung, die das Cookie der Anfrage nennt; nur wenn es sie dabei
-// tatsächlich entfernt hat, geht das Lösch-Cookie hinaus – statt der
-// Erneuerung, die Resume vorher gesetzt hat. Gab es sie nicht (mehr), setzt
-// End nichts (PHP schickt ohne lebende Sitzung nie ein Lösch-Cookie). Den
-// Geräte-Ausweis lässt End stehen.
+// Sitzung, die Resume fortsetzt (die erste lebende unter den ersten vier
+// Cookies); nur wenn es sie dabei tatsächlich entfernt hat, geht das
+// Lösch-Cookie hinaus – statt der Erneuerung, die Resume vorher gesetzt hat.
+// Gab es sie nicht (mehr), setzt End nichts (PHP schickt ohne lebende
+// Sitzung nie ein Lösch-Cookie). Den Geräte-Ausweis lässt End stehen.
 func End(c *core.Core, w http.ResponseWriter, r *http.Request) {
-	key, _, ok := sessionOf(r)
+	ref, _, ok, _ := liveSession(c.Store.Sessions(), sessionRefsOf(r), c.Cfg(), c.Clock.Now().Unix())
 	if !ok {
 		return
 	}
-	if _, there := c.Store.Sessions().Sessions[key]; !there {
-		return
-	}
+	key := ref.key
 	removed := false
 	c.Store.UpdateSessions(func(d *model.Sessions) {
 		if _, there := d.Sessions[key]; there {
@@ -253,16 +255,38 @@ func sessionRole(role string) string {
 	return "readonly"
 }
 
-// sessionOf liefert den Schlüssel in sessions.json (SHA-256 hex der ID) und
-// die ID aus dem Cookie der Anfrage. false: kein Cookie, oder seine Form ist
-// keine von Begin vergebene ID (dann gibt es dazu auch keine Sitzung). Bei
-// mehreren Cookies dieses Namens zählt das erste, wie in PHP.
-func sessionOf(r *http.Request) (key, value string, ok bool) {
-	ck, err := r.Cookie(sessionCookie)
-	if err != nil || !validSessionID(ck.Value) {
-		return "", "", false
+// sessionRef ist eine ID aus einem Cookie der Anfrage und ihr Schlüssel in
+// sessions.json (SHA-256 hex der ID).
+type sessionRef struct{ key, value string }
+
+// sessionRefsOf: die IDs unter den ersten vier Sitzungs-Cookies der Anfrage,
+// die die Form einer von Begin vergebenen ID haben (andere nennen keine
+// Sitzung), in ihrer Reihenfolge.
+func sessionRefsOf(r *http.Request) []sessionRef {
+	var refs []sessionRef
+	for _, v := range firstCookies(r, sessionCookie) {
+		if validSessionID(v) {
+			refs = append(refs, sessionRef{key: sessionKey(v), value: v})
+		}
 	}
-	return sessionKey(ck.Value), ck.Value, true
+	return refs
+}
+
+// liveSession: unter refs die erste, die im Schnappschuss eine lebende
+// Sitzung nennt (ok), und die Schlüssel der toten Sitzungen, die davor
+// gefunden wurden (Resume entfernt sie).
+func liveSession(snap *model.Sessions, refs []sessionRef, cfg *config.Config, now int64) (ref sessionRef, s model.Session, ok bool, dead []string) {
+	for _, ref := range refs {
+		s, found := snap.Sessions[ref.key]
+		switch {
+		case !found:
+		case sessionLive(s, cfg, now):
+			return ref, s, true, dead
+		default:
+			dead = append(dead, ref.key)
+		}
+	}
+	return sessionRef{}, model.Session{}, false, dead
 }
 
 func validSessionID(v string) bool {

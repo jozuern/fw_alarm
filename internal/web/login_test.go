@@ -404,6 +404,12 @@ func TestLoginMessagesAfterAnswer(t *testing.T) {
 	block := make(chan struct{})
 	var mu sync.Mutex
 	var got []string
+	var once sync.Once
+	release := func() { once.Do(func() { close(block) }) }
+	t.Cleanup(func() {
+		release()
+		OnLogin, OnLockout = nil, nil
+	})
 	OnLogin = func(c *core.Core, role, user, ip string) {
 		<-block
 		mu.Lock()
@@ -416,12 +422,6 @@ func TestLoginMessagesAfterAnswer(t *testing.T) {
 		defer mu.Unlock()
 		got = append(got, fmt.Sprint("lockout ", ip, " ", windowSeconds))
 	}
-	var once sync.Once
-	release := func() { once.Do(func() { close(block) }) }
-	t.Cleanup(func() {
-		release()
-		OnLogin, OnLockout = nil, nil
-	})
 	const ip6 = "2001:db8::5"
 	for i, want := range []LoginResult{LoginFailed, LoginFailed, LoginBlocked, LoginBlocked} {
 		if a := b.login(adminUser, "falsch", ip6); a.res != want {
@@ -520,6 +520,7 @@ func TestLoginFailurePause(t *testing.T) {
 // Ein riesiges Sperrfenster (auch in einem von Hand gebauten Stand) schaltet
 // die Bremse nicht ab: Die Umrechnung in eine Dauer liefe sonst über.
 func TestLoginHugeLockoutWindow(t *testing.T) {
+	t.Cleanup(func() { OnLockout = nil })
 	for _, window := range []int{math.MaxInt, 9223372037} {
 		b := newAuthBench(t, nil, true)
 		b.setCfg(func(c *config.Config) { c.LoginMaxFailures = 2; c.LoginLockoutWindowSeconds = window })

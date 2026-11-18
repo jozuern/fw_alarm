@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -540,16 +541,27 @@ func TestLoginQueueCaps(t *testing.T) {
 }
 
 // Jeder Cookie-Wert: kein Absturz; als Ausweis gilt er nur, wenn er genau
-// die Form hat, die devicePassFor für seine id schreibt.
+// die Form hat, die devicePassFor für seine id schreibt. Dieselbe Eingabe
+// auch als ganze Cookie-Kopfzeile (mehrere Ausweis-Cookies): Es gelten
+// höchstens die ersten vier, und jeder gültige ist einer von ihnen.
 func FuzzDevicePass(f *testing.F) {
 	admin, reader := testHashes()
 	cfg := &config.Config{DashboardUser: adminUser, DashboardPasswordHash: admin,
 		DashboardReadonlyUser: readerUser, DashboardReadonlyPasswordHash: reader}
 	a := devicePassFor(cfg, "admin", testID(1))
 	r := devicePassFor(cfg, "readonly", testID(2))
+	several := func(values ...string) string {
+		parts := make([]string, len(values))
+		for i, v := range values {
+			parts[i] = deviceCookie + "=" + v
+		}
+		return strings.Join(parts, "; ")
+	}
 	for _, seed := range []string{a, r, a[:70], a + "x", "v2" + a[2:], "v1.r." + a[5:], `"` + a + `"`,
 		strings.ReplaceAll(a, ".", ".."), strings.ToUpper(a), "", "v1", "v1.a..", "v1.a.x.y", "....",
-		a[:len(a)-1] + "=", "v1.a." + strings.Repeat("A", 22) + "." + strings.Repeat("A", 43)} {
+		a[:len(a)-1] + "=", "v1.a." + strings.Repeat("A", 22) + "." + strings.Repeat("A", 43),
+		several("x", a), several("x", "y", "z", "w", a), several(r, a), several(a, a, a, a, a),
+		several("x", r) + "; " + sessionCookie + "=" + a} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, v string) {
@@ -563,13 +575,153 @@ func FuzzDevicePass(f *testing.F) {
 				t.Fatalf("%q gilt, ist aber nicht die Form von devicePassFor", v)
 			}
 		}
-		req := httptest.NewRequest(http.MethodPost, "/index.php", nil)
-		req.Header.Set("Cookie", deviceCookie+"="+v)
-		if q, ok := devicePassOf(req, cfg); ok {
-			id, err := deviceText.DecodeString(q.id)
-			if err != nil || devicePassFor(cfg, q.role, id) == "" {
-				t.Fatalf("über das Cookie gilt %q", v)
+		for _, header := range []string{deviceCookie + "=" + v, v} {
+			req := httptest.NewRequest(http.MethodPost, "/index.php", nil)
+			req.Header.Set("Cookie", header)
+			var first []string
+			for _, ck := range req.CookiesNamed(deviceCookie) {
+				if len(first) < maxSameNameCookies {
+					first = append(first, ck.Value)
+				}
+			}
+			passes := devicePassesOf(req, cfg)
+			if len(passes) > maxSameNameCookies {
+				t.Fatalf("Kopfzeile %q: %d Ausweise", header, len(passes))
+			}
+			for _, q := range passes {
+				id, err := deviceText.DecodeString(q.id)
+				if err != nil || !slices.Contains(first, devicePassFor(cfg, q.role, id)) {
+					t.Fatalf("Kopfzeile %q: %+v ist keiner der ersten vier", header, q)
+				}
 			}
 		}
 	})
+}
+
+// Wer nur das Lese-Passwort kennt, holt sich beliebig viele Ausweise – er
+// darf damit den Admin nicht verdrängen (Spec §6.8): Admin-Ausweise vor
+// Lese-Ausweisen vor der allgemeinen Reihe, jede Ausweis-Klasse mit eigener
+// Obergrenze von 16.
+func TestAdminPassBeforeReaderPass(t *testing.T) {
+	b := newAuthBench(t, nil, true)
+	b.setCfg(func(c *config.Config) { c.LoginMaxFailures = 1000 })
+	calls := make(chan verifyCall, 256)
+	useVerifier(t, controlledVerifier(calls))
+	cfg := b.cfg.Load()
+	running, all := b.occupy(calls)
+	for i := range 16 {
+		pass := devicePassFor(cfg, "readonly", testID(byte(10+i)))
+		all = append(all, b.startLogin(readerUser, fmt.Sprintf("r-%02d", i), attackerIP(i), withDevice(pass)))
+		b.expectWait(fmt.Sprintf("Lese-Ausweis %d", i+1))
+	}
+	// Der 17. Lese-Ausweis wartet in der allgemeinen Reihe.
+	all = append(all, b.startLogin(readerUser, "r-16", attackerIP(16), withDevice(devicePassFor(cfg, "readonly", testID(60)))))
+	b.expectWait("17. Lese-Ausweis")
+	if prio, general := laneWaiting(b.c); prio != 16 || general != 1 {
+		t.Errorf("Vorzugsreihen %d, allgemeine %d – erwartet 16 und 1", prio, general)
+	}
+	for next := 17; slotsWaiting(b.c) < 64; next++ {
+		all = append(all, b.startLogin(adminUser, "angreifer", attackerIP(next)))
+		b.expectWait("Angreifer")
+	}
+	admin := b.startLogin(adminUser, adminPass, "192.0.2.200", withDevice(devicePassFor(cfg, "admin", testID(1))))
+	select {
+	case r := <-admin:
+		for _, c := range running {
+			c.reply <- false
+		}
+		b.drain(calls, all...)
+		t.Fatalf("Admin mit Ausweis bei voller Lese-Reihe: %v, statt zu warten", r.res)
+	case d := <-b.clk.waits:
+		if d != verifyMaxWait {
+			t.Errorf("Wartezeit %v", d)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Admin kommt nicht an")
+	}
+	running[0].reply <- false
+	if c := nextCall(t, calls); c.pw != adminPass {
+		c.reply <- false
+		running[1].reply <- false
+		b.drain(calls, append(all, admin)...)
+		t.Fatalf("an der ersten freien Stelle prüft %q, nicht der Admin", c.pw)
+	} else {
+		c.reply <- true
+	}
+	if r := resultOf(t, admin); r.res != LoginOK {
+		t.Errorf("Admin: %v", r.res)
+	}
+	// Ohne Admin-Ausweise: die Lese-Ausweise vor der allgemeinen Reihe – den
+	// Platz, den der Admin eben freigab, bekommt der erste Lese-Ausweis.
+	c := nextCall(t, calls)
+	if c.pw != "r-00" {
+		t.Errorf("danach prüft %q, erwartet den ersten Lese-Ausweis", c.pw)
+	}
+	c.reply <- false
+	running[1].reply <- false
+	b.drain(calls, all...)
+}
+
+// Mehrere Ausweis-Cookies: Unter den ersten 4 zählt ein GÜLTIGER – ein
+// untergeschobenes verdeckt den echten nicht; mehr als 4 werden nicht
+// angesehen. Für die Regel "kam ein gültiger für diese Rolle mit" zählt
+// jeder der 4.
+func TestDeviceCookieAmongSeveral(t *testing.T) {
+	b := newAuthBench(t, nil, true)
+	calls := make(chan verifyCall, 64)
+	useVerifier(t, controlledVerifier(calls))
+	cfg := b.cfg.Load()
+	admin := devicePassFor(cfg, "admin", testID(1))
+	reader := devicePassFor(cfg, "readonly", testID(2))
+	several := func(values ...string) [2]string {
+		parts := make([]string, len(values))
+		for i, v := range values {
+			parts[i] = deviceCookie + "=" + v
+		}
+		return [2]string{"Cookie", strings.Join(parts, "; ")}
+	}
+	running, all := b.occupy(calls)
+	for i, tc := range []struct {
+		name   string
+		cookie [2]string
+		prio   int
+	}{
+		{"Müll vor dem echten", several("x", admin[:70], admin), 1},
+		{"vier vor dem echten", several("x", "y", "z", admin[:70], admin), 0},
+	} {
+		ch := b.startLogin(adminUser, adminPass, fmt.Sprintf("192.0.2.%d", 60+i), tc.cookie)
+		b.expectWait(tc.name)
+		if prio, general := laneWaiting(b.c); prio != tc.prio || prio+general != 1 {
+			t.Errorf("%s: Vorzugsreihen %d, allgemeine %d", tc.name, prio, general)
+		}
+		b.clk.Advance(verifyMaxWait)
+		if r := resultOf(t, ch); r.res != LoginBusy {
+			t.Errorf("%s: %v", tc.name, r.res)
+		}
+	}
+	// Lese- und Admin-Ausweis zugleich (der Lese-Ausweis zuerst): Es gilt die
+	// bessere Klasse – ein untergeschobener Lese-Ausweis stuft den Admin nicht
+	// zurück.
+	ch := b.startLogin(adminUser, adminPass, "192.0.2.62", several(reader, admin))
+	b.expectWait("Lese- und Admin-Ausweis")
+	if na, nr := classWaiting(b.c); na != 1 || nr != 0 {
+		t.Errorf("Lese- und Admin-Ausweis: Admin-Reihe %d, Lese-Reihe %d", na, nr)
+	}
+	b.clk.Advance(verifyMaxWait)
+	resultOf(t, ch)
+	for _, c := range running {
+		c.reply <- false
+	}
+	b.drain(calls, all...)
+	useVerifier(t, config.VerifyPassword)
+	// Ein gültiger Admin-Ausweis an zweiter Stelle: bleibt (kein neuer).
+	a := b.login(adminUser, adminPass, "192.0.2.70", several(reader, admin))
+	if a.res != LoginOK || deviceCookieOf(t, a.rec) != nil {
+		t.Errorf("gültiger an zweiter Stelle: %v %q", a.res, a.rec.Header()["Set-Cookie"])
+	}
+	// … an fünfter Stelle zählt er nicht: neuer Ausweis.
+	a = b.login(adminUser, adminPass, "192.0.2.71", several("a", "b", "c", "d", admin))
+	if a.res != LoginOK || deviceCookieOf(t, a.rec) == nil {
+		t.Errorf("gültiger an fünfter Stelle: %v %q", a.res, a.rec.Header()["Set-Cookie"])
+	}
 }
