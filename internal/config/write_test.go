@@ -68,7 +68,7 @@ func roundTrip(t *testing.T, data []byte) {
 }
 
 func TestWriteRoundTrip(t *testing.T) {
-	t.Run("Standardwerte", func(t *testing.T) { roundTrip(t, nil) })
+	t.Run("Standardwerte", func(t *testing.T) { roundTrip(t, minimalFile) })
 	t.Run("jeder Schlüssel gesetzt", func(t *testing.T) { roundTrip(t, everyKeySet()) })
 	t.Run("Vorlage", func(t *testing.T) {
 		data, err := os.ReadFile(examplePath)
@@ -79,7 +79,7 @@ func TestWriteRoundTrip(t *testing.T) {
 	})
 
 	// Write nennt jeden Schlüssel genau einmal und jeden mit Erklärung.
-	written := string(Write(mustParse(t, nil)))
+	written := string(Write(mustParse(t, minimalFile)))
 	var raw map[string]any
 	if _, err := toml.Decode(written, &raw); err != nil {
 		t.Fatal(err)
@@ -212,4 +212,27 @@ func FuzzParse(f *testing.F) {
 		}
 		sameValues(t, again, c)
 	})
+}
+
+// Die Probe-Sperre steht als Erstes in der Datei: Auch ein abgeschnittener
+// Anfang einer Datei mit aktiver Sperre hält sie noch.
+func TestWriteSendGuardFirst(t *testing.T) {
+	written := string(Write(mustParse(t, tomlFile(map[string]string{
+		"send_guard_keys": `["statuskey0001"]`, "send_guard_until": `"2026-11-20 11:30"`}))))
+	var keys []string
+	for line := range strings.SplitSeq(written, "\n") {
+		if isKeyLine(line) {
+			name, _, _ := strings.Cut(line, " = ")
+			keys = append(keys, name)
+		}
+	}
+	if len(keys) < 3 || keys[0] != "send_guard_keys" || keys[1] != "send_guard_until" {
+		t.Fatalf("Reihenfolge der Schlüssel: %q", keys)
+	}
+	end := strings.Index(written, "send_guard_until = ")
+	end += strings.IndexByte(written[end:], '\n') + 1
+	prefix := mustParse(t, []byte(written[:end]))
+	if _, _, active := prefix.SendGuard(loadMoment(t)); !active {
+		t.Error("der Anfang bis zur Sperre hält sie nicht")
+	}
 }

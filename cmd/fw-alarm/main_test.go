@@ -66,7 +66,7 @@ func (b *syncBuffer) String() string {
 // Ordner dir, Datenordner state, bark_host leer) und liefert ihren Pfad.
 func writeServerConfig(t *testing.T, dir, name, state string) string {
 	t.Helper()
-	c, err := config.ParseAt(nil, time.Now())
+	c, err := config.ParseAt([]byte("send_guard_keys = []"), time.Now()) // ein Wert, alle Standards
 	if err != nil {
 		t.Fatal(err)
 	}

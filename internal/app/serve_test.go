@@ -73,7 +73,7 @@ func newBench(t *testing.T) *bench {
 // leer – kein Test erreicht je einen echten Bark-Server.
 func (b *bench) configText(set func(c *config.Config)) []byte {
 	b.t.Helper()
-	c, err := config.ParseAt(nil, time.Now())
+	c, err := config.ParseAt([]byte("send_guard_keys = []"), time.Now()) // ein Wert, alle Standards
 	if err != nil {
 		b.t.Fatal(err)
 	}
@@ -461,4 +461,82 @@ func TestDefaultLastGoodPath(t *testing.T) {
 			t.Errorf("mehrere Ordner: %q", got)
 		}
 	}
+}
+
+// Worauf der Server wartet, bis er sich beendet: Signal, fw-alarm stop – und
+// das unerwartete Ende des HTTP-Servers oder des Steuer-Zugangs (einen
+// Server, den niemand fragen oder beenden kann, gibt es nicht).
+func TestWaitForStop(t *testing.T) {
+	type result struct {
+		err      error
+		ctlEnded bool
+	}
+	run := func(name string, feed func(cancel context.CancelFunc, stop chan struct{}, srv, ctl chan error)) result {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		stop := make(chan struct{})
+		srv, ctl := make(chan error, 1), make(chan error, 1)
+		got := make(chan result, 1)
+		go func() {
+			err, ended := waitForStop(ctx, stop, srv, ctl, slog.New(slog.DiscardHandler))
+			got <- result{err, ended}
+		}()
+		feed(cancel, stop, srv, ctl)
+		select {
+		case r := <-got:
+			return r
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: der Server merkt es nicht", name)
+			return result{}
+		}
+	}
+	if r := run("Signal", func(cancel context.CancelFunc, _ chan struct{}, _, _ chan error) { cancel() }); r.err != nil || r.ctlEnded {
+		t.Errorf("Signal: %+v", r)
+	}
+	if r := run("stop", func(_ context.CancelFunc, stop chan struct{}, _, _ chan error) { close(stop) }); r.err != nil || r.ctlEnded {
+		t.Errorf("stop: %+v", r)
+	}
+	if r := run("HTTP", func(_ context.CancelFunc, _ chan struct{}, srv, _ chan error) { srv <- errors.New("accept: kaputt") }); r.err == nil || r.ctlEnded {
+		t.Errorf("HTTP-Server endet: %+v", r)
+	}
+	for _, e := range []error{errors.New("accept: kaputt"), nil} {
+		r := run("Steuer-Zugang", func(_ context.CancelFunc, _ chan struct{}, _, ctl chan error) { ctl <- e })
+		if r.err == nil || !r.ctlEnded || !strings.Contains(r.err.Error(), "Steuer-Zugang") {
+			t.Errorf("Steuer-Zugang endet (%v): %+v", e, r)
+		}
+	}
+}
+
+// Beenden und sofort wieder starten, auf demselben Datenordner und denselben
+// Socket-Pfaden (wie der Prüfstand, hunderte Male je Datei): Ist fw-alarm
+// stop zurück, fasst der alte Server keinen der Pfade mehr an – der
+// Nachfolger bleibt über beide Sockets erreichbar, auch nachdem der alte
+// ganz zu Ende ist.
+func TestServeQuickRestart(t *testing.T) {
+	b := newBench(t)
+	done, _ := b.start()
+	for round := range 50 {
+		if code, _, errOut := b.run("stop"); code != 0 {
+			t.Fatalf("Runde %d: stop: %d %q", round, code, errOut)
+		}
+		next, _ := b.start() // sofort, ohne auf das Ende des alten zu warten
+		if err := waitEnded(t, done); err != nil {
+			t.Fatalf("Runde %d: der alte Server: %v", round, err)
+		}
+		if code, out, errOut := b.run("health"); code != 0 {
+			t.Fatalf("Runde %d: der Nachfolger ist über den Steuer-Socket nicht erreichbar: %d %q %q", round, code, out, errOut)
+		}
+		if status, _, _ := get(t, b.httpClient(), "http://fw-alarm/manifest.json"); status != 200 {
+			t.Fatalf("Runde %d: der Nachfolger ist über listen nicht erreichbar: %d", round, status)
+		}
+		done = next
+	}
+	if code, _, _ := b.run("stop"); code != 0 {
+		t.Fatal("letztes stop")
+	}
+	if err := waitEnded(t, done); err != nil {
+		t.Error(err)
+	}
+	gone(t, b.ctl, b.http)
 }

@@ -522,9 +522,13 @@ Vorlage – das Verhalten soll sich beim Umschalten nicht ändern.
 **Anfragen fassen die Datei nie an** (auch die Konfiguration kommt aus dem
 Speicher): Ein Hintergrund-Prüfer sieht alle 2 s nach (Änderungszeit, Größe,
 Dateinummer) und setzt bei einer gültigen neuen Fassung einen Zeiger um;
-`fw-alarm reload` tut dasselbe sofort und meldet das Ergebnis. Als
-fehlerhaft gilt eine Datei dem Prüfer erst, wenn sie bei der nächsten
-Prüfung unverändert ist – ein Editor, der gerade schreibt, löst nichts aus.
+`fw-alarm reload` tut dasselbe sofort und meldet das Ergebnis. Eine
+geänderte Datei – gültig oder fehlerhaft – beurteilt der Prüfer erst, wenn
+sie bei der nächsten Prüfung unverändert ist: Ein Editor, der gerade
+schreibt, löst nichts aus, auch nicht mit einem halben Stand, der gültiges
+TOML mit weniger Werten ist (es gälten die Standards – ohne Probe-Sperre).
+Eine Datei, die keinen einzigen Wert setzt, ist fehlerhaft; die Probe-Sperre
+steht in der geschriebenen Datei als Erstes.
 
 **Ist die Datei fehlerhaft**, gilt die letzte gute weiter – aber nicht
 stillschweigend (ein Passwort mit Tippfehler zu ändern, darf nicht so

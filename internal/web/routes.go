@@ -112,6 +112,13 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if tw.wrote {
 			panic(http.ErrAbortHandler)
 		}
+		// Was der Handler schon gesetzt hatte (ein Cookie, eine Weiterleitung,
+		// ein Inhaltstyp), gehört nicht zur 500.
+		h := w.Header()
+		for name := range h {
+			delete(h, name)
+		}
+		h.Set("X-Content-Type-Options", "nosniff")
 		w.WriteHeader(http.StatusInternalServerError)
 	}()
 	h(tw, r)

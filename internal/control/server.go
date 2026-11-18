@@ -15,11 +15,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
-	"net"
 	"net/http"
-	"os"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -103,12 +100,14 @@ func Serve(ctx context.Context, socketPath string, h Hooks, log *slog.Logger) er
 }
 
 // ServeListener wie Serve, auf einem schon offenen Socket (so erfährt der
-// Start einen Fehler beim Lauschen, bevor er weitermacht).
-func ServeListener(ctx context.Context, ln *net.UnixListener, h Hooks, log *slog.Logger) error {
+// Start einen Fehler beim Lauschen, bevor er weitermacht). Endet der Socket
+// von selbst (Fehler beim Annehmen), kommt dieser Fehler zurück. Wenn
+// ServeListener zurückkehrt, ist der Socket geschlossen, seine Datei fort
+// (sofern sie noch die eigene war), und nichts von ihm fasst den Pfad mehr an.
+func ServeListener(ctx context.Context, ln *Socket, h Hooks, log *slog.Logger) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	path := ln.Addr().String()
 	srv := &http.Server{
 		Handler:           handler(h, log),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -118,9 +117,11 @@ func ServeListener(ctx context.Context, ln *net.UnixListener, h Hooks, log *slog
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
 	var err error
+	finished := false
 	select {
 	case <-ctx.Done():
 	case err = <-served:
+		finished = true
 	}
 	// Laufende Befehle (ein flush, ein check) bekommen kurz Zeit; danach wird
 	// geschlossen, und ihr Kontext endet.
@@ -129,17 +130,16 @@ func ServeListener(ctx context.Context, ln *net.UnixListener, h Hooks, log *slog
 	if serr := srv.Shutdown(shCtx); serr != nil {
 		_ = srv.Close() // nach dem gescheiterten Shutdown: hart schließen, ein Fehler ändert nichts mehr
 	}
-	removeSocket(path, log)
+	if !finished {
+		<-served // Serve schließt den Socket beim Zurückkehren – erst danach geht es weiter
+	}
+	if cerr := ln.Close(); cerr != nil { // schon geschlossen: dasselbe Ergebnis noch einmal
+		log.Warn("Steuer-Socket nicht sauber geschlossen", "pfad", ln.Path(), "err", cerr)
+	}
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil
 	}
 	return err
-}
-
-func removeSocket(path string, log *slog.Logger) {
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		log.Warn("Socket-Datei nicht gelöscht", "pfad", path, "err", err)
-	}
 }
 
 func handler(h Hooks, log *slog.Logger) http.Handler {
@@ -228,63 +228,4 @@ func reply(w http.ResponseWriter, status int, a answer) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body) // scheitert nur, wenn der Aufrufer schon fort ist
-}
-
-// maxSocketPath: Unix-Sockets fassen etwa 104–108 Bytes Pfad (je nach
-// System); darüber lehnt das Programm lieber mit einer klaren Meldung ab.
-const maxSocketPath = 100
-
-// ListenUnix lauscht auf einem Unix-Socket unter path (Rechte 0600 außer
-// unter Windows). Eine liegen gebliebene Socket-Datei (nach einem harten
-// Abbruch), an der niemand mehr lauscht, wird vorher gelöscht; ein Socket,
-// an dem noch jemand lauscht, und alles, was kein Socket ist, bleiben
-// unangetastet – dann ist das der Fehler. Auch für listen = "unix:<Pfad>".
-//
-// Zwischen dem Anlegen und dem Setzen der Rechte vergeht ein Augenblick, in
-// dem der Socket die Rechte der umask hat; der Ordner (/run/fw-alarm) ist
-// dafür nur für den Dienst zugänglich.
-func ListenUnix(path string) (*net.UnixListener, error) {
-	if path == "" {
-		return nil, errors.New("kein Pfad für den Unix-Socket angegeben")
-	}
-	if len(path) > maxSocketPath {
-		return nil, fmt.Errorf("Pfad des Unix-Sockets zu lang (%d Bytes, höchstens %d): %s", len(path), maxSocketPath, path)
-	}
-	if err := removeStale(path); err != nil {
-		return nil, err
-	}
-	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
-	if err != nil {
-		return nil, fmt.Errorf("Unix-Socket %s: %w", path, err)
-	}
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(path, 0o600); err != nil {
-			_ = ln.Close() // der Socket wird nicht benutzt; Close löscht auch die Datei
-			return nil, fmt.Errorf("Rechte des Unix-Sockets %s: %w", path, err)
-		}
-	}
-	return ln, nil
-}
-
-// removeStale löscht eine verwaiste Socket-Datei unter path.
-func removeStale(path string) error {
-	info, err := os.Lstat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("Unix-Socket %s nicht prüfbar: %w", path, err)
-	}
-	if info.Mode().Type() != fs.ModeSocket {
-		return fmt.Errorf("unter %s liegt kein Socket, sondern etwas anderes – nicht gelöscht", path)
-	}
-	conn, err := net.DialTimeout("unix", path, time.Second)
-	if err == nil {
-		_ = conn.Close() // nur die Probe, ob dort jemand lauscht
-		return fmt.Errorf("Unix-Socket %s ist in Benutzung (läuft dort schon ein Server?)", path)
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("verwaister Unix-Socket %s nicht löschbar: %w", path, err)
-	}
-	return nil
 }

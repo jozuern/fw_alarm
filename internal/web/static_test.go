@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -81,6 +82,36 @@ func TestStaticTypes(t *testing.T) {
 	}
 	if !sawManifest {
 		t.Error("manifest.json nicht eingebettet")
+	}
+
+	// Auch von der Platte aus: Jede Datei unter nas_dashboard/assets ist
+	// eingebettet (go:embed übergeht Namen mit "." oder "_" am Anfang still)
+	// und hat einen Typ.
+	root := filepath.Join("..", "..", "nas_dashboard")
+	onDisk := 0
+	err := filepath.WalkDir(filepath.Join(root, "assets"), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		onDisk++
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if _, err := fs.Stat(webassets.FS, rel); err != nil {
+			t.Errorf("%s liegt im Ordner, ist aber nicht eingebettet", rel)
+		}
+		if _, ok := want[path.Ext(rel)]; !ok {
+			t.Errorf("%s: Endung %q hat keinen Typ in der Tabelle", rel, path.Ext(rel))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDisk < 10 {
+		t.Errorf("nur %d Dateien unter nas_dashboard/assets gefunden", onDisk)
 	}
 }
 

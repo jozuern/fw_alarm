@@ -188,7 +188,14 @@ func TestHandleRejectsBadPaths(t *testing.T) {
 func TestPanicIs500(t *testing.T) {
 	var out syncBuffer
 	rt := NewRouter(testCore(slog.New(slog.NewTextHandler(&out, nil))))
-	rt.Handle("/kaputt", func(w http.ResponseWriter, r *http.Request) { panic("geheim-aus-der-anfrage") })
+	rt.Handle("/kaputt", func(w http.ResponseWriter, r *http.Request) {
+		// Was der Handler schon gesetzt hatte, geht mit der 500 nicht hinaus.
+		h := w.Header()
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		h.Set("Set-Cookie", "boss925_dashboard=geheim-sitzung; Path=/")
+		h.Set("Location", "index.php")
+		panic("geheim-aus-der-anfrage")
+	})
 	rt.Handle("/halb", func(w http.ResponseWriter, r *http.Request) {
 		Text(w, 200, "angefangen")
 		panic("geheim-mitten-drin")
@@ -197,8 +204,17 @@ func TestPanicIs500(t *testing.T) {
 	rt.Handle("/gut", func(w http.ResponseWriter, r *http.Request) { Text(w, 200, "gut") })
 	addr := serveTCP(t, rt)
 
-	if a := raw(t, addr, http.MethodGet, "/kaputt?t=geheim-token"); a.status != 500 || a.body != "" {
+	a := raw(t, addr, http.MethodGet, "/kaputt?t=geheim-token")
+	if a.status != 500 || a.body != "" {
 		t.Errorf("Laufzeitfehler: %d %q", a.status, a.body)
+	}
+	for _, name := range []string{"Content-Type", "Set-Cookie", "Location"} {
+		if v := a.header.Get(name); v != "" {
+			t.Errorf("500 mit %s: %q", name, v)
+		}
+	}
+	if a.header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("500 ohne nosniff")
 	}
 	// Schon angefangen: abgebrochen statt scheinbar vollständig.
 	conn, err := net.Dial("tcp", addr)

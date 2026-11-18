@@ -137,6 +137,14 @@ func tick(t *testing.T, clk *clock.Fake) {
 	waitPending(t, clk, 1)
 }
 
+// settle: zwei Prüfungen – so lange braucht eine geänderte Datei, bis sie
+// gilt (die erste sieht sie, die zweite findet sie unverändert).
+func settle(t *testing.T, clk *clock.Fake) {
+	t.Helper()
+	tick(t, clk)
+	tick(t, clk)
+}
+
 func noSecret(t *testing.T, where, text string) {
 	t.Helper()
 	if strings.Contains(text, "geheim") || strings.Contains(text, secretHash) {
@@ -152,8 +160,14 @@ func TestProviderReloadsOnChange(t *testing.T) {
 		t.Fatalf("Start: offline=%d ok=%v problem=%q", p.Get().OfflineAfterSeconds, p.OK(), p.Problem())
 	}
 
-	// Neue Fassung: der Prüfer nimmt sie bei der nächsten Prüfung.
+	// Neue Fassung: Die erste Prüfung sieht sie, erst die zweite, die sie
+	// unverändert findet, setzt sie in Kraft.
 	d.write("config.toml", tomlFile(map[string]string{"offline_after_seconds": "240"}))
+	tick(t, clk)
+	if got := p.Get().OfflineAfterSeconds; got != 180 {
+		t.Fatalf("schon bei der ersten Prüfung übernommen: offline=%d", got)
+	}
+	ch.want(t)
 	tick(t, clk)
 	if got := p.Get().OfflineAfterSeconds; got != 240 || !p.OK() {
 		t.Fatalf("nach der Änderung: offline=%d ok=%v", got, p.OK())
@@ -188,7 +202,7 @@ func TestProviderReloadsOnChange(t *testing.T) {
 	if err := os.Rename(d.path("neu.toml"), d.config()); err != nil {
 		t.Fatal(err)
 	}
-	tick(t, clk)
+	settle(t, clk)
 	if got := p.Get().OfflineAfterSeconds; got != 300 {
 		t.Fatalf("in einem Schritt ersetzte Datei nicht erkannt: offline=%d", got)
 	}
@@ -258,7 +272,7 @@ func TestProviderKeepsLastGood(t *testing.T) {
 	// Repariert: neue Werte, wieder in Ordnung, neue Kopie.
 	repaired := tomlFile(map[string]string{"offline_after_seconds": "240"})
 	d.write("config.toml", repaired)
-	tick(t, clk)
+	settle(t, clk)
 	if !p.OK() || p.Problem() != "" || p.Get().OfflineAfterSeconds != 240 {
 		t.Fatalf("nach der Reparatur: ok=%v problem=%q offline=%d", p.OK(), p.Problem(), p.Get().OfflineAfterSeconds)
 	}
@@ -290,57 +304,103 @@ func TestProviderKeepsLastGood(t *testing.T) {
 }
 
 // Review Focus 4: Ein Editor, der an Ort und Stelle schreibt, hinterlässt für
-// einen Augenblick eine halbe Datei. Ist sie zwei Sekunden später in
-// Ordnung, darf nichts geschehen sein – keine beendeten Sitzungen, keine
-// Warnung.
+// einen Augenblick eine halbe Datei – fehlerhaft oder, schlimmer, gültig mit
+// weniger Werten (dann gälten die Standards: keine Probe-Sperre, der echte
+// Bark-Server, leere Passwort-Hashes). Ist sie zwei Sekunden später fertig,
+// darf nichts geschehen sein: keine neue Fassung, kein Wechsel, keine Kopie.
 func TestProviderIgnoresHalfWrittenFile(t *testing.T) {
 	d := newConfDir(t)
-	d.write("config.toml", tomlFile(nil))
+	start := Write(mustParse(t, tomlFile(map[string]string{"offline_after_seconds": "200"})))
+	d.write("config.toml", start)
 	p, clk, ch := startProvider(t, d)
+	state := t.TempDir()
+	if err := p.KeepCopies(state); err != nil {
+		t.Fatal(err)
+	}
+	copyPath := filepath.Join(state, LastGoodName)
+	copyIs := func(what string, want []byte) {
+		t.Helper()
+		if data, err := os.ReadFile(copyPath); err != nil || !bytes.Equal(data, want) {
+			t.Fatalf("%s: Kopie %d Bytes (%v), erwartet %d", what, len(data), err, len(want))
+		}
+	}
+	holds := func(what string, offline int) {
+		t.Helper()
+		if !p.OK() || p.Problem() != "" || p.Get().OfflineAfterSeconds != offline {
+			t.Fatalf("%s: ok=%v problem=%q offline=%d, erwartet %d", what, p.OK(), p.Problem(),
+				p.Get().OfflineAfterSeconds, offline)
+		}
+	}
 
-	full := tomlFile(map[string]string{"bark_alarm_title": `"Neuer Titel"`, "offline_after_seconds": "240"})
-	cut := bytes.Index(full, []byte("Neuer"))
-	if cut < 0 {
-		t.Fatal("Testdatei ohne Titel")
-	}
-	d.write("config.toml", full[:cut+3]) // endet mitten im Text
+	// Auf leer gekürzt (der erste Schritt eines Editors) und eine Prüfung
+	// später wieder vollständig: nichts geschieht.
+	d.write("config.toml", nil)
 	tick(t, clk)
-	if !p.OK() || p.Problem() != "" {
-		t.Fatalf("halbe Datei beurteilt: ok=%v problem=%q", p.OK(), p.Problem())
+	holds("leere Datei", 200)
+	d.write("config.toml", start)
+	settle(t, clk)
+	holds("wieder vollständig", 200)
+	ch.want(t)
+	copyIs("nach der leeren Datei", start)
+
+	// Abgeschnitten mitten in einem Kommentar: gültiges TOML, nur weniger
+	// Werte. Eine Prüfung später liegt die fertige Datei da – die halbe gilt nie.
+	full := Write(mustParse(t, tomlFile(map[string]string{"offline_after_seconds": "240", "bark_alarm_title": `"Neuer Titel"`})))
+	cut := bytes.Index(full, []byte("==== Box"))
+	if cut < 0 {
+		t.Fatal("Testdatei ohne den Abschnitt Box")
 	}
+	prefix := full[:cut+4]
+	if c, err := ParseAt(prefix, loadMoment(t)); err != nil || c.OfflineAfterSeconds != 180 {
+		t.Fatalf("die Kürzung soll gültig sein und offline_after_seconds nicht enthalten: %v", err)
+	}
+	d.write("config.toml", prefix)
+	tick(t, clk)
+	holds("gültige halbe Datei", 200)
 	d.write("config.toml", full)
 	tick(t, clk)
-	if !p.OK() || p.Get().BarkAlarmTitle != "Neuer Titel" || p.Get().OfflineAfterSeconds != 240 {
-		t.Fatalf("fertige Datei: ok=%v titel=%q", p.OK(), p.Get().BarkAlarmTitle)
+	holds("fertige Datei, erste Prüfung", 200)
+	ch.want(t)
+	copyIs("vor der zweiten Prüfung", start)
+	tick(t, clk)
+	holds("fertige Datei, zweite Prüfung", 240)
+	if p.Get().BarkAlarmTitle != "Neuer Titel" {
+		t.Errorf("Titel %q", p.Get().BarkAlarmTitle)
 	}
 	ch.want(t, true)
+	copyIs("nach der fertigen Datei", full)
+
+	// Dieselbe Kürzung zwei Prüfungen lang unverändert: Für den Server ist das
+	// eine bewusste Änderung – sie gilt.
+	d.write("config.toml", prefix)
+	tick(t, clk)
+	holds("Kürzung, erste Prüfung", 240)
+	tick(t, clk)
+	holds("Kürzung, zweite Prüfung", 180)
+	ch.want(t, true, true)
+	copyIs("nach der bewussten Kürzung", prefix)
 
 	// Ein Editor, der über eine neue Datei ersetzt: kurz fehlt sie ganz.
 	if err := os.Remove(d.config()); err != nil {
 		t.Fatal(err)
 	}
 	tick(t, clk)
-	if !p.OK() {
-		t.Fatal("eine kurz fehlende Datei wurde beurteilt")
-	}
-	d.write("config.toml", tomlFile(map[string]string{"offline_after_seconds": "300"}))
-	tick(t, clk)
-	if !p.OK() || p.Get().OfflineAfterSeconds != 300 {
-		t.Fatalf("nach dem Ersetzen: ok=%v offline=%d", p.OK(), p.Get().OfflineAfterSeconds)
-	}
-	ch.want(t, true, true)
+	holds("fehlende Datei", 180)
+	d.write("config.toml", full)
+	settle(t, clk)
+	holds("nach dem Ersetzen", 240)
 
-	// Zweimal halb, jedes Mal anders: weiter kein Urteil.
+	// Zweimal halb, jedes Mal anders: kein Urteil, keine Fassung.
 	d.write("config.toml", full[:cut+1])
 	tick(t, clk)
-	d.write("config.toml", full[:cut+4])
+	d.write("config.toml", full[:cut+7])
 	tick(t, clk)
-	d.write("config.toml", full)
+	d.write("config.toml", start)
 	tick(t, clk)
-	if !p.OK() {
-		t.Fatal("wechselnde halbe Dateien wurden beurteilt")
-	}
-	ch.want(t, true, true, true)
+	holds("wechselnde halbe Dateien", 240)
+	tick(t, clk)
+	holds("danach", 200)
+	ch.want(t, true, true, true, true) // nie false
 }
 
 func TestProviderWarningsApply(t *testing.T) {
@@ -351,7 +411,7 @@ func TestProviderWarningsApply(t *testing.T) {
 		t.Fatalf("Datei mit Hinweis: ok=%v intervall=%d hinweise=%q", p.OK(), p.Get().CheckIntervalSeconds, p.Get().Warnings())
 	}
 	d.write("config.toml", tomlFile(map[string]string{"bark_host": `"https://api.day.app/pfad"`, "offline_after_seconds": "240"}))
-	tick(t, clk)
+	settle(t, clk)
 	if !p.OK() || p.Get().OfflineAfterSeconds != 240 || p.Get().BarkHost != "https://api.day.app/pfad" {
 		t.Fatalf("Hinweis-Datei gilt nicht: ok=%v offline=%d", p.OK(), p.Get().OfflineAfterSeconds)
 	}
@@ -393,7 +453,7 @@ func TestProviderStartsFromCopy(t *testing.T) {
 		tick(t, clk)
 		ch.want(t)
 		d.write("config.toml", tomlFile(map[string]string{"offline_after_seconds": "300"}))
-		tick(t, clk)
+		settle(t, clk)
 		if !p.OK() || p.Get().OfflineAfterSeconds != 300 || len(p.Hints()) != 0 {
 			t.Fatalf("nach der Reparatur: ok=%v offline=%d hinweise=%q", p.OK(), p.Get().OfflineAfterSeconds, p.Hints())
 		}
@@ -487,7 +547,7 @@ func TestProviderFixedFields(t *testing.T) {
 	d.write("config.toml", tomlFile(map[string]string{
 		"state_dir": `"/srv/neu"`, "listen": `"unix:/run/neu.sock"`, "control_socket": `"/run/neu.sock"`,
 		"offline_after_seconds": "240"}))
-	tick(t, clk)
+	settle(t, clk)
 	c := p.Get()
 	if c.OfflineAfterSeconds != 240 {
 		t.Fatalf("die übrigen Werte gelten nicht: offline=%d", c.OfflineAfterSeconds)
@@ -508,7 +568,7 @@ func TestProviderFixedFields(t *testing.T) {
 
 	d.write("config.toml", tomlFile(map[string]string{
 		"state_dir": `"/srv/alt"`, "listen": `"127.0.0.1:8080"`, "control_socket": `"/run/alt.sock"`}))
-	tick(t, clk)
+	settle(t, clk)
 	if len(p.Hints()) != 0 {
 		t.Errorf("Hinweise nach dem Zurückstellen: %q", p.Hints())
 	}
@@ -543,7 +603,7 @@ func TestProviderWritesCopy(t *testing.T) {
 
 	next := tomlFile(map[string]string{"offline_after_seconds": "240"})
 	d.write("config.toml", next)
-	tick(t, clk)
+	settle(t, clk)
 	if data, _ := os.ReadFile(copyPath); !bytes.Equal(data, next) {
 		t.Errorf("Kopie folgt der neuen Fassung nicht: %q", data)
 	}
@@ -573,9 +633,9 @@ func TestProviderListenerPanic(t *testing.T) {
 		<-done
 	}()
 	d.write("config.toml", tomlFile(map[string]string{"offline_after_seconds": "240"}))
-	tick(t, clk)
+	settle(t, clk)
 	d.write("config.toml", tomlFile(map[string]string{"offline_after_seconds": "300"}))
-	tick(t, clk)
+	settle(t, clk)
 	ch.want(t, true, true)
 	if p.Get().OfflineAfterSeconds != 300 {
 		t.Error("der Prüfer läuft nach dem Laufzeitfehler nicht weiter")

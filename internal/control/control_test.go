@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -305,5 +306,118 @@ func TestCallWithoutServer(t *testing.T) {
 	}
 	if !WaitGone(sock, time.Second) {
 		t.Error("WaitGone ohne Server")
+	}
+}
+
+// Ein Nachfolger hat den Pfad schon übernommen (schneller Neustart): Das
+// Ende des alten Servers löscht seinen Socket nicht.
+func TestSocketLeavesSuccessorAlone(t *testing.T) {
+	sock := filepath.Join(shortDir(t), "c.sock")
+	healthy := Hooks{Health: func() Health { return Health{Version: "v", State: "normal", SaveOK: true, ConfigOK: true} }}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, sock, healthy, quiet()) }()
+	waitFor(t, "Start", func() bool { _, _, err := Call(sock, "health", time.Second); return err == nil })
+
+	if err := os.Remove(sock); err != nil {
+		t.Fatal(err)
+	}
+	successor, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer successor.Close()
+	go func() {
+		for {
+			c, err := successor.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("Serve: %v", err)
+	}
+	if _, err := os.Lstat(sock); err != nil {
+		t.Fatalf("der Socket des Nachfolgers wurde gelöscht: %v", err)
+	}
+	conn, err := net.DialTimeout("unix", sock, time.Second)
+	if err != nil {
+		t.Fatalf("der Nachfolger ist nicht mehr erreichbar: %v", err)
+	}
+	conn.Close()
+
+	// Und ein eigener Socket, den niemand übernommen hat, verschwindet mit
+	// ListenUnix + Close wie bisher.
+	own := filepath.Join(filepath.Dir(sock), "eigen.sock")
+	ln, err := ListenUnix(own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(own); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("eigener Socket nach Close: %v", err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Errorf("zweites Close: %v", err)
+	}
+}
+
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
+// Verwaist ist ein Socket nur, wenn der Verbindungsversuch sagt, dass dort
+// niemand lauscht (verweigert) oder die Datei inzwischen fort ist. Jeder
+// andere Fehler – fehlende Rechte, keine Antwort – lässt die Datei liegen.
+func TestStaleOnlyWhenRefused(t *testing.T) {
+	dial := func(err error) error {
+		return &net.OpError{Op: "dial", Net: "unix", Err: os.NewSyscallError("connect", err)}
+	}
+	cases := []struct {
+		name  string
+		err   error
+		stale bool
+	}{
+		{"verweigert", dial(refusedErrno), true},
+		{"Datei fort", dial(syscall.ENOENT), true},
+		{"keine Rechte", dial(os.ErrPermission), false},
+		{"keine Antwort", dial(timeoutErr{}), false},
+		{"anderer Fehler", dial(errors.New("seltsam")), false},
+	}
+	for _, tc := range cases {
+		if got := staleSocket(tc.err); got != tc.stale {
+			t.Errorf("%s: verwaist=%v, erwartet %v", tc.name, got, tc.stale)
+		}
+	}
+}
+
+// Unter Linux: ein Socket ohne Rechte wird nie als verwaist gelöscht.
+func TestStaleSocketWithoutPermission(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("nur unter Unix und nicht als root (root darf trotz Rechten 0000 verbinden)")
+	}
+	sock := filepath.Join(shortDir(t), "zu.sock")
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if err := os.Chmod(sock, 0); err != nil {
+		t.Fatal(err)
+	}
+	healthy := Hooks{Health: func() Health { return Health{Version: "v", State: "normal", SaveOK: true, ConfigOK: true} }}
+	if err := Serve(context.Background(), sock, healthy, quiet()); err == nil || !strings.Contains(err.Error(), "nicht gelöscht") {
+		t.Errorf("Socket ohne Rechte: %v", err)
+	}
+	if _, err := os.Lstat(sock); err != nil {
+		t.Errorf("der Socket ohne Rechte wurde gelöscht: %v", err)
 	}
 }

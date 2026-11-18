@@ -76,6 +76,13 @@ func ParseAt(data []byte, now time.Time) (*Config, error) {
 		return nil, errors.New("Syntaxfehler")
 	}
 
+	if len(md.Keys()) == 0 {
+		// Leer, nur Leerraum oder nur Kommentare: ein Versehen (abgeschnitten,
+		// geleert). Mit allen Standards gälte keine Probe-Sperre, und gesendet
+		// würde an den echten Bark-Server.
+		return nil, errors.New("die Datei setzt keinen einzigen Wert")
+	}
+
 	c := defaults()
 	fields := fieldsByName()
 	seen := map[string]bool{}
@@ -173,11 +180,11 @@ func checkBarkHost(host string) error {
 // erster Teil das Gerät, an das dann jede Nachricht ginge.
 func barkHostWarning(host string) string {
 	if phpTrim(host) == "" {
-		return "Hinweis: bark_host ist leer – der Server kann nichts senden"
+		return "bark_host ist leer – der Server kann nichts senden"
 	}
 	h := barkHostTrimmed(host)
 	lower := strings.ToLower(h)
-	noHTTP := "Hinweis: bark_host ist keine http(s)-Adresse – der Server kann nichts senden"
+	noHTTP := "bark_host ist keine http(s)-Adresse – der Server kann nichts senden"
 	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
 		return noHTTP
 	}
@@ -186,7 +193,7 @@ func barkHostWarning(host string) string {
 		return noHTTP
 	}
 	if u.Path != "" || u.RawPath != "" {
-		return "Hinweis: bark_host hat einen Pfad – alle Meldungen gingen an diese eine Adresse; nur für einen eigenen Bark-Server unter einem Unterpfad"
+		return "bark_host hat einen Pfad – alle Meldungen gingen an diese eine Adresse; nur für einen eigenen Bark-Server unter einem Unterpfad"
 	}
 	return ""
 }

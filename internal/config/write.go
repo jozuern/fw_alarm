@@ -20,10 +20,12 @@ const writeHeader = `# Konfiguration des Alarm-Servers fw-alarm.
 #
 # Fehlt ein Schlüssel, gilt sein Standardwert. Ein unbekannter Schlüssel, ein
 # Wert vom falschen Typ, eine unbekannte Zeitzone, eine unzulässige
-# Probe-Sperre oder ein bark_host mit Abfrage, Fragment oder Zugangsdaten
-# machen die Datei fehlerhaft: Dann gilt die letzte gültige Fassung weiter,
-# und alle Sitzungen enden. Texte stehen in "…"; ein " oder \ darin wird als
-# \" bzw. \\ geschrieben.
+# Probe-Sperre, ein bark_host mit Abfrage, Fragment oder Zugangsdaten oder
+# eine Datei ohne einen einzigen Wert machen die Datei fehlerhaft: Dann gilt
+# die letzte gültige Fassung weiter, und alle Sitzungen enden. Eine geänderte
+# Datei gilt erst, wenn sie zwei Sekunden lang unverändert bleibt (sofort:
+# sudo fw-alarm reload). Texte stehen in "…"; ein " oder \ darin wird als \"
+# bzw. \\ geschrieben.
 `
 
 // Ein Abschnitt der Datei: Erklärung (ohne "# ") und die Schlüssel darunter.
@@ -35,6 +37,19 @@ type block struct {
 // Aufbau der Datei – jeder Schlüssel genau einmal, in der Reihenfolge der
 // Felder von Config. Die Erklärungen stammen aus config.example.php.
 var layout = []block{
+	{`==== Probe-Sperre (nur beim Umschalten; sonst beide leer) =================
+Solange send_guard_keys nicht leer ist und send_guard_until in der Zukunft
+liegt, sendet der Server an KEINEN anderen Key – weder Alarm noch
+Entwarnung, Test-Push oder Meldungen, gleich was Empfängerliste und
+Demo-Modus ergeben. Die Box alarmiert unabhängig davon immer selbst.
+send_guard_until ist Ortszeit in timezone, Form "JJJJ-MM-TT HH:MM"; danach
+endet die Sperre von selbst. Damit eine vertippte Sperre nie einen echten
+Alarm von Hand blockiert, ist die Datei fehlerhaft (wird nicht angenommen),
+wenn die Zeit mehr als 3 Stunden voraus liegt, nur einer der beiden Werte
+gesetzt ist oder ein Eintrag kein gültiger Bark-Key ist.
+Die Sperre steht als Erstes in der Datei: So hält sie auch eine Datei, die
+beim Speichern abgeschnitten wurde.`,
+		[]string{"send_guard_keys", "send_guard_until"}},
 	{`==== Zugang der Box =======================================================
 Lange zufällige Zeichenfolge, die in boss925_alarm_bark/config.h als
 REMOTE_MACHINE_TOKEN eingetragen wird. Hier steht NUR der SHA-256-Hash
@@ -198,17 +213,6 @@ in Sekunden; der erste läuft 60 s nach dem Start. 0 = keine selbsttätigen
 Läufe – dann meldet der Server weder eine stumme Box noch andere Störungen
 (nur für Tests).`,
 		[]string{"check_interval_seconds"}},
-	{`==== Probe-Sperre (nur beim Umschalten; sonst beide leer) =================
-Solange send_guard_keys nicht leer ist und send_guard_until in der Zukunft
-liegt, sendet der Server an KEINEN anderen Key – weder Alarm noch
-Entwarnung, Test-Push oder Meldungen, gleich was Empfängerliste und
-Demo-Modus ergeben. Die Box alarmiert unabhängig davon immer selbst.
-send_guard_until ist Ortszeit in timezone, Form "JJJJ-MM-TT HH:MM"; danach
-endet die Sperre von selbst. Damit eine vertippte Sperre nie einen echten
-Alarm von Hand blockiert, ist die Datei fehlerhaft (wird nicht angenommen),
-wenn die Zeit mehr als 3 Stunden voraus liegt, nur einer der beiden Werte
-gesetzt ist oder ein Eintrag kein gültiger Bark-Key ist.`,
-		[]string{"send_guard_keys", "send_guard_until"}},
 }
 
 // Write schreibt c als TOML mit Erklärungen in fester Reihenfolge.

@@ -77,12 +77,16 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
   `data_dir`/`health_check_url`, dazu `state_dir`, `listen`,
   `control_socket`, `check_interval_seconds` und die Probe-Sperre
   `send_guard_keys`/`send_guard_until`; fehlt ein Schlüssel, gilt der Wert,
-  den der PHP-Code dafür nimmt. Im laufenden Server prüft ein Hintergrund-Prüfer
-  die Datei alle 2 s (fehlerhaft erst, wenn sie 2 s später unverändert ist;
-  dann gilt die letzte gültige Fassung), nach jeder gültigen Fassung liegt
-  eine Kopie als `config.last-good.toml` im Datenordner (0600) – mit ihr
-  startet er, wenn `config.toml` nicht ladbar ist. `state_dir`, `listen`
-  und `control_socket` gelten erst nach einem Neustart. Befehle bisher:
+  den der PHP-Code dafür nimmt; eine Datei ohne einen einzigen Wert ist
+  fehlerhaft, und `config.Write` schreibt die Probe-Sperre als Erstes. Im
+  laufenden Server prüft ein Hintergrund-Prüfer die Datei alle 2 s; eine
+  geänderte Fassung – gültig oder fehlerhaft – gilt bzw. gilt als fehlerhaft
+  erst, wenn sie 2 s später unverändert ist (eine halb geschriebene Datei
+  wird so nie übernommen; `reload` urteilt sofort). Fehlerhaft: Es gilt die
+  letzte gültige Fassung. Nach jeder in Kraft gesetzten Fassung liegt eine
+  Kopie als `config.last-good.toml` im Datenordner (0600) – mit ihr startet
+  er, wenn `config.toml` nicht ladbar ist. `state_dir`, `listen` und
+  `control_socket` gelten erst nach einem Neustart. Befehle bisher:
   `fw-alarm version`, `fw-alarm check-config [--config <datei>]`,
   `fw-alarm hash-password` (Argon2id), `fw-alarm serve` und die Befehle an
   den laufenden Server über den Steuer-Socket `control_socket`: `health`

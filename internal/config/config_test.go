@@ -50,6 +50,10 @@ func loadMoment(t testing.TB) time.Time {
 // absent entfernt einen Schlüssel der Grunddatei.
 const absent = "\x00absent"
 
+// minimalFile setzt genau einen Wert, und zwar auf seinen Standard: eine
+// Datei ohne jeden Wert ist fehlerhaft, diese hier ergibt alle Standards.
+var minimalFile = []byte("send_guard_keys = []\n")
+
 // tomlFile baut eine Datei aus der Grunddatei (gültig, ohne Hinweise) und
 // den Abweichungen; die Werte stehen als TOML-Text darin.
 func tomlFile(set map[string]string) []byte {
@@ -89,7 +93,7 @@ func mustParse(t testing.TB, data []byte) *Config {
 func TestEmptyBarkHostWarns(t *testing.T) {
 	c := mustParse(t, tomlFile(map[string]string{"bark_host": `""`})) // die Datei lädt trotzdem
 	w := c.Warnings()
-	if len(w) != 1 || w[0] != "Hinweis: bark_host ist leer – der Server kann nichts senden" {
+	if len(w) != 1 || w[0] != "bark_host ist leer – der Server kann nichts senden" {
 		t.Errorf("Hinweise: %q", w)
 	}
 }
@@ -101,8 +105,8 @@ func TestEmptyBarkHostWarns(t *testing.T) {
 func TestBarkHostRules(t *testing.T) {
 	const (
 		broken = "bark_host darf weder Abfrage noch Fragment noch Zugangsdaten enthalten"
-		path   = "Hinweis: bark_host hat einen Pfad – alle Meldungen gingen an diese eine Adresse; nur für einen eigenen Bark-Server unter einem Unterpfad"
-		scheme = "Hinweis: bark_host ist keine http(s)-Adresse – der Server kann nichts senden"
+		path   = "bark_host hat einen Pfad – alle Meldungen gingen an diese eine Adresse; nur für einen eigenen Bark-Server unter einem Unterpfad"
+		scheme = "bark_host ist keine http(s)-Adresse – der Server kann nichts senden"
 	)
 	cases := []struct {
 		host string
@@ -170,7 +174,7 @@ func TestGoodFileHasNoWarnings(t *testing.T) {
 // Fehlt ein Schlüssel, gilt der Wert, den der PHP-CODE dafür nimmt (das
 // "?? …" an der genannten Stelle), nicht der Wert der alten Vorlage.
 func TestDefaultsMatchPHPCode(t *testing.T) {
-	c, err := ParseAt(nil, loadMoment(t))
+	c, err := ParseAt(minimalFile, loadMoment(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,6 +402,13 @@ func TestBroken(t *testing.T) {
 		{"leere Zeitzone", tomlFile(map[string]string{"timezone": `""`}), "Zeitzone"},
 		{"Zeitzone Local", tomlFile(map[string]string{"timezone": `"Local"`}), "Zeitzone"},
 		{"kein UTF-8", append(tomlFile(nil), []byte("bark_alarm_body = \"\xff\xfe\"\n")...), "UTF-8"},
+		// Eine Datei ohne jeden Wert kann nur ein Versehen sein (abgeschnitten,
+		// geleert): alle Standards hießen keine Probe-Sperre und der echte
+		// Bark-Server.
+		{"leere Datei", []byte{}, "die Datei setzt keinen einzigen Wert"},
+		{"nur Leerraum", []byte(" \n\t\r\n\n"), "die Datei setzt keinen einzigen Wert"},
+		{"nur Kommentare", []byte("# Konfiguration\n#\n# send_guard_keys = [\"x\"]\n"), "die Datei setzt keinen einzigen Wert"},
+		{"nur das Banner von Write", []byte(writeHeader), "die Datei setzt keinen einzigen Wert"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

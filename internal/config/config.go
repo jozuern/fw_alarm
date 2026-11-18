@@ -11,9 +11,9 @@
 // "Fehlerhaft" ist eine Datei nur, wenn sie sich nicht lesen lässt, einen
 // Syntaxfehler, einen unbekannten Schlüssel, einen Wert vom falschen Typ,
 // eine unbekannte Zeitzone, eine unzulässige Probe-Sperre oder einen
-// bark_host mit Abfrage, Fragment oder Zugangsdaten hat (Parse liefert dann
-// einen Fehler). Alles andere sind Hinweise (Warnings): Der Server arbeitet
-// mit der Datei.
+// bark_host mit Abfrage, Fragment oder Zugangsdaten hat oder keinen einzigen
+// Wert setzt (Parse liefert dann einen Fehler). Alles andere sind Hinweise
+// (Warnings): Der Server arbeitet mit der Datei.
 //
 // Im laufenden Server hält ein Provider die geltende Fassung im Speicher,
 // prüft die Datei im Hintergrund und legt nach jeder gültig geladenen
@@ -37,6 +37,12 @@ import (
 // verändert und darf von beliebig vielen Goroutinen gelesen werden.
 // Die Reihenfolge der Felder ist die Reihenfolge in der geschriebenen Datei.
 type Config struct {
+	// Probe-Sperre: Solange sie gilt, sendet der Server an keinen anderen Key.
+	// Sie steht als Erstes in der Datei – so hält sie auch ein abgeschnittener
+	// Anfang der Datei noch.
+	SendGuardKeys  []string `toml:"send_guard_keys"`
+	SendGuardUntil string   `toml:"send_guard_until"` // Ortszeit "JJJJ-MM-TT HH:MM" in Timezone
+
 	// Zugang der Box: SHA-256 des Maschinen-Tokens (vereinheitlicht: ohne
 	// Leerraum außen, Kleinbuchstaben).
 	MachineTokenSHA256 string `toml:"machine_token_sha256"`
@@ -91,10 +97,6 @@ type Config struct {
 	ControlSocket        string `toml:"control_socket"` // Unix-Socket des Steuer-Zugangs
 	CheckIntervalSeconds int    `toml:"check_interval_seconds"`
 
-	// Probe-Sperre: Solange sie gilt, sendet der Server an keinen anderen Key.
-	SendGuardKeys  []string `toml:"send_guard_keys"`
-	SendGuardUntil string   `toml:"send_guard_until"` // Ortszeit "JJJJ-MM-TT HH:MM" in Timezone
-
 	loc      *time.Location // geladene Zeitzone (nil bei einem von Hand gebauten Stand)
 	loadedAt time.Time      // Zeitpunkt des Ladens – an ihm misst Warnings die Probe-Sperre
 }
@@ -111,6 +113,8 @@ const (
 // dabei; "neu" = gibt es nur in der Go-Fassung).
 func defaults() *Config {
 	return &Config{
+		SendGuardKeys:                 []string{},                                  // neu
+		SendGuardUntil:                "",                                          // neu
 		MachineTokenSHA256:            "",                                          // common.php:609
 		DashboardUser:                 "",                                          // common.php:835 (index.php:69 ohne ??)
 		DashboardPasswordHash:         "",                                          // common.php:836
@@ -145,8 +149,6 @@ func defaults() *Config {
 		Listen:                        "127.0.0.1:8080",                            // neu
 		ControlSocket:                 DefaultControlSocket,                        // neu
 		CheckIntervalSeconds:          900,                                         // neu
-		SendGuardKeys:                 []string{},                                  // neu
-		SendGuardUntil:                "",                                          // neu
 	}
 }
 

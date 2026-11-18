@@ -67,9 +67,9 @@ func (a stamp) same(b stamp) bool {
 		os.SameFile(a.info, b.info)
 }
 
-// reading ist eine fehlerhaft gelesene Fassung, über die noch nicht
-// geurteilt ist: Erst wenn die Datei bei der nächsten Prüfung genauso
-// aussieht, gilt sie als fehlerhaft.
+// reading ist eine geänderte Fassung (gültig oder fehlerhaft), über die noch
+// nicht geurteilt ist: Erst wenn die Datei bei der nächsten Prüfung genauso
+// aussieht, gilt sie bzw. gilt als fehlerhaft.
 type reading struct {
 	st   stamp
 	data []byte
@@ -89,9 +89,12 @@ type fixedValues struct{ stateDir, listen, controlSocket string }
 // Dateinummer) und setzt bei einer gültigen neuen Fassung den Zeiger um;
 // Reload tut dasselbe sofort.
 //
-// Eine fehlerhafte Datei gilt dem Prüfer erst als fehlerhaft, wenn sie bei
-// der nächsten Prüfung unverändert ist – ein Editor, der gerade schreibt,
-// löst nichts aus. Dann gilt die letzte gute Fassung weiter, OK() ist false
+// Eine geänderte Datei beurteilt der Prüfer erst, wenn sie bei der nächsten
+// Prüfung unverändert ist (gleicher Stand, gleiche Bytes) – gültig oder
+// fehlerhaft. Ein Editor, der gerade schreibt, löst so nichts aus, auch
+// nicht, wenn sein halber Stand gültiges TOML mit weniger Werten ist (dann
+// gälten die Standards: keine Probe-Sperre, der echte Bark-Server). Eine
+// fehlerhafte Datei: Es gilt die letzte gute Fassung weiter, OK() ist false
 // und Problem() nennt den Grund (ohne Geheimnisse: die Fehlertexte von
 // ParseAt nennen nie einen Wert).
 //
@@ -99,9 +102,10 @@ type fixedValues struct{ stateDir, listen, controlSocket string }
 // Eine neue Fassung mit anderen Werten dort gilt im Übrigen, Get liefert
 // für diese drei weiter die alten, und Hints nennt die Änderung.
 //
-// Nach KeepCopies legt jede gültig geladene Fassung von config.toml eine
-// Kopie (LastGoodName, Rechte 0600) in den genannten Ordner; mit ihr startet
-// NewProvider, wenn config.toml nicht ladbar ist.
+// Nach KeepCopies legt jede Fassung von config.toml, die in Kraft gesetzt
+// wird, eine Kopie (LastGoodName, Rechte 0600) in den genannten Ordner
+// (provider_copy.go); mit ihr startet NewProvider, wenn config.toml nicht
+// ladbar ist.
 type Provider struct {
 	path, lastGoodPath string
 	clk                clock.Clock
@@ -116,7 +120,7 @@ type Provider struct {
 	// Felder darunter. Die Folge-Aufrufe (OnChange) laufen unter mu.
 	mu       sync.Mutex
 	seen     stamp    // Stand der Datei bei der letzten Beurteilung
-	suspect  *reading // fehlerhaft gelesen, noch nicht beurteilt
+	suspect  *reading // geändert gelesen, noch nicht beurteilt
 	curBytes []byte   // Inhalt der geltenden Fassung
 	latest   *Config  // zuletzt gültig gelesene Fassung von config.toml, wie in der Datei
 	fixed    fixedValues
@@ -245,7 +249,9 @@ func (p *Provider) Run(ctx context.Context) {
 	}
 }
 
-// check ist eine Prüfung des Hintergrund-Prüfers.
+// check ist eine Prüfung des Hintergrund-Prüfers. Jede geänderte Lesung
+// wartet eine Prüfung: Erst wenn die nächste denselben Stand und dieselben
+// Bytes findet, gilt sie (gültig) bzw. gilt die Datei als fehlerhaft.
 func (p *Provider) check() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -254,16 +260,21 @@ func (p *Provider) check() {
 		return
 	}
 	st, data, c, err := p.load()
-	if err == nil {
-		p.suspect = nil
-		p.seen = st
-		p.accept(c, data)
-		return
-	}
 	if p.suspect != nil && p.suspect.st.same(st) && bytes.Equal(p.suspect.data, data) {
 		p.suspect = nil
 		p.seen = st
-		p.reject(err)
+		if err != nil {
+			p.reject(err)
+			return
+		}
+		p.accept(c, data)
+		return
+	}
+	if err == nil && p.ok.Load() && bytes.Equal(data, p.curBytes) {
+		// Inhalt wie die geltende Fassung (nur angefasst, oder nach einer halben
+		// Fassung wieder vollständig): nichts zu beurteilen.
+		p.suspect = nil
+		p.seen = st
 		return
 	}
 	// Zum ersten Mal so gesehen: vielleicht schreibt gerade ein Editor.
@@ -360,56 +371,6 @@ func (p *Provider) logWarnings(c *Config) {
 	for _, w := range c.Warnings() {
 		p.log.Warn("Hinweis zur Konfiguration", "hinweis", w)
 	}
-}
-
-// KeepCopies legt von nun an nach jeder gültig geladenen Fassung von
-// config.toml eine Kopie in dir – und gleich jetzt eine der geltenden, wenn
-// sie aus config.toml stammt (eine aus der Kopie wird nie zurückkopiert).
-// Der Fehler sagt, ob diese erste Kopie scheiterte; spätere Fehler stehen
-// nur im Journal.
-func (p *Provider) KeepCopies(dir string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.copyDir = dir
-	if p.fromCopy {
-		return nil
-	}
-	return p.writeCopy()
-}
-
-// writeCopy schreibt die geltende Fassung als Kopie: erst in eine
-// Zwischendatei (0600, auf die Platte gesichert), dann in einem Schritt an
-// ihren Platz – eine halbe Kopie gibt es so nie (unter mu).
-func (p *Provider) writeCopy() error {
-	if p.copyDir == "" || p.fromCopy {
-		return nil
-	}
-	target := filepath.Join(p.copyDir, LastGoodName)
-	tmp := target + ".tmp"
-	if err := writeSynced(tmp, p.curBytes); err != nil {
-		_ = os.Remove(tmp) // Aufräumen nach einem Fehler; scheitert es, bleibt nur die Zwischendatei
-		return err
-	}
-	if err := os.Rename(tmp, target); err != nil {
-		_ = os.Remove(tmp) // wie oben
-		return err
-	}
-	return nil
-}
-
-// writeSynced legt name neu an (Rechte 0600), schreibt data und sichert es.
-func writeSynced(name string, data []byte) error {
-	if err := os.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	_, werr := f.Write(data)
-	serr := f.Sync()
-	cerr := f.Close()
-	return errors.Join(werr, serr, cerr)
 }
 
 // notify ruft die Folge-Aufrufe (unter mu).
