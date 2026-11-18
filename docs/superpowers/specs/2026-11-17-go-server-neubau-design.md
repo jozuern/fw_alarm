@@ -568,7 +568,11 @@ oder verwerfen), in einem Schritt ersetzen (Besitzer und Rechte bleiben),
 
 Passwörter: Neue Hashes erzeugt `fw-alarm hash-password` als **Argon2id**
 (19 MiB, 2 Durchläufe, 1 Faden – der Mindestwert der OWASP-Empfehlung, passend
-zur 1-GB-VM); die vorhandenen bcrypt-Hashes (`$2y$`) gelten weiter.
+zur 1-GB-VM); die vorhandenen bcrypt-Hashes (`$2y$`) gelten weiter. Brauchbar
+ist ein Hash nur bis zu festen Obergrenzen (Argon2id bis 64 MiB und 4
+Durchläufe, bcrypt bis Kosten 13) – ein teurerer sprengte mit zwei Prüfungen
+zugleich die Speichergrenze des Dienstes oder hielte die Plätze sekundenlang
+besetzt; `check-config` meldet ihn.
 Passwortprüfungen kosten Rechenzeit und Speicher, deshalb:
 
 - höchstens zwei gleichzeitig, höchstens eine je Absender;
@@ -578,7 +582,25 @@ Passwortprüfungen kosten Rechenzeit und Speicher, deshalb:
   Anmeldungen gleichzeitig – bitte in ein paar Sekunden noch einmal
   versuchen.“; ein solcher Versuch zählt nicht als Fehlversuch (er wurde nie
   geprüft);
-- die Pause von 1 s nach einem Fehlversuch liegt außerhalb der zwei Plätze.
+- die Pause von 1 s nach einem Fehlversuch liegt außerhalb der zwei Plätze;
+- **bekannte Geräte zuerst:** Nach einer gelungenen Anmeldung bekommt das
+  Gerät ein zweites, langlebiges Cookie (`boss925_device`, 400 Tage,
+  `HttpOnly`, `SameSite=Strict`) – kein Zugang, nur ein vom Server
+  unterschriebener Ausweis „an diesem Gerät hat sich schon einmal jemand
+  richtig angemeldet“ (HMAC mit einem Schlüssel, der aus dem Passwort-Hash
+  des Kontos abgeleitet ist: Passwort ändern entwertet ihn; Abmelden und
+  eine fehlerhafte Konfiguration lassen ihn stehen). Versuche mit gültigem
+  Ausweis warten in einer eigenen Reihe, die VOR der allgemeinen bedient
+  wird – je Ausweis höchstens ein Platz darin, damit ein gestohlener
+  Ausweis sie nicht füllen kann. Bremse, Zählung, „eine je Absender“ und
+  „genau eine Prüfung pro Versuch“ gelten für beide Reihen gleich. Der
+  Grund (Durchsicht von Aufgabe 12): In einer einzigen, je Absender
+  gerechten Reihe stünde der Admin hinter JEDEM Absender, der gerade einen
+  Versuch warten lässt – rund hundert Adressen (mit IPv6 billig zu haben)
+  schöben jede Neuanmeldung über die 5 s;
+- in der allgemeinen Reihe warten höchstens 64 Versuche, höchstens 2 je
+  Absender; darüber kommt die 503-Antwort sofort (mehr ließe sich in 5 s
+  ohnehin nicht prüfen), ebenfalls ohne zu zählen.
 
 Die Speicher-Obergrenze des Dienstes (`MemoryMax=256M`) ist darauf
 abgestimmt: Grundbedarf plus zwei Prüfungen plus Reserve; die Probe auf der
@@ -679,8 +701,14 @@ gibt); 1 s Pause nach einem Fehlversuch.
 Sitzungs-ID: 32 Zufallsbytes (`crypto/rand`). Abgelegt wird nur ihr
 SHA-256. Sitzungen überstehen einen Neustart – das Handy bleibt nach einem
 Update angemeldet. `last_seen` höchstens einmal pro Minute. Neu: Ist die
-Konfiguration fehlerhaft, enden alle Sitzungen (§6.8); wie viele
-Passwortprüfungen zugleich laufen und wie gewartet wird, regelt §6.8.
+Konfiguration fehlerhaft, enden alle Sitzungen (§6.8) – auch bei einem
+START mit fehlerhafter Datei (der Server läuft dann mit der Kopie; solange
+die Datei kaputt bleibt, meldet jeder Neustart alle einmal ab, anmelden
+geht sofort wieder mit dem letzten gültigen Passwort). Jede neue gültige
+Fassung räumt Sitzungen ab, deren Zugangsdaten nicht mehr passen. Ein
+leerer `dashboard_user` ist kein Konto (PHP meldete ihn an und warf ihn bei
+der nächsten Anfrage wieder hinaus). Wie viele Passwortprüfungen zugleich
+laufen und wie gewartet wird, regelt §6.8.
 
 ## 9. Übernahme der vorhandenen Daten
 
@@ -798,8 +826,11 @@ Regeln, jede für sich ausreichend:
 - Ändernde Aktionen nur per POST mit CSRF-Token; Anmeldung mit
   `Sec-Fetch-Site`-Regel; Rollen serverseitig an EINER Tabelle.
 - Anmeldung: Bremse je Absender, begrenzte und gerecht verteilte
-  Passwortprüfungen (§6.8) – ein Angreifer mit vielen Adressen hält den
-  Admin nicht vom Anmelden ab.
+  Passwortprüfungen, bekannte Geräte zuerst (§6.8) – ein Angreifer mit
+  vielen Adressen hält ein Gerät, an dem sich schon einmal jemand
+  angemeldet hat, nicht vom Anmelden ab. Die ERSTE Anmeldung an einem
+  neuen Gerät kann er für die Dauer des Angriffs verzögern; laufende
+  Sitzungen, die Box und die Kurzbefehl-Links berührt das nicht.
 - Der Bark-Versand folgt keinen Weiterleitungen und liest keine Antwort ein
   (die Standardbibliothek täte beides von sich aus).
 - Kopfzeilen eines Proxys zählen nur von vertrauten Absendern. **Nach dem
