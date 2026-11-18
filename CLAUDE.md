@@ -80,7 +80,9 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
   veralteter Push, Neustart, fremdes Board, Hinweis auf mehrere Boards) als
   reine Rechnung in `internal/model/status.go` (`EvaluatePush`, je Regel eine
   Zeile in `TestEvaluatePush` für alte und neue Firmware; `api/status.php`
-  fasst nur Flüchtiges an und antwortet immer 200 `OK`), die Verlaufs-Ereignisse (Kategorie, nur Admin,
+  beantwortet jeden angenommenen Push sofort mit 200 `OK` – vor der Antwort
+  nur Flüchtiges; die Übernahme einer höheren Listen-Version der Box läuft
+  danach), die Verlaufs-Ereignisse (Kategorie, nur Admin,
   freigegebene Felder) in `internal/logview/events.go` (wie
   `log_event_types()`; ein neues Ereignis braucht dort eine Zeile, in
   `internal/model` seinen Namen samt Eintrag in `AllEvents` und in
@@ -827,7 +829,8 @@ Wichtige Eigenschaften, die beim Refactoring erhalten bleiben müssen:
   Board mit demselben Token nichts unterdrückt; Wechsel zu „nie" =
   ESP32-Reboot, kein Alarm; `source=remote` = Demo-Alarm, wenn die Box den
   ALARM-Befehl kurz zuvor (< 300 s nach der Auslieferung) mit `executed`
-  quittiert hat ODER er vor < 60 s ausgeliefert und noch nicht quittiert ist
+  quittiert hat ODER er vor weniger als 60 s ausgeliefert und noch nicht
+  quittiert ist
   (die Box pusht ihren Status
   VOR der ACK – das ist der Normalfall) — sonst `relay`; die Fenster setzen
   `COOLDOWN_MS` ≥ 300 s voraus. Ein VERALTETER Push (traf früher ein als der
