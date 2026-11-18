@@ -173,9 +173,11 @@ func validBarkKey(key string) bool { return barkKeyPattern.MatchString(key) }
 
 var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// phpTrim entfernt, was PHPs trim() entfernt (nicht mehr – z.B. kein
-// geschütztes Leerzeichen).
-func phpTrim(s string) string { return strings.Trim(s, " \t\n\r\x00\x0b") }
+// TrimPHP entfernt, was PHPs trim() entfernt (nicht mehr – z.B. kein
+// geschütztes Leerzeichen): für Werte aus der Konfiguration und aus
+// Kopfzeilen, die PHP vor dem Vergleich so bereinigte. Die eine Fassung für
+// config und web (model hält eine eigene, es importiert nichts von uns).
+func TrimPHP(s string) string { return strings.Trim(s, " \t\n\r\x00\x0b") }
 
 // clientIPHeaderPattern: erlaubte Zeichen im Namen der Kopfzeile aus
 // proxy_client_ip_header – PHP prüft nach strtoupper und "-" → "_" auf
@@ -188,7 +190,7 @@ var clientIPHeaderPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // unbrauchbar – dann zählt der Absender selbst, und alle Besucher über den
 // Proxy sind EIN Absender.
 func (c *Config) ClientIPHeader() (string, bool) {
-	name := phpTrim(c.ProxyClientIPHeader)
+	name := TrimPHP(c.ProxyClientIPHeader)
 	if !clientIPHeaderPattern.MatchString(name) {
 		return "", false
 	}
@@ -281,7 +283,7 @@ func (c *Config) Warnings() []string {
 	if len(c.TrustedProxies) > 0 {
 		if _, ok := c.ClientIPHeader(); !ok {
 			reason := "leer"
-			if phpTrim(c.ProxyClientIPHeader) != "" {
+			if TrimPHP(c.ProxyClientIPHeader) != "" {
 				reason = "unbrauchbar (nur Buchstaben, Ziffern, - und _)"
 			}
 			w = append(w, "trusted_proxies ist gesetzt, proxy_client_ip_header aber "+reason+
@@ -296,7 +298,7 @@ func (c *Config) Warnings() []string {
 			c.CheckIntervalSeconds))
 	}
 	for i, key := range c.BarkKeysAlarm {
-		if !validBarkKey(phpTrim(key)) {
+		if !validBarkKey(TrimPHP(key)) {
 			w = append(w, fmt.Sprintf("bark_keys_alarm: Eintrag %d ist kein gültiger Bark-Key und wird nie alarmiert", i+1))
 		}
 	}

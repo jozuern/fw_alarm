@@ -59,16 +59,26 @@ type Hit struct {
 // sichern).
 func ThrottleHit(c *core.Core, bucket, who string, limit int, window time.Duration) Hit {
 	pick := throttleBucket(bucket)
-	now := c.Clock.Now().Unix()
 	win := int64(window / time.Second)
-	// Vorab am Schnappschuss: gesperrt oder voll ändert nichts – kein
-	// Kopieren, kein Sichern (unter einem Angriff schriebe der Server sonst
-	// bei jedem Aufruf runtime.json).
-	if _, h, final := throttleDecide(*pick(c.Store.Runtime()), who, limit, win, now); final {
+	// Vorab am Schnappschuss, mit eigener Zeit: Steht ohne Zählen fest, dass
+	// sich nichts ändert (gesperrt, oder die Bremse ist voll), gilt das für
+	// den Zeitpunkt, zu dem der Versuch kam – kein Kopieren, kein Sichern
+	// (unter einem Angriff schriebe der Server sonst bei jedem Aufruf
+	// runtime.json). Hier wird nie etwas gelöscht oder neu begonnen; alles
+	// andere entscheidet erst der Schritt unter dem Halter.
+	if _, h, final := throttleDecide(*pick(c.Store.Runtime()), who, limit, win, c.Clock.Now().Unix()); final {
 		return h
 	}
 	var res Hit
 	c.Store.UpdateRuntime(func(d *model.Runtime) {
+		// Die Zeit wird unter dem Halter abgelesen, nicht davor: Versuche
+		// laufen hier nacheinander, also ist kein Eintrag jünger als diese
+		// Zeit. Mit einer vorher abgelesenen sähe ein Versuch, der über eine
+		// Sekundengrenze auf den Halter wartete, den Eintrag eines anderen aus
+		// der nächsten Sekunde als "aus der Zukunft" und räumte ihn weg
+		// (TestThrottleSecondBoundary). Nur hier liest eine Änderung die Uhr
+		// selbst; es ist kein Zugriff auf Platte oder Netz.
+		now := c.Clock.Now().Unix()
 		m := pick(d)
 		if *m == nil {
 			*m = map[string]model.ThrottleEntry{}

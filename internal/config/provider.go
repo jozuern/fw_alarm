@@ -193,16 +193,20 @@ func (p *Provider) load() (st stamp, data []byte, c *Config, err error) {
 		return st, nil, nil, err
 	}
 	c, err = ParseAt(data, p.clk.Now())
-	if err == nil && p.fixed.listen != "" {
+	if err == nil && unixListenWithoutHeader(c, p.fixed.listen) {
 		// listen gilt erst nach einem Neustart: Bis dahin lauscht der Server
-		// auf dem Wert vom Start – gegen ihn zählt die Regel für den
-		// Unix-Socket, auch wenn die neue Fassung schon TCP nennt.
-		if err = checkUnixListen(c, p.fixed.listen); err != nil {
-			c = nil
-		}
+		// auf dem Unix-Socket vom Start – gegen ihn zählt die Regel, auch wenn
+		// die neue Fassung selbst schon TCP nennt. Die Datei an sich ist in
+		// Ordnung (check-config sagt das auch); der Text sagt es ebenfalls,
+		// und dass sie nach einem Neustart gilt.
+		return st, data, nil, errUnixListenFromStart
 	}
 	return st, data, c, err
 }
+
+// errUnixListenFromStart: Der Server lauscht noch auf dem Unix-Socket vom
+// Start, die neue Fassung nennt keinen mehr und keine brauchbare Kopfzeile.
+var errUnixListenFromStart = errors.New("der Server lauscht bis zum Neustart noch auf dem Unix-Socket vom Start – bis dahin braucht es proxy_client_ip_header (die Datei selbst ist in Ordnung und gilt nach einem Neustart)")
 
 func (p *Provider) loadCopy() (*Config, []byte, error) {
 	if p.lastGoodPath == "" {

@@ -268,6 +268,20 @@ func TestClientIPHeader(t *testing.T) {
 	}
 }
 
+// TrimPHP entfernt genau, was PHPs trim() entfernt.
+func TestTrimPHP(t *testing.T) {
+	for in, want := range map[string]string{
+		" \t\n\r\x00\x0babc \t": "abc",
+		"\u00a0abc\u00a0":       "\u00a0abc\u00a0", // geschütztes Leerzeichen bleibt
+		"\fabc":                 "\fabc",           // Seitenvorschub bleibt
+		"a b":                   "a b",
+	} {
+		if got := TrimPHP(in); got != want {
+			t.Errorf("TrimPHP(%q) = %q, erwartet %q", in, got, want)
+		}
+	}
+}
+
 func TestGoodFileHasNoWarnings(t *testing.T) {
 	c := mustParse(t, tomlFile(nil))
 	if w := c.Warnings(); len(w) != 0 {

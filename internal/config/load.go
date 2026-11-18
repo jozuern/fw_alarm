@@ -111,9 +111,9 @@ func ParseAt(data []byte, now time.Time) (*Config, error) {
 	}
 
 	// Vereinheitlichen wie der PHP-Code bei jedem Gebrauch.
-	c.MachineTokenSHA256 = strings.ToLower(phpTrim(c.MachineTokenSHA256))
-	c.WatcherTokenSHA256 = strings.ToLower(phpTrim(c.WatcherTokenSHA256))
-	c.BarkKeyStatus = phpTrim(c.BarkKeyStatus)
+	c.MachineTokenSHA256 = strings.ToLower(TrimPHP(c.MachineTokenSHA256))
+	c.WatcherTokenSHA256 = strings.ToLower(TrimPHP(c.WatcherTokenSHA256))
+	c.BarkKeyStatus = TrimPHP(c.BarkKeyStatus)
 	c.LoginMaxFailures = max(1, c.LoginMaxFailures)
 	c.LoginLockoutWindowSeconds = max(60, c.LoginLockoutWindowSeconds)
 	c.BarkMaxTries = max(1, c.BarkMaxTries)
@@ -134,27 +134,33 @@ func ParseAt(data []byte, now time.Time) (*Config, error) {
 	if err := checkBarkHost(c.BarkHost); err != nil {
 		return nil, err
 	}
-	if err := checkUnixListen(c, c.Listen); err != nil {
+	if err := checkUnixListen(c); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-// checkUnixListen: Über einen Unix-Socket (listen = "unix:…") gilt jede
-// Anfrage als vom Tunnel, und es gibt keine Absender-Adresse. Ohne
+// unixListenWithoutHeader: Über einen Unix-Socket (listen = "unix:…") gilt
+// jede Anfrage als vom Tunnel, und es gibt keine Absender-Adresse. Ohne
 // brauchbare Kopfzeile mit der Adresse des Besuchers wäre jeder "unknown" –
 // alle teilten sich EINE Login-Bremse, und ein Fremder könnte mit ein paar
-// Fehlversuchen den Admin aussperren. Das macht die Datei fehlerhaft.
-// listen ist der Wert, auf dem der Server lauscht (im laufenden Server der
-// vom Start, siehe Provider.load).
-func checkUnixListen(c *Config, listen string) error {
+// Fehlversuchen den Admin aussperren. listen ist der Wert, auf dem der
+// Server lauscht.
+func unixListenWithoutHeader(c *Config, listen string) bool {
 	if !strings.HasPrefix(listen, "unix:") {
-		return nil
+		return false
 	}
-	if _, ok := c.ClientIPHeader(); ok {
-		return nil
+	_, ok := c.ClientIPHeader()
+	return !ok
+}
+
+// checkUnixListen: Die Datei nennt selbst einen Unix-Socket, aber keine
+// brauchbare Kopfzeile – sie ist fehlerhaft.
+func checkUnixListen(c *Config) error {
+	if unixListenWithoutHeader(c, c.Listen) {
+		return errors.New("listen auf einem Unix-Socket braucht proxy_client_ip_header – sonst teilen sich alle Besucher eine Bremse, und ein Fremder könnte die Anmeldung sperren")
 	}
-	return errors.New("listen auf einem Unix-Socket braucht proxy_client_ip_header – sonst teilen sich alle Besucher eine Bremse, und ein Fremder könnte die Anmeldung sperren")
+	return nil
 }
 
 // barkHostTrimmed bereinigt bark_host wie der Bark-Client vor dem Senden:
@@ -199,7 +205,7 @@ func checkBarkHost(host string) error {
 // Unterpfad), aber ungewöhnlich: Beim Bark-Server von api.day.app wäre sein
 // erster Teil das Gerät, an das dann jede Nachricht ginge.
 func barkHostWarning(host string) string {
-	if phpTrim(host) == "" {
+	if TrimPHP(host) == "" {
 		return "bark_host ist leer – der Server kann nichts senden"
 	}
 	h := barkHostTrimmed(host)

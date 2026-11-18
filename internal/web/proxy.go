@@ -53,7 +53,7 @@ func IsHTTPS(c *core.Core, r *http.Request) bool {
 		return false
 	}
 	proto := strings.Join(r.Header.Values("X-Forwarded-Proto"), ", ")
-	return strings.ToLower(phpTrim(proto)) == "https"
+	return strings.ToLower(config.TrimPHP(proto)) == "https"
 }
 
 // ClientIP liefert die Adresse des Besuchers (PHP: login_client_ip): den
@@ -75,7 +75,7 @@ func ClientIP(c *core.Core, r *http.Request) string {
 		return remote
 	}
 	parts := strings.Split(strings.Join(r.Header.Values(name), ","), ",")
-	candidate := phpTrim(parts[len(parts)-1])
+	candidate := config.TrimPHP(parts[len(parts)-1])
 	if _, ok := packedIP(candidate); ok {
 		return candidate
 	}
@@ -98,7 +98,7 @@ func remoteHost(r *http.Request) string {
 // false: keine gültige Adresse – auch eine mit Zone (fe80::1%eth0) nicht,
 // die nimmt PHPs inet_pton nicht an.
 func packedIP(s string) (netip.Addr, bool) {
-	a, err := netip.ParseAddr(phpTrim(s))
+	a, err := netip.ParseAddr(config.TrimPHP(s))
 	if err != nil || a.Zone() != "" {
 		return netip.Addr{}, false
 	}

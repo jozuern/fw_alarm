@@ -577,20 +577,30 @@ func TestProviderFixedFields(t *testing.T) {
 // listen gilt erst nach einem Neustart: Lauscht der Server auf einem
 // Unix-Socket, ist eine neue Fassung ohne Kopfzeile fehlerhaft – auch wenn
 // sie selbst schon wieder TCP nennt (bis zum Neustart lauscht er weiter auf
-// dem Socket). Umgekehrt braucht eine Fassung, die erst nach dem Neustart
-// auf den Socket ginge, die Kopfzeile schon jetzt (ParseAt).
+// dem Socket). Der Grund sagt dann, dass die Datei selbst in Ordnung ist
+// und nach einem Neustart gilt (check-config nennt sie in Ordnung).
+// Umgekehrt braucht eine Fassung, die erst nach dem Neustart auf den Socket
+// ginge, die Kopfzeile schon jetzt (ParseAt, der gewohnte Text).
 func TestProviderUnixListenKeepsHeader(t *testing.T) {
+	const fromStart = "der Server lauscht bis zum Neustart noch auf dem Unix-Socket vom Start – bis dahin braucht es proxy_client_ip_header (die Datei selbst ist in Ordnung und gilt nach einem Neustart)"
 	d := newConfDir(t)
 	d.write("config.toml", tomlFile(map[string]string{
 		"listen": `"unix:/run/fw-alarm/http.sock"`, "proxy_client_ip_header": `"CF-Connecting-IP"`}))
 	p, _, ch := startProvider(t, d)
-	d.write("config.toml", tomlFile(map[string]string{"listen": `"127.0.0.1:8080"`, "offline_after_seconds": "240"}))
-	err := p.Reload()
-	if err == nil || err.Error() != unixListenBroken {
-		t.Fatalf("Reload: %v, erwartet %q", err, unixListenBroken)
+	tcpFile := tomlFile(map[string]string{"listen": `"127.0.0.1:8080"`, "offline_after_seconds": "240"})
+	if _, err := ParseAt(tcpFile, loadMoment(t)); err != nil {
+		t.Fatalf("die Datei selbst ist in Ordnung: %v", err)
 	}
-	if p.OK() || p.Problem() != unixListenBroken {
+	d.write("config.toml", tcpFile)
+	err := p.Reload()
+	if err == nil || err.Error() != fromStart {
+		t.Fatalf("Reload: %v, erwartet %q", err, fromStart)
+	}
+	if p.OK() || p.Problem() != fromStart {
 		t.Errorf("OK %v, Problem %q", p.OK(), p.Problem())
+	}
+	if hints := strings.Join(p.Hints(), "\n"); !strings.Contains(hints, fromStart) {
+		t.Errorf("Hinweise für health %q nennen den Grund nicht", p.Hints())
 	}
 	if c := p.Get(); c.ProxyClientIPHeader != "CF-Connecting-IP" || c.OfflineAfterSeconds != 180 {
 		t.Errorf("es gilt nicht die letzte gute Fassung: %q %d", c.ProxyClientIPHeader, c.OfflineAfterSeconds)
@@ -605,6 +615,13 @@ func TestProviderUnixListenKeepsHeader(t *testing.T) {
 	}
 	if c := p.Get(); c.ProxyClientIPHeader != "X-Real-IP" || c.Listen != "unix:/run/fw-alarm/http.sock" {
 		t.Errorf("neue Fassung: %q %q", c.ProxyClientIPHeader, c.Listen)
+	}
+
+	// Nennt die neue Fassung selbst einen Unix-Socket ohne Kopfzeile, ist
+	// sie selbst fehlerhaft: der gewohnte Text.
+	d.write("config.toml", tomlFile(map[string]string{"listen": `"unix:/run/anders.sock"`}))
+	if err := p.Reload(); err == nil || err.Error() != unixListenBroken {
+		t.Errorf("Reload mit eigenem Unix-Socket: %v, erwartet %q", err, unixListenBroken)
 	}
 }
 

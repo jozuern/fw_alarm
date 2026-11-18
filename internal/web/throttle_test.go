@@ -193,6 +193,94 @@ func TestThrottleEntryFromTheFuture(t *testing.T) {
 	}
 }
 
+// steppedClock ist die gestellte Uhr mit einem Einschub: Beim nächsten
+// Ablesen nach arm springt die Uhr um eine Sekunde vor, between läuft (ein
+// anderer Versuch, der schon die neue Sekunde sieht) – geliefert wird aber
+// die Zeit von VOR dem Sprung. So liegt zwischen dem ersten Ablesen eines
+// Versuchs und seiner Entscheidung unter dem Halter genau eine
+// Sekundengrenze, und ein anderer Versuch war dazwischen – ohne Schlafen,
+// ohne echte Gleichzeitigkeit.
+type steppedClock struct {
+	*clock.Fake
+	mu      sync.Mutex
+	between func()
+}
+
+func (s *steppedClock) arm(between func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.between = between
+}
+
+func (s *steppedClock) Now() time.Time {
+	s.mu.Lock()
+	fn := s.between
+	s.between = nil
+	s.mu.Unlock()
+	now := s.Fake.Now()
+	if fn != nil {
+		s.Fake.Advance(time.Second)
+		fn()
+	}
+	return now
+}
+
+// Zwei Versuche über eine Sekundengrenze: Versuch A liest die Uhr in Sekunde
+// S, bevor er den Halter bekommt; Versuch B liest S+1 und legt seinen
+// Eintrag zuerst an. Entscheidet A nach seiner alten Zeit, sähe er B's
+// Eintrag als "aus der Zukunft" und räumte ihn weg. Unter dem Halter zählt
+// deshalb eine dort abgelesene Zeit: A zählt IN B's Eintrag, ein Absender
+// an der Grenze bleibt gesperrt, Einträge anderer aus S+1 bleiben stehen.
+func TestThrottleSecondBoundary(t *testing.T) {
+	const limit, window = 3, 900 * time.Second
+	setup := func(t *testing.T) (*core.Core, *steppedClock) {
+		c, clk, _ := storeCore(t)
+		sc := &steppedClock{Fake: clk}
+		c.Clock = sc // die Ablage liest ihre eigene Uhr (clk) – nur web sieht den Einschub
+		return c, sc
+	}
+	s1 := t0.Add(time.Second).Unix()
+
+	t.Run("A zählt in den Eintrag von B", func(t *testing.T) {
+		c, sc := setup(t)
+		sc.arm(func() { ThrottleHit(c, "login", "203.0.113.5", limit, window) })
+		if h := ThrottleHit(c, "login", "203.0.113.5", limit, window); h.Blocked || h.Count != 2 {
+			t.Errorf("A: %+v, erwartet Count 2", h)
+		}
+		if e := throttleOf(c, "login")["203.0.113.5"]; e.Count != 2 || e.FirstAt != s1 {
+			t.Errorf("Eintrag %+v, erwartet {2 %d}", e, s1)
+		}
+	})
+	t.Run("an der Grenze bleibt gesperrt", func(t *testing.T) {
+		c, sc := setup(t)
+		sc.arm(func() {
+			for range limit {
+				ThrottleHit(c, "login", "203.0.113.5", limit, window)
+			}
+		})
+		if h := ThrottleHit(c, "login", "203.0.113.5", limit, window); !h.Blocked || h.Count != limit {
+			t.Errorf("A: %+v, erwartet gesperrt mit %d", h, limit)
+		}
+		if e := throttleOf(c, "login")["203.0.113.5"]; e.Count != limit || e.FirstAt != s1 {
+			t.Errorf("Eintrag %+v, erwartet {%d %d}", e, limit, s1)
+		}
+	})
+	t.Run("Eintrag eines anderen bleibt", func(t *testing.T) {
+		c, sc := setup(t)
+		sc.arm(func() { ThrottleHit(c, "mute", "198.51.100.4", limit, window) })
+		if h := ThrottleHit(c, "mute", "203.0.113.5", limit, window); h.Blocked || h.Count != 1 {
+			t.Errorf("A: %+v", h)
+		}
+		m := throttleOf(c, "mute")
+		if e := m["198.51.100.4"]; e.Count != 1 || e.FirstAt != s1 {
+			t.Errorf("Eintrag des anderen %+v, erwartet {1 %d}", e, s1)
+		}
+		if e := m["203.0.113.5"]; e.Count != 1 || e.FirstAt != s1 {
+			t.Errorf("Eintrag von A %+v, erwartet {1 %d} (Zeit unter dem Halter)", e, s1)
+		}
+	})
+}
+
 // Höchstens 500 gezählte Absender je Bremse: ein neuer darüber wird weder
 // gezählt noch gesperrt (kein Sammel-Zähler, den ein Angreifer füllen und
 // so den Admin aussperren könnte). Die schon gezählten zählen weiter; ist

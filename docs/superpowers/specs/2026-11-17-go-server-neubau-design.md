@@ -518,7 +518,9 @@ Zugangsdaten hat. Fehlerhaft ist sie auch, wenn `listen` ein Unix-Socket ist
 und `proxy_client_ip_header` fehlt oder unbrauchbar ist – dort gilt jede
 Anfrage als vom Tunnel, ohne Absender-Adresse teilten sich alle Besucher
 eine Login-Bremse, und ein Fremder könnte die Anmeldung sperren (im
-laufenden Server zählt dafür das `listen` vom Start). Alles andere
+laufenden Server zählt dafür das `listen` vom Start; nennt die neue Fassung
+selbst keinen Unix-Socket, sagt der Fehler, dass die Datei an sich in Ordnung
+ist und nach einem Neustart gilt). Alles andere
 (ein Hash in falscher Form, `check_interval_seconds = 0`, ein `bark_host` mit
 Pfad oder ohne `http(s)://` …) sind Hinweise:
 `check-config` nennt sie, der Server arbeitet mit der Datei. Ein Hinweis ist

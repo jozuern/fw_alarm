@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"strings"
 
+	"fwalarm/internal/config"
 	"fwalarm/internal/core"
 )
 
@@ -23,7 +24,7 @@ func MachineAuth(c *core.Core, f *Form) bool {
 		return false
 	}
 	tok := f.Get("token")
-	expected := strings.ToLower(phpTrim(c.Cfg().MachineTokenSHA256))
+	expected := strings.ToLower(config.TrimPHP(c.Cfg().MachineTokenSHA256))
 	if tok == "" || expected == "" {
 		return false
 	}

@@ -26,17 +26,3 @@ func TestClipBytes(t *testing.T) {
 		}
 	}
 }
-
-// phpTrim entfernt genau, was PHPs trim() entfernt.
-func TestPHPTrim(t *testing.T) {
-	for in, want := range map[string]string{
-		" \t\n\r\x00\x0babc \t": "abc",
-		"\u00a0abc\u00a0":       "\u00a0abc\u00a0", // geschütztes Leerzeichen bleibt
-		"\fabc":                 "\fabc",           // Seitenvorschub bleibt
-		"a b":                   "a b",
-	} {
-		if got := phpTrim(in); got != want {
-			t.Errorf("phpTrim(%q) = %q, erwartet %q", in, got, want)
-		}
-	}
-}
