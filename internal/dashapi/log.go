@@ -16,11 +16,6 @@ import (
 
 func init() { Register("log_view", Action{Handle: handleLogView}) }
 
-// logFilters: die Filter außer all (Alarme / Empfänger / System, alarm_core =
-// nur die Versand-Ereignisse für "Letzter Alarm"); jeder andere Wert zählt
-// als all.
-var logFilters = []string{"alarm", "alarm_core", "keys", "system"}
-
 // handleLogView: limit und filter aus der Adresse (wie $_GET, auch bei einem
 // POST). limit wie PHPs (int), ohne Angabe 25, begrenzt auf 1…100 ("Ältere
 // anzeigen" lädt mehr nach, aber nie den ganzen Verlauf). server_time für
@@ -32,8 +27,9 @@ func handleLogView(x *Ctx) {
 		limit = model.IntOf(v)
 	}
 	limit = max(1, min(100, limit))
+	// Jeder Wert außerhalb von logview.Filters zählt als all.
 	filter, _ := web.Query(x.R, "filter")
-	if !slices.Contains(logFilters, filter) {
+	if !slices.Contains(logview.Filters, filter) {
 		filter = "all"
 	}
 	views := logview.Read(x.Core, int(limit), filter, x.Sess.Role == "admin")

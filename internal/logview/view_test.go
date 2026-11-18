@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -83,33 +85,14 @@ func TestViewTypes(t *testing.T) {
 		{`{"event":"watcher_recovered"}`, `{"at":0,"event":"watcher_recovered","minutes":0}`},
 		{`{"event":"box_offline","minutes":null,"log_at":"1763372700"}`, `{"at":1763372700,"event":"box_offline","minutes":0}`},
 		{`{"event":"box_offline","log_at":[1]}`, `{"at":1,"event":"box_offline","minutes":0}`},
-		// Text: Zahlen wie PHP sie nach json_decode schreibt.
+		// Text: Zahlen wie PHP sie nach json_decode schreibt – die Regel ist
+		// model.StrOf (alle Fälle dort, TestStrOfNumbersLikePHP); hier, dass
+		// View sie nimmt.
 		{`{"event":"nas_web_failed","detail":500}`, `{"at":0,"event":"nas_web_failed","detail":"500"}`},
 		{`{"event":"nas_web_failed","detail":1.0}`, `{"at":0,"event":"nas_web_failed","detail":"1"}`},
-		{`{"event":"nas_web_failed","detail":1e3}`, `{"at":0,"event":"nas_web_failed","detail":"1000"}`},
-		{`{"event":"nas_web_failed","detail":1.5}`, `{"at":0,"event":"nas_web_failed","detail":"1.5"}`},
-		{`{"event":"nas_web_failed","detail":0.30000000000000004}`, `{"at":0,"event":"nas_web_failed","detail":"0.3"}`},
 		{`{"event":"nas_web_failed","detail":1e20}`, `{"at":0,"event":"nas_web_failed","detail":"1.0E+20"}`},
-		{`{"event":"nas_web_failed","detail":1e-5}`, `{"at":0,"event":"nas_web_failed","detail":"1.0E-5"}`},
-		{`{"event":"nas_web_failed","detail":-1.5e-7}`, `{"at":0,"event":"nas_web_failed","detail":"-1.5E-7"}`},
-		{`{"event":"nas_web_failed","detail":0.0001}`, `{"at":0,"event":"nas_web_failed","detail":"0.0001"}`},
-		{`{"event":"nas_web_failed","detail":0.001}`, `{"at":0,"event":"nas_web_failed","detail":"0.001"}`},
-		{`{"event":"nas_web_failed","detail":1e14}`, `{"at":0,"event":"nas_web_failed","detail":"1.0E+14"}`},
-		{`{"event":"nas_web_failed","detail":12345678901234.5}`, `{"at":0,"event":"nas_web_failed","detail":"12345678901234"}`},
-		{`{"event":"nas_web_failed","detail":123456789012345.0}`, `{"at":0,"event":"nas_web_failed","detail":"1.2345678901234E+14"}`},
-		{`{"event":"nas_web_failed","detail":99999999999999.99}`, `{"at":0,"event":"nas_web_failed","detail":"1.0E+14"}`},
-		{`{"event":"nas_web_failed","detail":1.23456789012345678}`, `{"at":0,"event":"nas_web_failed","detail":"1.2345678901235"}`},
-		{`{"event":"nas_web_failed","detail":1234567890123456789012}`, `{"at":0,"event":"nas_web_failed","detail":"1.2345678901235E+21"}`},
-		{`{"event":"nas_web_failed","detail":9223372036854775807}`, `{"at":0,"event":"nas_web_failed","detail":"9223372036854775807"}`},
-		{`{"event":"nas_web_failed","detail":9223372036854775808}`, `{"at":0,"event":"nas_web_failed","detail":"9.2233720368548E+18"}`},
-		{`{"event":"nas_web_failed","detail":-9223372036854775808}`, `{"at":0,"event":"nas_web_failed","detail":"-9223372036854775808"}`},
-		{`{"event":"nas_web_failed","detail":1.5e300}`, `{"at":0,"event":"nas_web_failed","detail":"1.5E+300"}`},
-		{`{"event":"nas_web_failed","detail":2.5e-300}`, `{"at":0,"event":"nas_web_failed","detail":"2.5E-300"}`},
-		{`{"event":"nas_web_failed","detail":-0.0}`, `{"at":0,"event":"nas_web_failed","detail":"-0"}`},
 		{`{"event":"nas_web_failed","detail":-0}`, `{"at":0,"event":"nas_web_failed","detail":"0"}`},
 		{`{"event":"nas_web_failed","detail":1e400}`, `{"at":0,"event":"nas_web_failed","detail":"INF"}`},
-		{`{"event":"nas_web_failed","detail":-1e400}`, `{"at":0,"event":"nas_web_failed","detail":"-INF"}`},
-		{`{"event":"nas_web_failed","detail":5e-324}`, `{"at":0,"event":"nas_web_failed","detail":"4.9406564584125E-324"}`},
 		// Text: true "1", false/null "", Objekte und Listen "".
 		{`{"event":"nas_web_failed","detail":true}`, `{"at":0,"event":"nas_web_failed","detail":"1"}`},
 		{`{"event":"nas_web_failed","detail":false}`, `{"at":0,"event":"nas_web_failed","detail":""}`},
@@ -293,11 +276,37 @@ func TestInFilter(t *testing.T) {
 		if !InFilter(e, "all") {
 			t.Errorf("%s: nicht in all", tc.line)
 		}
-		for _, f := range []string{"alarm", "alarm_core", "keys", "system", "command", "gibtesnicht", ""} {
+		for _, f := range append(slices.Clone(Filters), "command", "gibtesnicht", "", "ALARM", "all ") {
 			if got, want := InFilter(e, f), slices.Contains(tc.in, f); got != want {
 				t.Errorf("%s in %q: %v", tc.line, f, got)
 			}
 		}
+	}
+}
+
+// Die Namen der Filter stehen an EINER Stelle (Filters) – dieselben wie in
+// dashboard_api.php (Zweig log_view); log_view macht jeden anderen zu all.
+func TestFilters(t *testing.T) {
+	if want := []string{"alarm", "alarm_core", "keys", "system"}; !slices.Equal(Filters, want) {
+		t.Errorf("Filters %v, erwartet %v", Filters, want)
+	}
+	raw, err := os.ReadFile(filepath.Join("..", "..", "nas_dashboard", "dashboard_api.php"))
+	if os.IsNotExist(err) {
+		t.Skip("PHP-Fassung nicht mehr da")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`in_array\(\$filter, \[([^\]]*)\], true\)`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatal("Liste der Filter in dashboard_api.php nicht gefunden")
+	}
+	var php []string
+	for _, q := range regexp.MustCompile(`'([a-z_]+)'`).FindAllSubmatch(m[1], -1) {
+		php = append(php, string(q[1]))
+	}
+	if !slices.Equal(php, Filters) {
+		t.Errorf("PHP %v, Go %v", php, Filters)
 	}
 }
 

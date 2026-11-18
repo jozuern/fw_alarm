@@ -64,10 +64,13 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
 - Aufbau: Modul `fwalarm` (`go.mod`, Go-Version festgeschrieben);
   `cmd/fw-alarm/` verteilt nur auf die Unterbefehle (einzige Stelle mit
   `os.Exit`), alles andere liegt in `internal/` (`clock`, `bg`, `textde`,
-  `config`, `model`, `store`, `bark`, `core`, `logview`, `web`, `dashapi`,
-  `control`, `app`, weitere folgen laut Plan). Die Zugangsregeln aller
+  `config`, `model`, `store`, `bark`, `core`, `notify`, `logview`, `web`,
+  `dashapi`, `control`, `app`, weitere folgen laut Plan). Die Zugangsregeln aller
   Dashboard-Aktionen stehen als EINE Tabelle in `internal/dashapi/actions.go`
-  (wie `DASHBOARD_ACTIONS`), die Verlaufs-Ereignisse (Kategorie, nur Admin,
+  (wie `DASHBOARD_ACTIONS`), die Arten der Meldungen an den Admin samt
+  Möglichkeiten in `internal/notify/types.go` (wie `admin_notify_types()`/
+  `admin_notify_global_specs()`, `TestTablesMatchPHP` gleicht sie mit PHP ab;
+  jede Meldung an den Admin geht durch `notify.Send`), die Verlaufs-Ereignisse (Kategorie, nur Admin,
   freigegebene Felder) in `internal/logview/events.go` (wie
   `log_event_types()`; ein neues Ereignis braucht dort eine Zeile, in
   `internal/model` seinen Namen samt Eintrag in `AllEvents` und in

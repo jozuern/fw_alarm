@@ -74,7 +74,7 @@ func TestEntryAccessors(t *testing.T) {
 	}
 	ints := map[string]int64{
 		"n": 42, "f": 3, "i": 5, "i64": 6, "ns": 17, "lead": 12, "neg": -3, "fs": 2, "exp": 1000,
-		"s": 0, "t": 1, "fa": 0, "nil": 0, "fehlt": 0, "map.id": 9, "list": 0,
+		"s": 0, "t": 1, "fa": 0, "nil": 0, "fehlt": 0, "map.id": 9, "list": 1, "emptymap": 0, "map": 1,
 	}
 	for k, want := range ints {
 		if got := e.Int(k); got != want {
@@ -99,5 +99,49 @@ func TestEntryAccessors(t *testing.T) {
 	}
 	if IntOf(" 25x") != 25 || IntOf("abc") != 0 || IntOf(nil) != 0 || StrOf(nil) != "" || BoolOf(nil) {
 		t.Error("Werte ohne Eintrag")
+	}
+}
+
+// Zahlen als Text genau wie PHP: eine JSON-Zahl so, wie PHP sie nach
+// json_decode mit (string) schreibt – eine ganze Zahl, die in int64 passt,
+// bleibt ihre Ziffernfolge, alles andere ist ein float (precision 14,
+// zend_gcvt). Die Erwartungen sind die Ausgabe von PHP 8.3 selbst
+// (aufgenommen am 18.11.2026, vorher in logview, TestViewTypes).
+func TestStrOfNumbersLikePHP(t *testing.T) {
+	cases := []struct{ json, want string }{
+		{"500", "500"}, {"1.0", "1"}, {"1e3", "1000"}, {"1.5", "1.5"}, {"0.30000000000000004", "0.3"},
+		{"1e20", "1.0E+20"}, {"1e-5", "1.0E-5"}, {"-1.5e-7", "-1.5E-7"}, {"0.0001", "0.0001"}, {"0.001", "0.001"},
+		{"1e14", "1.0E+14"}, {"12345678901234.5", "12345678901234"}, {"123456789012345.0", "1.2345678901234E+14"},
+		{"99999999999999.99", "1.0E+14"}, {"1.23456789012345678", "1.2345678901235"},
+		{"1234567890123456789012", "1.2345678901235E+21"}, {"9223372036854775807", "9223372036854775807"},
+		{"9223372036854775808", "9.2233720368548E+18"}, {"-9223372036854775808", "-9223372036854775808"},
+		{"1.5e300", "1.5E+300"}, {"2.5e-300", "2.5E-300"}, {"-0.0", "-0"}, {"-0", "0"}, {"1e400", "INF"},
+		{"-1e400", "-INF"}, {"5e-324", "4.9406564584125E-324"},
+	}
+	for _, tc := range cases {
+		if got := StrOf(json.Number(tc.json)); got != tc.want {
+			t.Errorf("StrOf(%s) = %q, erwartet %q", tc.json, got, tc.want)
+		}
+	}
+	// Eine Kommazahl, die nicht aus JSON kommt, ebenso.
+	for f, want := range map[float64]string{3.9: "3.9", 1e20: "1.0E+20", 7: "7", math.Inf(1): "INF", math.NaN(): "NAN"} {
+		if got := StrOf(f); got != want {
+			t.Errorf("StrOf(%v) = %q, erwartet %q", f, got, want)
+		}
+	}
+}
+
+// (int) auf ein Array: 1, wenn es etwas enthält, sonst 0 – wie PHP.
+func TestIntOfArraysLikePHP(t *testing.T) {
+	cases := []struct {
+		v    any
+		want int64
+	}{
+		{[]any{json.Number("5")}, 1}, {[]any{}, 0}, {map[string]any{"a": json.Number("1")}, 1}, {map[string]any{}, 0},
+	}
+	for _, tc := range cases {
+		if got := IntOf(tc.v); got != tc.want {
+			t.Errorf("IntOf(%v) = %d, erwartet %d", tc.v, got, tc.want)
+		}
 	}
 }

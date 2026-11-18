@@ -29,8 +29,10 @@ func (s *Store) History(limit int, keep func(model.Entry) bool) []model.Entry {
 // beide Dateien; ≤ 0 = ohne Grenze) ist Schluss, auch wenn limit noch nicht
 // erreicht ist: So kostet ein Aufruf höchstens so viel, wie die Grenze
 // erlaubt. Was noch nicht angehängt ist, zählt nicht dazu und geht nicht
-// durch may (es ist noch keine Zeile) – das sind höchstens die Einträge
-// zweier outboxen.
+// durch may (es ist noch keine Zeile) – das sind die Einträge in der
+// Warteschlange des Schreibers (nie mehr, als die beiden outboxen fassen)
+// und die noch nicht übergebenen in den outboxen der geltenden
+// Schnappschüsse, zusammen also höchstens viermal model.MaxOutbox.
 func (s *Store) HistoryScan(limit int, maxBytes int64, may func(line []byte) bool, keep func(model.Entry) bool) []model.Entry {
 	out := make([]model.Entry, 0, min(max(limit, 0), 100))
 	if limit <= 0 {

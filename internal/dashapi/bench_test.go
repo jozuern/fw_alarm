@@ -11,12 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	_ "time/tzdata" // Zeitzonen unabhängig vom Rechner, auf dem der Test läuft
 
+	"fwalarm/internal/bark"
 	"fwalarm/internal/bg"
 	"fwalarm/internal/clock"
 	"fwalarm/internal/config"
@@ -39,6 +41,19 @@ type bench struct {
 	clk *clock.Fake
 	cfg atomic.Pointer[config.Config]
 	h   web.Handler
+	fs  *storetest.FaultFS
+
+	// Bark: ein httptest-Server auf 127.0.0.1, der jede Anfrage festhält und
+	// mit barkStatus antwortet (0 = 200). Kein Test erreicht einen echten.
+	barkMu     sync.Mutex
+	barkReqs   []barkReq
+	barkStatus int
+}
+
+// barkReq ist eine Anfrage an die Bark-Attrappe.
+type barkReq struct {
+	Key    string
+	Fields url.Values
 }
 
 func newBench(t *testing.T) *bench {
@@ -54,7 +69,10 @@ var benchDir = filepath.FromSlash("/daten")
 func newBenchOn(t *testing.T, f *storetest.FaultFS) *bench {
 	t.Helper()
 	log := slog.New(slog.DiscardHandler)
-	b := &bench{t: t, clk: clock.NewFake(t0)}
+	b := &bench{t: t, clk: clock.NewFake(t0), fs: f}
+	// Zuerst angelegt, zuletzt geschlossen: Arbeit nebenher darf bis zum Ende senden.
+	srv := httptest.NewServer(http.HandlerFunc(b.serveBark))
+	t.Cleanup(srv.Close)
 	st, _, err := store.Open(benchDir, f, clock.NewFake(t0), log)
 	if err != nil {
 		t.Fatal(err)
@@ -75,11 +93,44 @@ func newBenchOn(t *testing.T, f *storetest.FaultFS) *bench {
 		DashboardReadonlyUser: "leser", DashboardReadonlyPasswordHash: "hash-des-lesers",
 		LoginMaxFailures: 8, LoginLockoutWindowSeconds: 900,
 		OfflineAfterSeconds: 180, Timezone: "Europe/Berlin", BarkKeyStatus: "statuskey01",
+		WatchdogOfflineAfterSeconds: 600, DemoReminderAfterSeconds: 14400, BarkHost: srv.URL,
 	})
-	b.c = &core.Core{Cfg: b.cfg.Load, CfgOK: func() bool { return true }, Store: st, Clock: b.clk,
-		Bg: group, Log: log, Version: "test"}
+	// Der Bark-Client mit echter Uhr: Zwischen zwei Runden wartet er auf
+	// seiner Uhr – die gestellte liefe nie weiter.
+	b.c = &core.Core{Cfg: b.cfg.Load, CfgOK: func() bool { return true }, Store: st,
+		Bark: bark.New(b.cfg.Load, clock.Real(), log), Clock: b.clk, Bg: group, Log: log, Version: "test"}
 	b.h = web.SecurityHeaders(b.c, Handler(b.c))
 	return b
+}
+
+func (b *bench) serveBark(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		b.t.Errorf("Bark-Attrappe: %v", err)
+	}
+	b.barkMu.Lock()
+	b.barkReqs = append(b.barkReqs, barkReq{Key: strings.TrimPrefix(r.URL.Path, "/"), Fields: r.PostForm})
+	status := b.barkStatus
+	b.barkMu.Unlock()
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
+}
+
+// barkAnswers: So antwortet die Bark-Attrappe ab jetzt (0 = 200).
+func (b *bench) barkAnswers(status int) {
+	b.barkMu.Lock()
+	defer b.barkMu.Unlock()
+	b.barkStatus = status
+}
+
+// barkTake liefert die bisherigen Anfragen an Bark und vergisst sie.
+func (b *bench) barkTake() []barkReq {
+	b.barkMu.Lock()
+	defer b.barkMu.Unlock()
+	out := b.barkReqs
+	b.barkReqs = nil
+	return out
 }
 
 // setCfg ändert eine Kopie der geltenden Konfiguration und setzt sie in Kraft.

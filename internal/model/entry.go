@@ -144,27 +144,31 @@ func (e Entry) lookup(k string) (any, bool) {
 	return cur, true
 }
 
-// Str liest ein Feld als Text wie PHPs (string): Zahlen als Ziffern, true
-// als "1", false/null/fehlend als "", Objekte und Listen als "".
+// Str liest ein Feld als Text wie PHPs (string): Zahlen so, wie PHP sie nach
+// json_decode schreibt (StrOf), true als "1", false/null/fehlend als "",
+// Objekte und Listen als "".
 func (e Entry) Str(k string) string {
 	v, _ := e.lookup(k)
 	return StrOf(v)
 }
 
-// StrOf: ein Wert, wie ihn Str liest (nil = fehlt).
+// StrOf: ein Wert, wie ihn Str liest (nil = fehlt) – die EINE Fassung von
+// PHPs (string) im Programm. Eine JSON-Zahl, wie PHP sie nach json_decode als
+// Text schreibt (numberString), eine Kommazahl wie PHPs (string) auf einen
+// float (floatString).
 func StrOf(v any) string {
 	switch x := v.(type) {
 	case string:
 		return x
 	case json.Number:
-		return string(x)
+		return numberString(string(x))
 	case bool:
 		if x {
 			return "1"
 		}
 		return ""
 	case float64:
-		return strconv.FormatFloat(x, 'f', -1, 64)
+		return floatString(x)
 	case int:
 		return strconv.Itoa(x)
 	case int64:
@@ -173,16 +177,94 @@ func StrOf(v any) string {
 	return ""
 }
 
+// numberString: eine JSON-Zahl als Text wie PHP: Eine ganze Zahl, die in
+// int64 passt, ist nach json_decode ein int und bleibt ihre Ziffernfolge ("-0"
+// wird "0"); alles andere ist ein float (floatString).
+func numberString(s string) string {
+	if !strings.ContainsAny(s, ".eE") {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return strconv.FormatInt(n, 10)
+		}
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil && !errors.Is(err, strconv.ErrRange) {
+		return s // kann bei einer gültigen JSON-Zahl nicht vorkommen
+	}
+	return floatString(f) // zu groß: ±Inf wie PHP
+}
+
+// floatString schreibt eine Kommazahl wie PHPs (string) (precision = 14,
+// zend_gcvt): höchstens 14 gültige Stellen ohne Nullen am Ende; liegt der
+// Dezimalpunkt mehr als 14 Stellen links oder mehr als 4 Stellen rechts der
+// ersten Ziffer, als "1.5E+20" bzw. "1.0E-5".
+func floatString(f float64) string {
+	switch {
+	case math.IsNaN(f):
+		return "NAN"
+	case math.IsInf(f, 1):
+		return "INF"
+	case math.IsInf(f, -1):
+		return "-INF"
+	}
+	var b strings.Builder
+	if math.Signbit(f) {
+		b.WriteByte('-')
+		f = -f
+	}
+	mant, exp, _ := strings.Cut(strconv.FormatFloat(f, 'e', 13, 64), "e")
+	digits := strings.TrimRight(strings.Replace(mant, ".", "", 1), "0")
+	if digits == "" {
+		digits = "0"
+	}
+	x, _ := strconv.Atoi(exp) // FormatFloat schreibt immer einen Exponenten
+	decpt := x + 1            // Stellen vor dem Komma (zend_dtoa: decpt)
+	if f == 0 {
+		decpt = 1
+	}
+	switch {
+	case decpt < -3 || decpt > 14:
+		b.WriteByte(digits[0])
+		b.WriteByte('.')
+		if len(digits) > 1 {
+			b.WriteString(digits[1:])
+		} else {
+			b.WriteByte('0')
+		}
+		b.WriteByte('E')
+		if decpt-1 < 0 {
+			b.WriteByte('-')
+			b.WriteString(strconv.Itoa(1 - decpt))
+		} else {
+			b.WriteByte('+')
+			b.WriteString(strconv.Itoa(decpt - 1))
+		}
+	case decpt <= 0:
+		b.WriteString("0.")
+		b.WriteString(strings.Repeat("0", -decpt))
+		b.WriteString(digits)
+	case len(digits) <= decpt:
+		b.WriteString(digits)
+		b.WriteString(strings.Repeat("0", decpt-len(digits)))
+	default:
+		b.WriteString(digits[:decpt])
+		b.WriteByte('.')
+		b.WriteString(digits[decpt:])
+	}
+	return b.String()
+}
+
 // Int liest ein Feld als Zahl wie PHPs (int): Kommazahlen abgeschnitten,
 // Text nach seinen führenden Ziffern ("12abc" = 12, "1e3" = 1000), true = 1,
-// alles andere 0.
+// ein Objekt oder eine Liste 1, wenn es etwas enthält, alles andere 0.
 func (e Entry) Int(k string) int64 {
 	v, _ := e.lookup(k)
 	return IntOf(v)
 }
 
-// IntOf: ein Wert, wie ihn Int liest (nil = fehlt) – auch für einen Text aus
-// einer Anfrage, den PHP mit (int) liest.
+// IntOf: ein Wert, wie ihn Int liest (nil = fehlt) – die EINE Fassung von
+// PHPs (int) im Programm, auch für einen Text aus einer Anfrage. Bewusst
+// anders als PHP: Eine Kommazahl jenseits von int64 wird auf die Grenze
+// gekappt (PHP rechnet sie modulo 2^64 um) – kein Schreiber erzeugt so etwas.
 func IntOf(v any) int64 {
 	switch x := v.(type) {
 	case json.Number:
@@ -197,6 +279,14 @@ func IntOf(v any) int64 {
 		return x
 	case bool:
 		if x {
+			return 1
+		}
+	case map[string]any:
+		if len(x) > 0 {
+			return 1
+		}
+	case []any:
+		if len(x) > 0 {
 			return 1
 		}
 	}

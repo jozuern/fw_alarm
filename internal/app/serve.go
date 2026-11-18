@@ -19,6 +19,7 @@ import (
 	"fwalarm/internal/control"
 	"fwalarm/internal/core"
 	"fwalarm/internal/dashapi"
+	"fwalarm/internal/notify"
 	"fwalarm/internal/store"
 	"fwalarm/internal/web"
 )
@@ -95,6 +96,7 @@ func Serve(ctx context.Context, o ServeOptions) error {
 		Version: o.Version,
 	}
 	watchConfig(c, prov)
+	setLoginNotices()
 	rt := web.NewRouter(c)
 	routes(c, rt)
 
@@ -245,6 +247,22 @@ func watchConfig(c *core.Core, prov *config.Provider) {
 	if !prov.OK() {
 		web.EndAll(c)
 	}
+}
+
+// loginNoticesOnce: Die Meldungen bei der Anmeldung sind Werte des Pakets
+// web – gesetzt genau einmal, auch wenn Serve öfter läuft (Tests): Ein
+// zweites Setzen, während ein anderer Server sie liest, wäre ein
+// Wettlauf.
+var loginNoticesOnce sync.Once
+
+// setLoginNotices hängt die Meldungen bei der Anmeldung ein (Art
+// login_success und login_lockout): web.Login ruft sie über Core.Bg, nachdem
+// die Antwort feststeht. Vor dem ersten Annehmen von Anfragen aufzurufen.
+func setLoginNotices() {
+	loginNoticesOnce.Do(func() {
+		web.OnLogin = notify.LoginNotice
+		web.OnLockout = notify.LockoutNotice
+	})
 }
 
 // routes trägt die dynamischen Adressen ein (die statischen Dateien hat
