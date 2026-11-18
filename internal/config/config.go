@@ -10,9 +10,14 @@
 //
 // "Fehlerhaft" ist eine Datei nur, wenn sie sich nicht lesen lässt, einen
 // Syntaxfehler, einen unbekannten Schlüssel, einen Wert vom falschen Typ,
-// eine unbekannte Zeitzone oder eine unzulässige Probe-Sperre hat (Parse
-// liefert dann einen Fehler). Alles andere sind Hinweise (Warnings): Der
-// Server arbeitet mit der Datei.
+// eine unbekannte Zeitzone, eine unzulässige Probe-Sperre oder einen
+// bark_host mit Abfrage, Fragment oder Zugangsdaten hat (Parse liefert dann
+// einen Fehler). Alles andere sind Hinweise (Warnings): Der Server arbeitet
+// mit der Datei.
+//
+// Im laufenden Server hält ein Provider die geltende Fassung im Speicher,
+// prüft die Datei im Hintergrund und legt nach jeder gültig geladenen
+// Fassung eine Kopie in den Datenordner (provider.go).
 package config
 
 import (
@@ -94,6 +99,14 @@ type Config struct {
 	loadedAt time.Time      // Zeitpunkt des Ladens – an ihm misst Warnings die Probe-Sperre
 }
 
+// Standardwerte, die auch ohne lesbare Datei gebraucht werden: Die Befehle
+// health, stop … suchen den Steuer-Zugang, der Start die Kopie der letzten
+// gültigen Fassung.
+const (
+	DefaultStateDir      = "/var/lib/fw-alarm"
+	DefaultControlSocket = "/run/fw-alarm/control.sock"
+)
+
 // Fehlt ein Schlüssel, gilt dieser Wert (die Fundstelle im PHP-Code steht
 // dabei; "neu" = gibt es nur in der Go-Fassung).
 func defaults() *Config {
@@ -128,9 +141,9 @@ func defaults() *Config {
 		BarkFalseAlarmSound:           "glass",                                     // common.php:2976
 		BarkFalseAlarmVolume:          10,                                          // common.php:2972 (= bark_alarm_volume)
 		Timezone:                      "Europe/Berlin",                             // Vorgabe des Plans (PHP: die des Servers)
-		StateDir:                      "/var/lib/fw-alarm",                         // neu
+		StateDir:                      DefaultStateDir,                             // neu
 		Listen:                        "127.0.0.1:8080",                            // neu
-		ControlSocket:                 "/run/fw-alarm/control.sock",                // neu
+		ControlSocket:                 DefaultControlSocket,                        // neu
 		CheckIntervalSeconds:          900,                                         // neu
 		SendGuardKeys:                 []string{},                                  // neu
 		SendGuardUntil:                "",                                          // neu
@@ -255,8 +268,8 @@ func (c *Config) Warnings() []string {
 			w = append(w, fmt.Sprintf("bark_keys_alarm: Eintrag %d ist kein gültiger Bark-Key und wird nie alarmiert", i+1))
 		}
 	}
-	if phpTrim(c.BarkHost) == "" {
-		w = append(w, "Hinweis: bark_host ist leer – der Server kann nichts senden")
+	if hint := barkHostWarning(c.BarkHost); hint != "" {
+		w = append(w, hint)
 	}
 	if c.BarkKeyStatus != "" && !validBarkKey(c.BarkKeyStatus) {
 		w = append(w, "bark_key_status ist kein gültiger Bark-Key – Meldungen an den Admin scheitern")

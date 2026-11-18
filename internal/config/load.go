@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"reflect"
 	"strings"
@@ -28,6 +29,15 @@ func Load(path string) (*Config, error) { return LoadAt(path, time.Now()) }
 // LoadAt wie Load, mit dem Zeitpunkt des Ladens (gegen ihn wird die
 // Probe-Sperre geprüft).
 func LoadAt(path string, now time.Time) (*Config, error) {
+	data, err := readFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAt(data, now)
+}
+
+// readFile liest eine Konfigurationsdatei, höchstens maxFileSize Bytes.
+func readFile(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("Datei nicht lesbar: %w", err)
@@ -40,7 +50,7 @@ func LoadAt(path string, now time.Time) (*Config, error) {
 	if len(data) > maxFileSize {
 		return nil, fmt.Errorf("Datei nicht lesbar: größer als %d Bytes", maxFileSize)
 	}
-	return ParseAt(data, now)
+	return data, nil
 }
 
 // Parse prüft den Inhalt einer Datei; Fehler = fehlerhaft.
@@ -114,7 +124,71 @@ func ParseAt(data []byte, now time.Time) (*Config, error) {
 	if err := checkSendGuard(c, now); err != nil {
 		return nil, err
 	}
+	if err := checkBarkHost(c.BarkHost); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// barkHostTrimmed bereinigt bark_host wie der Bark-Client vor dem Senden:
+// Leerraum außen und Schrägstriche am Ende weg. Gesendet wird an
+// <Ergebnis>/<Key>.
+func barkHostTrimmed(host string) string {
+	return strings.TrimRight(strings.TrimSpace(host), "/")
+}
+
+// checkBarkHost: Eine Abfrage oder ein Fragment in bark_host schöbe den Key
+// aus dem Pfad heraus (<host>?x/<key>), Zugangsdaten gehören nicht in die
+// Datei. Beides macht die Datei fehlerhaft – der Text nennt den Wert nicht
+// (er kann ein Key oder ein Passwort sein).
+func checkBarkHost(host string) error {
+	h := barkHostTrimmed(host)
+	bad := errors.New("bark_host darf weder Abfrage noch Fragment noch Zugangsdaten enthalten")
+	if strings.ContainsAny(h, "?#") {
+		return bad
+	}
+	// Zugangsdaten stehen vor dem Rechner: zwischen "//" und dem nächsten
+	// "/". Von Hand gesucht, damit auch eine sonst unlesbare Adresse
+	// (Leerzeichen darin) erkannt wird.
+	rest, found := "", false
+	if i := strings.Index(h, "://"); i >= 0 {
+		rest, found = h[i+3:], true
+	} else if strings.HasPrefix(h, "//") {
+		rest, found = h[2:], true
+	}
+	if found {
+		if j := strings.IndexByte(rest, '/'); j >= 0 {
+			rest = rest[:j]
+		}
+		if strings.Contains(rest, "@") {
+			return bad
+		}
+	}
+	return nil
+}
+
+// barkHostWarning nennt, was an einem ladbaren bark_host nicht stimmt
+// ("" = nichts). Ein Pfad ist erlaubt (ein eigener Bark-Server unter einem
+// Unterpfad), aber ungewöhnlich: Beim Bark-Server von api.day.app wäre sein
+// erster Teil das Gerät, an das dann jede Nachricht ginge.
+func barkHostWarning(host string) string {
+	if phpTrim(host) == "" {
+		return "Hinweis: bark_host ist leer – der Server kann nichts senden"
+	}
+	h := barkHostTrimmed(host)
+	lower := strings.ToLower(h)
+	noHTTP := "Hinweis: bark_host ist keine http(s)-Adresse – der Server kann nichts senden"
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		return noHTTP
+	}
+	u, err := url.Parse(h)
+	if err != nil || u.Host == "" {
+		return noHTTP
+	}
+	if u.Path != "" || u.RawPath != "" {
+		return "Hinweis: bark_host hat einen Pfad – alle Meldungen gingen an diese eine Adresse; nur für einen eigenen Bark-Server unter einem Unterpfad"
+	}
+	return ""
 }
 
 // loadLocation lädt eine Zeitzone mit Namen. "" und "Local" kennt PHP

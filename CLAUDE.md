@@ -64,7 +64,8 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
 - Aufbau: Modul `fwalarm` (`go.mod`, Go-Version festgeschrieben);
   `cmd/fw-alarm/` verteilt nur auf die Unterbefehle (einzige Stelle mit
   `os.Exit`), alles andere liegt in `internal/` (`clock`, `bg`, `textde`,
-  `config`, `app`, weitere folgen laut Plan). Abhängigkeiten nur
+  `config`, `model`, `store`, `bark`, `core`, `web`, `control`, `app`,
+  weitere folgen laut Plan). Abhängigkeiten nur
   Standardbibliothek plus `golang.org/x/crypto`, `x/sys`, `x/term` und
   `github.com/BurntSushi/toml`, mitgeliefert in `vendor/` (gebaut wird mit
   `-mod=vendor`, ohne CGO). `nas_dashboard/webassets.go` bettet die
@@ -76,9 +77,19 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
   `data_dir`/`health_check_url`, dazu `state_dir`, `listen`,
   `control_socket`, `check_interval_seconds` und die Probe-Sperre
   `send_guard_keys`/`send_guard_until`; fehlt ein Schlüssel, gilt der Wert,
-  den der PHP-Code dafür nimmt. Befehle bisher: `fw-alarm version`,
-  `fw-alarm check-config [--config <datei>]`, `fw-alarm hash-password`
-  (Argon2id).
+  den der PHP-Code dafür nimmt. Im laufenden Server prüft ein Hintergrund-Prüfer
+  die Datei alle 2 s (fehlerhaft erst, wenn sie 2 s später unverändert ist;
+  dann gilt die letzte gültige Fassung), nach jeder gültigen Fassung liegt
+  eine Kopie als `config.last-good.toml` im Datenordner (0600) – mit ihr
+  startet er, wenn `config.toml` nicht ladbar ist. `state_dir`, `listen`
+  und `control_socket` gelten erst nach einem Neustart. Befehle bisher:
+  `fw-alarm version`, `fw-alarm check-config [--config <datei>]`,
+  `fw-alarm hash-password` (Argon2id), `fw-alarm serve` und die Befehle an
+  den laufenden Server über den Steuer-Socket `control_socket`: `health`
+  (`running=1`, `version=`, `state=`, `save_ok=`, `config_ok=`, `hint=`;
+  Rückgabe 0 nur gesund), `check`, `flush`, `reload`, `stop` (kehrt zurück,
+  wenn der Server fort ist) – alle mit `[--config <datei>] [--last-good
+  <datei>]`.
 - Prüfen auf dem PC: `bash tools/check-go.sh` (nur Go: gofmt,
   `go mod tidy -diff`, `go vet` für PC und `linux/arm64`, staticcheck,
   govulncheck, `go test` ohne Race-Detektor) und `bash tools/test-go.sh [dateien…]` (baut

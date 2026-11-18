@@ -23,15 +23,31 @@ var version = "dev"
 
 const defaultConfigPath = "/etc/fw-alarm/config.toml"
 
-const usage = `Aufruf: fw-alarm <Befehl> [--config <Datei>]
+const usage = `Aufruf: fw-alarm <Befehl> [--config <Datei>] [--last-good <Datei>]
 
 Befehle:
+  serve           den Server starten (läuft bis SIGTERM oder fw-alarm stop)
+  health          Zustand des laufenden Servers (Rückgabe 0 = gesund)
+  check           vollen Prüf-Lauf im laufenden Server anstoßen
+  flush           warten, bis der laufende Server alles gesichert hat
+  reload          Konfiguration im laufenden Server sofort neu laden
+  stop            den laufenden Server geordnet beenden
   version         Stand des Programms ausgeben
   check-config    Konfiguration prüfen (Fehler: Rückgabe 1)
   hash-password   Passwort-Hash für dashboard_password_hash erzeugen
 
 --config: Pfad der Konfiguration (Standard ` + defaultConfigPath + `)
+--last-good: Kopie der letzten gültigen Konfiguration (nur serve, health,
+  check, flush, reload, stop) – gilt, wenn config.toml nicht ladbar ist.
+  Standard: $STATE_DIRECTORY/config.last-good.toml, ohne STATE_DIRECTORY
+  /var/lib/fw-alarm/config.last-good.toml
 `
+
+// serverCommands nehmen --last-good: serve und die Befehle an den
+// laufenden Server.
+var serverCommands = map[string]bool{
+	"serve": true, "health": true, "check": true, "flush": true, "reload": true, "stop": true,
+}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -53,6 +69,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	flags.Usage = func() { fmt.Fprint(stderr, usage) }
 	configPath := flags.String("config", defaultConfigPath, "Pfad der Konfiguration")
+	lastGood := new(string)
+	if serverCommands[cmd] {
+		lastGood = flags.String("last-good", app.DefaultLastGoodPath(), "Kopie der letzten gültigen Konfiguration")
+	}
 	if err := flags.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -72,6 +92,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return app.RunCheckConfig(*configPath, time.Now(), stdout, stderr)
 	case "hash-password":
 		return app.RunHashPassword(stdin, stdout, stderr)
+	case "serve":
+		return app.RunServe(*configPath, *lastGood, version, stdout, stderr)
+	case "health", "check", "flush", "reload", "stop":
+		return app.RunControl(cmd, *configPath, *lastGood, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "Unbekannter Befehl: %s\n\n%s", cmd, usage)
 		return 2

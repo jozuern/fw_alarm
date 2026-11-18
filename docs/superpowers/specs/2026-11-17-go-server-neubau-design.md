@@ -509,8 +509,11 @@ sie). Neu: `state_dir`, `listen`, `control_socket`,
 `send_guard_until` (§10). Entfallen: `data_dir`, `health_check_url`.
 Unbekannte Schlüssel sind ein Fehler. „Fehlerhaft“ ist eine Datei nur, wenn
 sie sich nicht lesen lässt, einen Syntaxfehler, einen unbekannten Schlüssel,
-einen Wert vom falschen Typ oder eine unbekannte Zeitzone hat. Alles andere
-(ein Hash in falscher Form, `check_interval_seconds = 0` …) sind Hinweise:
+einen Wert vom falschen Typ, eine unbekannte Zeitzone, eine unzulässige
+Probe-Sperre (§10) oder einen `bark_host` mit Abfrage, Fragment oder
+Zugangsdaten hat. Alles andere
+(ein Hash in falscher Form, `check_interval_seconds = 0`, ein `bark_host` mit
+Pfad oder ohne `http(s)://` …) sind Hinweise:
 `check-config` nennt sie, der Server arbeitet mit der Datei. Fehlt ein
 Schlüssel, gilt der Wert,
 den der PHP-Code heute dafür nimmt (das `?? …`), nicht der Wert der alten

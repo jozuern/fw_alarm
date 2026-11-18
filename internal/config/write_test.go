@@ -195,6 +195,8 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("\xef\xbb\xbftimezone = \"UTC\"\n"))
 	f.Add([]byte("bark_alarm_body = '''\nmehr\nzeilig'''\n"))
 	f.Add([]byte("bark_alarm_title = \"\\u00e4\\x41\\e\"\n"))
+	f.Add([]byte("bark_host = \"https://a@b/c?d#e\"\n"))
+	f.Add([]byte("bark_host = \"https://api.day.app/pfad\"\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		c, err := ParseAt(data, loadMoment(t))
 		if err != nil {

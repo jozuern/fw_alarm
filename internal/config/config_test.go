@@ -94,6 +94,72 @@ func TestEmptyBarkHostWarns(t *testing.T) {
 	}
 }
 
+// Mit einem Pfad im Host nähme der Bark-Server dessen ersten Teil als Gerät:
+// Jede Nachricht ginge an dieses eine Gerät, auch unter der Probe-Sperre.
+// Abfrage, Fragment und Zugangsdaten machen die Datei deshalb fehlerhaft,
+// ein Pfad, ein fehlendes http(s):// oder nur "/" sind Hinweise.
+func TestBarkHostRules(t *testing.T) {
+	const (
+		broken = "bark_host darf weder Abfrage noch Fragment noch Zugangsdaten enthalten"
+		path   = "Hinweis: bark_host hat einen Pfad – alle Meldungen gingen an diese eine Adresse; nur für einen eigenen Bark-Server unter einem Unterpfad"
+		scheme = "Hinweis: bark_host ist keine http(s)-Adresse – der Server kann nichts senden"
+	)
+	cases := []struct {
+		host string
+		err  string // "" = lädt
+		warn string // "" = kein Hinweis
+	}{
+		{"https://api.day.app", "", ""},
+		{"https://api.day.app/", "", ""},
+		{"HTTPS://Api.Day.App//", "", ""},
+		{" http://127.0.0.1:9 ", "", ""},
+		{"https://api.day.app?geheimkey123", broken, ""},
+		{"https://api.day.app/?x=1", broken, ""},
+		{"https://api.day.app?", broken, ""},
+		{"https://api.day.app#geheimkey123", broken, ""},
+		{"https://api.day.app/#", broken, ""},
+		{"https://benutzer:geheimpass@api.day.app", broken, ""},
+		{"https://geheimkey123@api.day.app/", broken, ""},
+		{"https://ben utzer:geheim pass@api.day.app", broken, ""},
+		{"//geheimkey123@api.day.app", broken, ""},
+		{"https://api.day.app/geheimkey123", "", path},
+		{"https://api.day.app/a/b/", "", path},
+		{"http://127.0.0.1:9/bark", "", path},
+		{"https://api.day.app/pfad@mit-at", "", path},
+		{"/", "", scheme},
+		{"///", "", scheme},
+		{"api.day.app", "", scheme},
+		{"ftp://api.day.app", "", scheme},
+		{"https://", "", scheme},
+		{"https:///pfad", "", scheme},
+		{"https://ho st", "", scheme},
+	}
+	for _, tc := range cases {
+		t.Run(tc.host, func(t *testing.T) {
+			c, err := ParseAt(tomlFile(map[string]string{"bark_host": quote(tc.host)}), loadMoment(t))
+			if tc.err != "" {
+				if err == nil || err.Error() != tc.err {
+					t.Fatalf("Fehler %v, erwartet %q", err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Datei abgelehnt: %v", err)
+			}
+			if c.BarkHost != tc.host {
+				t.Errorf("bark_host = %q, erwartet %q (der Wert gilt)", c.BarkHost, tc.host)
+			}
+			w := c.Warnings()
+			switch {
+			case tc.warn == "" && len(w) != 0:
+				t.Errorf("Hinweise %q, erwartet keine", w)
+			case tc.warn != "" && (len(w) != 1 || w[0] != tc.warn):
+				t.Errorf("Hinweise %q, erwartet %q", w, tc.warn)
+			}
+		})
+	}
+}
+
 func TestGoodFileHasNoWarnings(t *testing.T) {
 	c := mustParse(t, tomlFile(nil))
 	if w := c.Warnings(); len(w) != 0 {

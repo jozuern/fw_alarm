@@ -19,10 +19,11 @@ const writeHeader = `# Konfiguration des Alarm-Servers fw-alarm.
 # ===========================================================================
 #
 # Fehlt ein Schlüssel, gilt sein Standardwert. Ein unbekannter Schlüssel, ein
-# Wert vom falschen Typ, eine unbekannte Zeitzone oder eine unzulässige
-# Probe-Sperre machen die Datei fehlerhaft: Dann gilt die letzte gültige
-# Fassung weiter, und alle Sitzungen enden. Texte stehen in "…"; ein " oder \
-# darin wird als \" bzw. \\ geschrieben.
+# Wert vom falschen Typ, eine unbekannte Zeitzone, eine unzulässige
+# Probe-Sperre oder ein bark_host mit Abfrage, Fragment oder Zugangsdaten
+# machen die Datei fehlerhaft: Dann gilt die letzte gültige Fassung weiter,
+# und alle Sitzungen enden. Texte stehen in "…"; ein " oder \ darin wird als
+# \" bzw. \\ geschrieben.
 `
 
 // Ein Abschnitt der Datei: Erklärung (ohne "# ") und die Schlüssel darunter.
@@ -153,6 +154,9 @@ Dashboard bliebe bis dahin blockiert.`,
 „Alarm an alle“ sendet OHNE Umweg über die Box – er muss ja gerade dann
 funktionieren, wenn die Kette über die Box klemmt. Alle Empfänger bekommen
 ihn gleichzeitig, je bis zu bark_max_tries Versuche (Untergrenze 1).
+bark_host: nur Schema und Rechner, z.B. "https://api.day.app" – ohne Pfad
+(sonst ginge jede Nachricht an das Gerät, das der Pfad nennt), ohne Abfrage
+und ohne Zugangsdaten.
 Die Empfängerliste wird IM DASHBOARD gepflegt (Bereich „Empfänger“);
 bark_keys_alarm hier ist nur die Not-Liste für den Fall, dass der Server
 keine Empfänger hat, z.B. ["KEY_PERSON_1", "KEY_PERSON_2"].
