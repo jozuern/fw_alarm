@@ -52,7 +52,8 @@ type AckKind int
 
 const (
 	// AckUnknown: verspätete Quittung für eine Nummer, die der Server nicht
-	// (mehr) kennt – Eintrag late_ack ohne Typ, sonst nichts.
+	// (mehr) kennt – Eintrag late_ack ohne Typ (Ack gibt ihn zurück), sonst
+	// nichts.
 	AckUnknown AckKind = iota
 	// AckFirst: Die Quittung gilt – ein ausgelieferter Befehl ist quittiert
 	// (oder ein quittierter mit anderem Ergebnis neu); Eintrag acked.
@@ -62,8 +63,9 @@ const (
 	AckRepeat
 	// AckLate: verspätete Quittung für einen Befehl, dessen Typ der Server
 	// noch kennt (laufend, aber nicht ausgeliefert; oder abgelöst und in
-	// recent_types) – Eintrag late_ack mit dem Typ, der Befehl bleibt, wie er
-	// ist (ein wartender wird danach ganz normal ausgeliefert).
+	// recent_types) – Eintrag late_ack mit dem Typ (Ack gibt ihn zurück), der
+	// Befehl bleibt, wie er ist (ein wartender wird danach ganz normal
+	// ausgeliefert).
 	AckLate
 )
 
@@ -229,21 +231,26 @@ func (s *State) Deliver(to string, now time.Time) *Command {
 //     AUSGELIEFERTER Befehl wird so quittiert: Ein wartender, abgebrochener
 //     oder verfallener mit zufällig gleicher Nummer darf nie als "ausgeführt"
 //     erscheinen.
-//   - Sonst: Eintrag late_ack (id, type, result, message, device_id) – der
-//     Typ vom laufenden Befehl mit dieser Nummer oder aus recent_types (die
-//     verspätete Quittung eines Demo-Alarms gehört in den Alarm-Verlauf);
-//     AckLate, wenn er bekannt ist, sonst AckUnknown. Der Befehl bleibt, wie
-//     er ist.
-func (s *State) Ack(id int, by, result, message string, now time.Time) AckKind {
+//   - Sonst: eine verspätete Quittung – AckLate, wenn der Typ bekannt ist
+//     (vom laufenden Befehl mit dieser Nummer oder aus recent_types; die
+//     verspätete Quittung eines Demo-Alarms gehört in den Alarm-Verlauf),
+//     sonst AckUnknown. Der Zustand bleibt, wie er ist; der Eintrag late_ack
+//     (id, type, result, message, device_id) kommt ZURÜCK statt in den
+//     Entwurf: Er hat keine eigene Änderung und reist deshalb über die
+//     flüchtige outbox (Store.Log, Spec §6.2) – keine feste Änderung, kein
+//     Sichern von state.json, und eine kaputte Platte verliert ihn nicht.
+//
+// Der Eintrag ist nil außer bei AckLate und AckUnknown.
+func (s *State) Ack(id int, by, result, message string, now time.Time) (AckKind, Entry) {
 	cur := s.Commands.Current
 	if cur != nil && cur.ID == id {
 		switch {
 		case cur.State == CommandAcked && cur.AckResult == result:
-			return AckRepeat
+			return AckRepeat, nil
 		case cur.State == CommandDelivered || cur.State == CommandAcked:
 			cur.State, cur.AckedAt, cur.AckResult, cur.AckMessage, cur.AckedBy = CommandAcked, now.Unix(), result, message, by
 			s.Log(commandEntry(EvAcked, *cur, now))
-			return AckFirst
+			return AckFirst, nil
 		}
 	}
 	typ, kind := "", AckUnknown
@@ -255,8 +262,7 @@ func (s *State) Ack(id int, by, result, message string, now time.Time) AckKind {
 			typ, kind = t, AckLate
 		}
 	}
-	s.Log(NewEntry(EvLateAck, now, map[string]any{"id": id, "type": typ, "result": result, "message": message, "device_id": by}))
-	return kind
+	return kind, NewEntry(EvLateAck, now, map[string]any{"id": id, "type": typ, "result": result, "message": message, "device_id": by})
 }
 
 // Cancel bricht den wartenden Befehl ab (PHP: dashboard_api.php 289-305 mit

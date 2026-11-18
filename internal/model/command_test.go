@@ -77,6 +77,9 @@ type lifeRow struct {
 	recent []RecentType       // recent_types danach
 	entry  *wantEntry         // nil = kein Eintrag; same = nichts geändert
 	same   bool               // der ganze Zustand unverändert (auch kein Eintrag)
+	// returns: der Eintrag, den Ack zurückgibt (late_ack – er reist über die
+	// flüchtige outbox, nie im Entwurf); nil = keiner.
+	returns *wantEntry
 }
 
 // Was ein Schritt zurückgibt, als vergleichbarer Wert.
@@ -102,8 +105,19 @@ func enqueue(typ string, lock int) func(s *State) any {
 	}
 }
 
+// ackGot: Ergebnis einer Quittung – die Art und der Eintrag, den Ack für
+// eine verspätete Quittung zurückgibt (er gehört in die flüchtige outbox,
+// nicht in den Entwurf).
+type ackGot struct {
+	kind  AckKind
+	entry Entry
+}
+
 func ack(id int, result string) func(s *State) any {
-	return func(s *State) any { return s.Ack(id, "fw-box-1", result, "gesendet", t0) }
+	return func(s *State) any {
+		k, e := s.Ack(id, "fw-box-1", result, "gesendet", t0)
+		return ackGot{k, e}
+	}
 }
 
 func poll(last int, box *BoxStatus) func(s *State) any {
@@ -210,22 +224,22 @@ func lifeRows() []lifeRow {
 			cmd: &reacked, next: 5, recent: r4, entry: &wantEntry{event: EvAcked, keys: keysAcked}},
 		{name: "Quittung für einen noch wartenden Befehl: verspätet, mit seinem Typ – er bleibt wartend", php: "ack.php 46-59",
 			start: withCommand(&pendingTest, 5, r4...), op: ack(4, "executed"), result: AckLate,
-			cmd: &pendingTest, next: 5, recent: r4, entry: lateAck(4, CommandTest)},
+			cmd: &pendingTest, next: 5, recent: r4, same: true, returns: lateAck(4, CommandTest)},
 		{name: "Quittung für einen abgelösten Befehl: der Typ aus recent_types", php: "ack.php 49-51",
 			start: withCommand(ptr(created(5, CommandTest)), 6, RecentType{3, CommandAlarm}, RecentType{5, CommandTest}),
 			op:    ack(3, "executed"), result: AckLate, cmd: ptr(created(5, CommandTest)), next: 6,
-			recent: []RecentType{{3, CommandAlarm}, {5, CommandTest}}, entry: lateAck(3, CommandAlarm)},
+			recent: []RecentType{{3, CommandAlarm}, {5, CommandTest}}, same: true, returns: lateAck(3, CommandAlarm)},
 		{name: "Quittung für eine unbekannte Nummer: verspätet, ohne Typ", php: "ack.php 46-59",
 			start: withCommand(&pendingTest, 5, r4...), op: ack(99, "executed"), result: AckUnknown,
-			cmd: &pendingTest, next: 5, recent: r4, entry: lateAck(99, "")},
+			cmd: &pendingTest, next: 5, recent: r4, same: true, returns: lateAck(99, "")},
 		{name: "Quittung ohne jeden Befehl: verspätet, ohne Typ", php: "ack.php 46-59",
-			start: withCommand(nil, 1), op: ack(1, "executed"), result: AckUnknown, next: 1, entry: lateAck(1, "")},
+			start: withCommand(nil, 1), op: ack(1, "executed"), result: AckUnknown, next: 1, same: true, returns: lateAck(1, "")},
 		{name: "Quittung für einen verfallenen Befehl: verspätet, sein Typ", php: "ack.php 26, 49-50",
 			start: withCommand(&expired, 5, r4...), op: ack(4, "executed"), result: AckLate,
-			cmd: &expired, next: 5, recent: r4, entry: lateAck(4, CommandTest)},
+			cmd: &expired, next: 5, recent: r4, same: true, returns: lateAck(4, CommandTest)},
 		{name: "Quittung für einen abgebrochenen Befehl: verspätet", php: "ack.php 26, 49-50",
 			start: withCommand(&byAdmin, 5, r4...), op: ack(4, "executed"), result: AckLate,
-			cmd: &byAdmin, next: 5, recent: r4, entry: lateAck(4, CommandTest)},
+			cmd: &byAdmin, next: 5, recent: r4, same: true, returns: lateAck(4, CommandTest)},
 
 		// --- verfallen (common.php 1097-1116) -------------------------------
 		{name: "wartend, älter als die Frist → verfallen", php: "common.php 1103-1114",
@@ -316,6 +330,18 @@ func TestCommandLifeCycle(t *testing.T) {
 			}
 			before := s.Clone()
 			got := row.op(s)
+			var returned Entry
+			if a, ok := got.(ackGot); ok {
+				got, returned = a.kind, a.entry
+			}
+			switch {
+			case row.returns == nil && returned != nil:
+				t.Errorf("Ack gibt einen Eintrag zurück: %v", returned)
+			case row.returns != nil && returned == nil:
+				t.Errorf("Ack gibt keinen Eintrag zurück, erwartet %s", row.returns.event)
+			case row.returns != nil:
+				checkEntry(t, returned, *row.returns, s.Commands.Current)
+			}
 			if !reflect.DeepEqual(got, row.result) {
 				t.Errorf("Ergebnis %s\nerwartet %s", show(got), show(row.result))
 			}
@@ -534,7 +560,7 @@ func TestRecentTypes(t *testing.T) {
 			t.Fatalf("Befehl %d: %s", i, why)
 		}
 		s.Deliver("fw-box-1", now)
-		if kind := s.Ack(i, "fw-box-1", "executed", "", now); kind != AckFirst {
+		if kind, _ := s.Ack(i, "fw-box-1", "executed", "", now); kind != AckFirst {
 			t.Fatalf("Befehl %d: Quittung %v", i, kind)
 		}
 	}
@@ -554,11 +580,10 @@ func TestRecentTypes(t *testing.T) {
 	}
 	// Die verspätete Quittung von Befehl 6 kennt noch seinen Typ (ALARM), die
 	// von 5 nicht mehr.
-	before := len(s.Outbox)
-	s.Ack(6, "fw-box-1", "executed", "", t0)
-	s.Ack(5, "fw-box-1", "executed", "", t0)
-	if got := s.Outbox[before:]; len(got) != 2 || got[0].Str("type") != CommandAlarm || got[1].Str("type") != "" {
-		t.Errorf("verspätete Quittungen %v", got)
+	k6, e6 := s.Ack(6, "fw-box-1", "executed", "", t0)
+	k5, e5 := s.Ack(5, "fw-box-1", "executed", "", t0)
+	if k6 != AckLate || e6.Str("type") != CommandAlarm || k5 != AckUnknown || e5.Str("type") != "" {
+		t.Errorf("verspätete Quittungen %v %v / %v %v", k6, e6, k5, e5)
 	}
 	// Ein neu nummerierter Befehl an der Obergrenze: die neue Nummer kommt
 	// dazu, die kleinste fällt.
@@ -675,7 +700,9 @@ func FuzzCommandLifeCycle(f *testing.F) {
 					}
 				}
 			case 3:
-				s.Ack(int(ackID), "fw-box-1", result, "m", now)
+				if k, e := s.Ack(int(ackID), "fw-box-1", result, "m", now); (k == AckLate || k == AckUnknown) != (e != nil) {
+					t.Fatalf("Quittung %v mit Eintrag %v", k, e)
+				}
 			case 4:
 				s.Cancel("admin", "", now)
 			case 5:

@@ -42,14 +42,21 @@
 //
 // storage.fail(what) legt einen nicht leeren Ordner an den festen Namen der
 // Zwischendatei, das Sichern dieses Teils scheitert dann im laufenden
-// Betrieb (unter Windows wie unter Linux); repair stellt her, was vorher dort
-// lag:
+// Betrieb (unter Windows wie unter Linux):
 //   selftest  selftest.tmp
 //   durable   state.json.tmp - feste Änderungen werden abgelehnt
 //   history   history.jsonl wandert nach beiseite/, an seine Stelle ein
 //             Ordner; repair legt alles Beiseitegelegte in seiner Reihenfolge
 //             zurück (Einzelheiten bei failHistory)
 //   volatile  runtime.json.tmp und sessions.json.tmp
+// Eine Zwischendatei ist nie Zustand: Was beim fail() an ihrem Namen lag
+// (auch die halb fertige eines Sicherns, das gerade lief), ist verworfen,
+// und repair lässt den Namen frei. Trifft fail() ein Sichern zwischen
+// Schreiben und Umbenennen, trägt das Umbenennen des Servers den Ordner an
+// den echten Namen (das geht nur, wenn dort noch nichts lag - etwa kurz
+// nach dem ersten Start); daran scheitert das Sichern ebenso. Der Treiber
+// erkennt seinen Ordner an der Marke darin: Vor jedem Start bringt er ihn an
+// die Zwischendatei zurück, repair räumt ihn auch am echten Namen fort.
 // Solange etwas gestört ist, lesen die Helfer, was zuletzt gesichert wurde
 // (fw-alarm flush scheitert dann, das ist erwartet), und der Server darf mit
 // Rückgabe 1 enden (er konnte beim Beenden nicht alles sichern).
@@ -368,7 +375,6 @@ export async function startGo(root, bark, options = {}) {
   let expectUnhealthy = false;   // nach Absicht Kaputtes: Start ohne Gesundheitsprüfung
   let configBroken = false;      // config.toml ist (nach Absicht) fehlerhaft
   const failed = new Set();      // gestörte Teile (storage.fail)
-  const saved = new Map();       // Name im Datenordner -> Inhalt vor fail() (null = gab es nicht)
   let historyPieces = [];        // was von history.jsonl in beiseite/ liegt, in der Reihenfolge des Entstehens
   let asideSeq = 0;              // laufende Nummer für Namen in beiseite/ (nie zweimal derselbe)
   const keep = (chunk) => { log = (log + chunk).slice(-LOG_KEEP); };
@@ -457,6 +463,7 @@ export async function startGo(root, bark, options = {}) {
   // Startet den Server (auf demselben Port) und wartet, bis er antwortet.
   const launch = async () => {
     if (alive) return;
+    await homeBlocks();
     const busyUntil = Date.now() + PORT_BUSY_RETRY_MS;
     for (;;) {
       const corruptBefore = corruptFiles();
@@ -568,6 +575,7 @@ export async function startGo(root, bark, options = {}) {
     let failure = null;
     let result;
     try {
+      await homeBlocks(); // ein vom Server weggetragener Ordner läge sonst am Namen des Dokuments
       const docs = new Map();
       const get = (name, empty) => {
         if (!docs.has(name)) {
@@ -805,6 +813,14 @@ export async function startGo(root, bark, options = {}) {
 
   // ---- backend.storage ----------------------------------------------------
   const BLOCKED = { selftest: ['selftest.tmp'], durable: ['state.json.tmp'], volatile: ['runtime.json.tmp', 'sessions.json.tmp'] };
+  // Wohin der Server eine Zwischendatei umbenennt (selftest.tmp löscht er nur).
+  const RENAMED_TO = { 'state.json.tmp': 'state.json', 'runtime.json.tmp': 'runtime.json', 'sessions.json.tmp': 'sessions.json' };
+  // Die Marke im Ordner von storage.fail - an ihr erkennt der Treiber seinen
+  // Ordner auch am echten Namen (der Server legt nie einen Ordner an).
+  const BLOCK_MARK = 'belegt';
+  const isBlock = (path) => {
+    try { return statSync(path).isDirectory() && existsSync(join(path, BLOCK_MARK)); } catch { return false; }
+  };
   const asideName = (stem) => join(asideDir, `${stem}-${++asideSeq}`);
   const rmBusy = (path) => rmSync(path, { recursive: true, force: true, maxRetries: 20, retryDelay: 20 });
   // history.jsonl unter einem neuen, nie benutzten Namen nach beiseite/ -
@@ -815,10 +831,10 @@ export async function startGo(root, bark, options = {}) {
     historyPieces.push(piece);
   };
 
-  // Ein nicht leerer Ordner an name. Schreibt der Server gerade genau dort,
+  // Ein nicht leerer Ordner an name; was dort lag, ist verworfen (eine
+  // Zwischendatei ist nie Zustand). Schreibt der Server gerade genau dort,
   // gewinnt der Ordner beim nächsten Versuch (sein Sichern scheitert ohnehin).
   const block = async (name) => {
-    if (!saved.has(name)) saved.set(name, isFile(file(name)) ? readFileSync(file(name)) : null);
     for (let i = 0; ; i++) {
       rmBusy(file(name));
       try {
@@ -829,13 +845,29 @@ export async function startGo(root, bark, options = {}) {
         await sleep(10);
       }
     }
-    writeFileSync(join(file(name), 'belegt'), 'x');
+    writeFileSync(join(file(name), BLOCK_MARK), 'x');
   };
+  // Der Name der Zwischendatei wird frei - nichts wird zurückgeschrieben.
+  // Hat das Umbenennen des Servers den Ordner an den echten Namen getragen,
+  // kommt er auch dort fort: Dort lag vorher nichts (auf einen vorhandenen
+  // Namen lässt sich ein Ordner nicht umbenennen).
   const unblock = (name) => {
     rmBusy(file(name));
-    const before = saved.get(name);
-    saved.delete(name);
-    if (before) writeFileSync(file(name), before);
+    const target = RENAMED_TO[name];
+    if (target && isBlock(file(target))) rmBusy(file(target));
+  };
+  // Nur bei stehendem Server: Ein an den echten Namen getragener Ordner kommt
+  // an die Zwischendatei zurück, wo er hingehört - sonst läse der Start ihn
+  // als kaputte Datei und finge leer an.
+  const homeBlocks = async () => {
+    for (const what of failed) {
+      for (const name of BLOCKED[what] ?? []) {
+        const target = RENAMED_TO[name];
+        if (!target || !isBlock(file(target))) continue;
+        rmBusy(file(name));
+        await retryBusy(() => renameSync(file(target), file(name)));
+      }
+    }
   };
 
   // Verlauf: Keine Zeile darf verloren gehen, auch wenn der Server genau
@@ -1053,7 +1085,6 @@ export async function startGo(root, bark, options = {}) {
       }
       rmSync(asideDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
       failed.clear();
-      saved.clear();
       historyPieces = [];
       expectUnhealthy = false;
       configBroken = false;

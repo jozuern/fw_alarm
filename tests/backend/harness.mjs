@@ -214,7 +214,9 @@ export async function startBarkMock() {
 // backend.storage
 //   fail(what) / repair(what), what: 'selftest' | 'durable' | 'history' |
 //   'volatile' - das Sichern dieses Teils scheitert bzw. geht wieder;
-//   repair stellt den Stand von vor fail() her. Ein zweites fail(what) ohne
+//   repair stellt den Stand von vor fail() her - außer an Zwischendateien
+//   (unter Go *.tmp): Sie sind nie Zustand, was beim fail() dort lag, ist
+//   verworfen, und repair lässt ihren Namen frei. Ein zweites fail(what) ohne
 //   repair dazwischen tut nichts, ebenso repair(what) ohne vorheriges fail.
 //   Beides wirkt im laufenden Betrieb, ohne Neustart.
 // backend.words

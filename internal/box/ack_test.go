@@ -1,6 +1,7 @@
 package box
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -60,7 +61,7 @@ func TestAckAlwaysOK(t *testing.T) {
 		b.fs.Fail(stateTmp, errors.New("Platte voll"))
 		start := time.Now()
 		okAck(t, "Platte scheitert", b.ackBox(url.Values{"id": {"1"}, "result": {"executed"}}))
-		if took := time.Since(start); took > 500*time.Millisecond {
+		if took := time.Since(start); took > underBudget {
 			t.Errorf("Antwort nach %v", took)
 		}
 		if b.current().State != model.CommandDelivered || len(b.events(model.EvAcked)) != 0 {
@@ -80,8 +81,8 @@ func TestAckAlwaysOK(t *testing.T) {
 		release := b.fs.Hang(stateTmp)
 		start := time.Now()
 		okAck(t, "Platte hängt", b.ackBox(url.Values{"id": {"1"}, "result": {"executed"}}))
-		if took := time.Since(start); took > 2500*time.Millisecond {
-			t.Errorf("Antwort nach %v", took)
+		if took := time.Since(start); took < underBudget || took > oneBudget {
+			t.Errorf("Antwort nach %v, erwartet etwa 1,5 s", took)
 		}
 		if b.current().State != model.CommandDelivered {
 			t.Errorf("vor dem Sichern %+v", b.current())
@@ -89,18 +90,93 @@ func TestAckAlwaysOK(t *testing.T) {
 		release()
 		waitFor(t, "Quittung spät gesichert", func() bool { return b.current().State == model.CommandAcked })
 	})
-	t.Run("Notbetrieb", func(t *testing.T) {
+	t.Run("Notbetrieb: OK, als verspätet vermerkt", func(t *testing.T) {
 		f := storetest.New()
 		f.Put(filepath.Join(dir, "state.json"), []byte("{kaputt"))
 		b := newBenchOn(t, f)
 		okAck(t, "Notbetrieb", b.ackBox(url.Values{"id": {"1"}, "result": {"executed"}}))
-	})
-	t.Run("unbekannte Nummer, Unsinn, nichts", func(t *testing.T) {
-		b := newBench(t)
-		for _, form := range []url.Values{{"id": {"99"}}, {"id": {"abc"}}, {"id": {"-1"}}, {}, {"id": {"99999999999999999999"}}} {
-			okAck(t, form.Encode(), b.ackBox(form))
+		if late := b.events(model.EvLateAck); len(late) != 1 || late[0].Int("id") != 1 || late[0].Str("type") != "" {
+			t.Errorf("late_ack %v", late)
 		}
 	})
+	t.Run("unbekannte Nummer, Unsinn, nichts: OK, vermerkt, nichts Festes gesichert", func(t *testing.T) {
+		b := newBench(t)
+		b.quiet()
+		writes := stateWrites(b.fs)
+		forms := []url.Values{{"id": {"99"}}, {"id": {"abc"}}, {"id": {"-1"}}, {}, {"id": {"99999999999999999999"}}}
+		for _, form := range forms {
+			okAck(t, form.Encode(), b.ackBox(form))
+		}
+		b.quiet()
+		if n := stateWrites(b.fs); n != writes {
+			t.Errorf("verspätete Quittungen sicherten state.json %d-mal", n-writes)
+		}
+		if late := b.events(model.EvLateAck); len(late) != len(forms) {
+			t.Errorf("%d late_ack, erwartet %d", len(late), len(forms))
+		}
+	})
+	t.Run("verspätete Quittung bei kaputter Platte: der Eintrag kommt in den Verlauf, sobald die flüchtige Seite schreiben kann", func(t *testing.T) {
+		b := newBench(t)
+		b.enqueue(model.CommandTest) // wartet noch – eine Quittung dafür ist verspätet
+		b.fs.Fail(stateTmp, errors.New("Platte voll"))
+		runtimeTmp := filepath.Join(dir, "runtime.json.tmp")
+		b.fs.Fail(runtimeTmp, errors.New("Platte voll"))
+		okAck(t, "kaputte Platte", b.ackBox(url.Values{"id": {"1"}, "result": {"executed"}}))
+		if late := b.events(model.EvLateAck); len(late) != 1 || late[0].Str("type") != model.CommandTest {
+			t.Fatalf("aus dem Speicher: %v", late)
+		}
+		inFile := func() bool {
+			raw, _ := b.fs.Get(filepath.Join(dir, "history.jsonl"))
+			return strings.Contains(string(raw), `"event":"late_ack"`)
+		}
+		if inFile() {
+			t.Fatal("schon im Verlauf, obwohl runtime.json nicht gesichert werden kann")
+		}
+		b.fs.Fail(runtimeTmp, nil) // die flüchtige Seite geht wieder, die feste nicht
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = b.c.Store.Flush(ctx) // scheitert an state.json – die flüchtigen Daten sichert es trotzdem
+		if !inFile() {
+			t.Error("late_ack nicht im Verlauf, obwohl runtime.json wieder gesichert werden kann")
+		}
+		if b.current().State != model.CommandPending {
+			t.Errorf("%+v", b.current())
+		}
+	})
+}
+
+// Das Journal: eine Quittung, die gelten müsste, aber nicht gesichert werden
+// kann, steht höchstens einmal je Minute darin – mit einem Satz, der stimmt
+// ("bleibt als ausgeliefert stehen"); eine verspätete Quittung oder der
+// Notbetrieb brauchen nichts Festes und schreiben nichts ins Journal.
+func TestAckJournal(t *testing.T) {
+	b := newBench(t)
+	b.deliveredTest()
+	j := b.captureJournal()
+	b.fs.Fail(stateTmp, errors.New("Platte voll"))
+	for range 5 {
+		okAck(t, "kaputte Platte", b.ackBox(url.Values{"id": {"1"}, "result": {"executed"}}))
+	}
+	okAck(t, "unbekannt", b.ackBox(url.Values{"id": {"99"}, "result": {"executed"}}))
+	got := j.warnings("Quittung")
+	if len(got) != 1 || !strings.Contains(got[0], "Quittung der Box nicht gesichert – der Befehl bleibt als ausgeliefert stehen") ||
+		!strings.Contains(got[0], "befehl=1") {
+		t.Errorf("%d Zeilen: %v", len(got), got)
+	}
+	b.advance(time.Minute)
+	okAck(t, "eine Minute später", b.ackBox(url.Values{"id": {"1"}, "result": {"executed"}}))
+	if got := j.warnings("Quittung"); len(got) != 2 || !strings.Contains(got[1], "unterdrueckt=4") {
+		t.Errorf("nach einer Minute: %v", got)
+	}
+
+	f := storetest.New()
+	f.Put(filepath.Join(dir, "state.json"), []byte("{kaputt"))
+	e := newBenchOn(t, f)
+	je := e.captureJournal()
+	okAck(t, "Notbetrieb", e.ackBox(url.Values{"id": {"1"}, "result": {"executed"}}))
+	if got := je.warnings(""); len(got) != 0 {
+		t.Errorf("Notbetrieb: %v", got)
+	}
 }
 
 // Nur ein falsches Maschinen-Token gibt 403 FORBIDDEN – nichts wird

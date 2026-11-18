@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -193,7 +194,7 @@ func TestPollDeliversOnlyWhenSaved(t *testing.T) {
 		if got != noneP+"3\n" {
 			t.Errorf("während das Sichern hängt: %q", got)
 		}
-		if took < 1400*time.Millisecond || took > 2500*time.Millisecond {
+		if took < underBudget || took > oneBudget {
 			t.Errorf("Antwort nach %v, erwartet etwa 1,5 s", took)
 		}
 		if b.current().State != model.CommandPending {
@@ -216,6 +217,31 @@ func TestPollDeliversOnlyWhenSaved(t *testing.T) {
 		}
 	})
 
+	t.Run("zu spät, und dann scheitert das Sichern: NONE, der Befehl wartet, der nächste Poll liefert ihn", func(t *testing.T) {
+		b := newBench(t)
+		b.seed(3, anna)
+		b.enqueue(model.CommandTest)
+		// Das Sichern wartet und scheitert danach (FaultFS: der Fehler steht
+		// beim Beginn fest, dann wartet der Aufruf).
+		b.fs.Fail(stateTmp, errors.New("Platte voll"))
+		release := b.fs.Hang(stateTmp)
+		if got := b.pollBox("p", 0); got != noneP+"3\n" {
+			t.Errorf("zu spät: %q", got)
+		}
+		release()
+		b.quiet() // wartet, bis das späte Sichern zu Ende (gescheitert) ist
+		if b.c.Store.SaveHealth().Durable {
+			t.Fatal("das späte Sichern ist nicht gescheitert")
+		}
+		if b.current().State != model.CommandPending || len(b.events(model.EvDelivered)) != 0 {
+			t.Fatalf("gescheitert, aber %+v", b.current())
+		}
+		b.fs.Heal()
+		if got := b.pollBox("p", 0); got != "ok=1\nnonce=p\nid=1\ntype=TEST\nkeys_version=3\n" {
+			t.Errorf("danach: %q", got)
+		}
+	})
+
 	t.Run("das Sichern scheitert: NONE sofort, der Befehl wartet, der nächste Poll liefert ihn", func(t *testing.T) {
 		b := newBench(t)
 		b.seed(3, anna)
@@ -225,7 +251,7 @@ func TestPollDeliversOnlyWhenSaved(t *testing.T) {
 		if got := b.pollBox("p", 0); got != noneP+"3\n" {
 			t.Errorf("Sichern scheitert: %q", got)
 		}
-		if took := time.Since(start); took > 500*time.Millisecond {
+		if took := time.Since(start); took > underBudget {
 			t.Errorf("Antwort nach %v", took)
 		}
 		if b.current().State != model.CommandPending || len(b.events(model.EvDelivered)) != 0 {
@@ -416,8 +442,11 @@ func TestPollWithinBoxBudget(t *testing.T) {
 	release := b.fs.Hang(stateTmp)
 	start := time.Now()
 	got := b.pollBox("p", 0)
-	if took := time.Since(start); took > 2500*time.Millisecond {
-		t.Errorf("Antwort nach %v", took)
+	// Eine Frist für Rückschaltung UND Auslieferung: etwa 1,5 s. Bekäme die
+	// Auslieferung eine eigene, wartete sie hinter dem hängenden Sichern noch
+	// einmal 1,5 s – zusammen 3 s.
+	if took := time.Since(start); took < underBudget || took > oneBudget {
+		t.Errorf("Antwort nach %v, erwartet etwa 1,5 s", took)
 	}
 	if got != noneP+"4\n" {
 		t.Errorf("%q", got)
@@ -593,4 +622,99 @@ func FuzzCommandID(f *testing.F) {
 			t.Fatalf("%q: %d, IntOf %d", raw, got, n)
 		}
 	})
+}
+
+// journal fängt ab jetzt das Journal des Core auf (die Handler schreiben über
+// c.Log bzw. c.WarnRarely).
+type journal struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (j *journal) Write(p []byte) (int, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.buf.Write(p)
+}
+
+// warnings: die Warnungen, deren Zeile sub enthält.
+func (j *journal) warnings(sub string) []string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	var out []string
+	for _, line := range strings.Split(j.buf.String(), "\n") {
+		if strings.Contains(line, "level=WARN") && strings.Contains(line, sub) {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func (b *bench) captureJournal() *journal {
+	j := &journal{}
+	b.c.Log = slog.New(slog.NewTextHandler(j, nil))
+	return j
+}
+
+// Ein Poll, dessen Auslieferung nicht gesichert werden kann, schreibt
+// höchstens eine Zeile je Minute ins Journal – nicht eine je Poll, solange
+// der Befehl wartet.
+func TestPollJournalAtMostOncePerMinute(t *testing.T) {
+	b := newBench(t)
+	b.seed(3, anna)
+	b.enqueue(model.CommandTest)
+	j := b.captureJournal()
+	b.fs.Fail(stateTmp, errors.New("Platte voll"))
+	for range 10 {
+		b.pollBox("p", 0)
+	}
+	if got := j.warnings("Befehl nicht an die Box ausgeliefert"); len(got) != 1 || !strings.Contains(got[0], "unterdrueckt=0") {
+		t.Errorf("%d Zeilen: %v", len(got), got)
+	}
+	b.advance(time.Minute)
+	b.pollBox("p", 0)
+	if got := j.warnings("Befehl nicht an die Box ausgeliefert"); len(got) != 2 || !strings.Contains(got[1], "unterdrueckt=9") {
+		t.Errorf("nach einer Minute %d Zeilen: %v", len(got), got)
+	}
+}
+
+// Der Status der Box für die Sicherung des Demo-Alarms wird IN der Änderung
+// gelesen, nicht davor: Wartet der Poll auf den Schreiber und meldet die Box
+// inzwischen zwei Empfänger, geht der Demo-Alarm nicht hinaus.
+func TestPollReadsBoxInsideChange(t *testing.T) {
+	b := newBench(t)
+	b.seed(8, anna, bert)
+	b.update(func(d *model.State) {
+		d.Demo = model.Demo{Enabled: true, KeyID: 1, Key: anna.Key, Label: anna.Label, ChangedAt: t0.Unix() - 100}
+	})
+	b.push(fwNew, "keys_version", "8", "keys_count", "1")
+	b.enqueue(model.CommandAlarm)
+	// Eine andere Änderung hält den Schreiber, bis der Test sie freigibt.
+	release := b.fs.Hang(stateTmp)
+	before := len(b.fs.Log())
+	other := make(chan error, 1)
+	go func() {
+		other <- b.c.Store.Update(context.Background(), func(d *model.State) error { d.Settings.MuteMaxSeconds = 7200; return nil })
+	}()
+	waitFor(t, "Schreiber belegt", func() bool { return writingSince(b.fs, before) })
+	answer := make(chan string, 1)
+	go func() {
+		got, err := b.pollAs("fw-box-1", "a1", 0)
+		if err != nil {
+			got = err.Error()
+		}
+		answer <- got
+	}()
+	time.Sleep(200 * time.Millisecond) // der Poll steht jetzt in der Schlange
+	b.push(fwNew, "keys_version", "8", "keys_count", "2")
+	release()
+	if err := <-other; err != nil {
+		t.Fatal(err)
+	}
+	if got := <-answer; !strings.Contains(got, "\nid=0\ntype=NONE\n") {
+		t.Errorf("Antwort %q", got)
+	}
+	if cur := b.current(); cur.State != model.CommandCancelled || cur.CancelledBy != model.DemoGuardBy {
+		t.Errorf("Befehl %+v", cur)
+	}
 }

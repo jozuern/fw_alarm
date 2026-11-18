@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"fwalarm/internal/core"
 	"fwalarm/internal/model"
@@ -161,24 +162,51 @@ func commandView(c model.Command) web.Object {
 // errNotExpired: Im Entwurf verfällt (inzwischen) nichts – nichts zu sichern.
 var errNotExpired = errors.New("nichts verfallen")
 
-// expiring: je Core, ob gerade ein Verfallen nebenher gesichert wird
-// (*atomic.Bool) – höchstens eins zur Zeit, auch wenn jeder Tab alle 5 s
-// fragt, während die Platte hängt.
+// expireRetryAfter: so lange nach einem gescheiterten Versuch beginnt kein
+// neuer (auf der Uhr des Core).
+const expireRetryAfter = 5 * time.Second
+
+// besideState: je Core, ob gerade ein Verfallen nebenher gesichert wird, und
+// wann frühestens der nächste Versuch beginnen darf.
+type besideState struct {
+	busy      atomic.Bool
+	mu        sync.Mutex
+	notBefore time.Time
+}
+
+// waiting: Läuft noch die Pause nach einem gescheiterten Versuch? Liegt ihr
+// Ende weiter als die Pause voraus, ist die Uhr zurückgesprungen – dann gilt
+// sie als um (sonst wartete das Verfallen, bis die Uhr den alten Stand
+// wieder erreicht).
+func (b *besideState) waiting(now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return now.Before(b.notBefore) && b.notBefore.Sub(now) <= expireRetryAfter
+}
+
+func (b *besideState) failedAt(now time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.notBefore = now.Add(expireRetryAfter)
+}
+
+// expiring: *besideState je Core (im Programm einer; die Tests bauen viele).
 var expiring sync.Map
 
 // expireBeside sichert das Verfallen eines zu alten Befehls nebenher (Core.Bg)
 // – EINE Änderung mit der Frist der Oberfläche (5 s), wie jede feste Änderung
-// neben einer Anfrage. Läuft schon eins, geschieht nichts (der nächste Abruf
-// von status versucht es wieder, solange der Befehl noch wartet); ebenso nach
-// einem Fehlschlag (eine Zeile im Journal).
+// neben einer Anfrage. Höchstens eine zur Zeit, wie viele Tabs auch fragen:
+// Läuft schon eine, geschieht nichts. Scheitert sie, beginnt frühestens 5 s
+// später die nächste (beim nächsten Abruf von status, solange der Befehl noch
+// wartet), und das Journal sagt es höchstens einmal je Minute.
 func expireBeside(c *core.Core) {
-	v, _ := expiring.LoadOrStore(c, new(atomic.Bool))
-	busy := v.(*atomic.Bool)
-	if !busy.CompareAndSwap(false, true) {
+	v, _ := expiring.LoadOrStore(c, &besideState{})
+	st := v.(*besideState)
+	if st.waiting(c.Clock.Now()) || !st.busy.CompareAndSwap(false, true) {
 		return
 	}
 	c.Bg.Go("verfallenen Befehl sichern", func() {
-		defer busy.Store(false)
+		defer st.busy.Store(false) // erst nach failedAt: kein Versuch dazwischen
 		ctx, cancel := web.Budget(web.BudgetUI)
 		defer cancel()
 		now, ttl := c.Clock.Now(), c.Cfg().PendingCommandTTLSeconds
@@ -189,7 +217,8 @@ func expireBeside(c *core.Core) {
 			return nil
 		})
 		if err != nil && !errors.Is(err, errNotExpired) {
-			c.Log.Warn("verfallener Befehl nicht gesichert – der nächste Abruf versucht es erneut", "err", err)
+			st.failedAt(c.Clock.Now())
+			c.WarnRarely("expire", "verfallener Befehl nicht gesichert – ein späterer Abruf versucht es erneut", "err", err)
 		}
 	})
 }

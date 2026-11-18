@@ -78,14 +78,15 @@ func PollHandler(c *core.Core) web.Handler {
 
 // deliver ist Schritt 3 des Polls: der ausgelieferte Befehl – nur, wenn die
 // Änderung rechtzeitig gesichert ist; sonst nil. Der Status der Box (für die
-// Sicherung des Demo-Alarms) kommt aus dem Schnappschuss der flüchtigen
-// Daten, vor der Änderung – die Änderung selbst rechnet nur.
+// Sicherung des Demo-Alarms) wird IN der Änderung aus dem Schnappschuss der
+// flüchtigen Daten gelesen – nicht davor: Wartet der Poll in der Schlange,
+// meldet die Box inzwischen vielleicht schon zwei Empfänger.
 func deliver(ctx context.Context, c *core.Core, device string, last int) *model.Command {
 	cfg := c.Cfg()
-	box := c.Store.Runtime().Box
 	now := c.Clock.Now()
 	var out *model.Command
 	err := c.Store.Update(ctx, func(d *model.State) error {
+		box := c.Store.Runtime().Box // nur der Zeiger im Speicher, keine Datei
 		cmd, changed := d.PollCommand(last, device, box, now, cfg.PendingCommandTTLSeconds)
 		if !changed {
 			return errQuiet
@@ -108,7 +109,8 @@ func deliver(ctx context.Context, c *core.Core, device string, last int) *model.
 		if errors.Is(err, store.ErrLate) {
 			why = "nicht rechtzeitig gesichert – landet das Sichern noch, gilt er als ausgeliefert und geht nie hinaus"
 		}
-		c.Log.Warn("Befehl nicht an die Box ausgeliefert: "+why, "befehl", out.ID, "err", err)
+		// Höchstens eine Zeile je Minute – der Poll kommt alle paar Sekunden.
+		c.WarnRarely("poll", "Befehl nicht an die Box ausgeliefert: "+why, "befehl", out.ID, "err", err)
 	}
 	return nil
 }

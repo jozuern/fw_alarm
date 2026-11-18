@@ -5,7 +5,7 @@
 // stehen kann. backend.files (der rohe Datenordner) nur hier und in den
 // übrigen go-*.test.mjs.
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { after, before, beforeEach, describe, it } from 'node:test';
@@ -164,10 +164,21 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
     });
 
     it('writeRawConfig mit der geltenden Fassung kehrt sofort zurück', async () => {
-      const started = Date.now();
+      // "Sofort" heißt: nicht auf den Prüfer des Servers gewartet (er urteilt
+      // erst über eine Datei, die 2 s unverändert blieb). Gemessen gegen das,
+      // was writeRawConfig ohnehin tut – je ein fw-alarm check-config und
+      // health –, nicht gegen eine feste Zeit: Unter Last braucht schon ein
+      // Aufruf des Programms über eine Sekunde. Wer auf den Prüfer wartete,
+      // läge mindestens 2 s darüber; die Grenze lässt je 1 s Luft.
+      let started = Date.now();
+      assert.equal((await backend.cli(['check-config'])).code, 0);
+      assert.equal((await backend.health()).ok, true);
+      const work = Date.now() - started;
+      started = Date.now();
       const same = await backend.writeRawConfig(backend.configText());
+      const took = Date.now() - started;
       assert.equal(same.config_ok, '1', same.text);
-      assert.ok(Date.now() - started < 1500, `${Date.now() - started} ms`);
+      assert.ok(took < work + 1000, `${took} ms, die Aufrufe allein ${work} ms`);
     });
   });
 
@@ -362,6 +373,50 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
         await backend.storage.repair(what); // repair ohne fail tut nichts
         for (const name of names) assert.equal(backend.files.exists(name), false, `${what}: ${name} ist fort`);
       }
+    });
+
+    it('eine Zwischendatei ist nie Zustand: was beim fail() dort lag, schreibt repair nicht zurück', async () => {
+      // Wie die halb fertige Zwischendatei eines Sicherns, das fail() erwischt.
+      const parts = { durable: ['state.json.tmp'], volatile: ['runtime.json.tmp', 'sessions.json.tmp'], selftest: ['selftest.tmp'] };
+      for (const [what, names] of Object.entries(parts)) {
+        for (const name of names) backend.files.write(name, 'alt');
+        await backend.storage.fail(what);
+        await backend.storage.repair(what);
+        for (const name of names) assert.equal(backend.files.exists(name), false, `${what}: ${name} bleibt frei`);
+      }
+      // Anhalten geht nur mit Rückgabe 0, wenn das letzte Sichern gelingt.
+      await backend.stopServer();
+      await backend.startServer();
+    });
+
+    it('trägt das Umbenennen des Servers den Ordner an den echten Namen, bringt ihn der Start zurück, repair räumt ihn fort', async () => {
+      // Ohne den Server nachgestellt (kein Wettlauf): Ein Sichern stand
+      // zwischen Schreiben und Umbenennen, als fail() kam, und runtime.json
+      // gab es noch nicht (wie kurz nach dem ersten Start).
+      const tmp = backend.files.path('runtime.json.tmp');
+      const real = backend.files.path('runtime.json');
+      const carried = async () => {
+        await backend.stopServer();
+        backend.files.remove('runtime.json');
+        await backend.storage.fail('volatile');
+        renameSync(tmp, real);
+      };
+      await carried();
+      await backend.startServer(); // der Start fände sonst einen Ordner statt runtime.json
+      assert.ok(isDir(tmp), 'zurück an der Zwischendatei');
+      assert.equal(backend.files.exists('runtime.json'), false);
+      await backend.storage.repair('volatile');
+      await backend.stopServer(); // geht nur mit Rückgabe 0, wenn runtime.json wieder gesichert werden kann
+      await backend.startServer();
+      // Dasselbe, repariert, bevor der Server wieder läuft.
+      await carried();
+      await backend.storage.repair('volatile');
+      assert.equal(backend.files.exists('runtime.json.tmp'), false);
+      assert.equal(backend.files.exists('runtime.json'), false, 'dort lag vorher nichts');
+      await backend.startServer();
+      await backend.stopServer();
+      await backend.startServer();
+      assert.equal((await backend.health()).ok, true);
     });
 
     it('der Ordner übersteht einen Neustart; der Server läuft gestört weiter, repair macht ihn wieder gesund', async () => {

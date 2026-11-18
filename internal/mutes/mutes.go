@@ -15,7 +15,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync"
 	"time"
 
 	"fwalarm/internal/core"
@@ -79,13 +78,11 @@ func Expire(ctx context.Context, c *core.Core) error {
 		return nil
 	case err != nil:
 		// Der Server rechnet die Betroffenen trotzdem schon als laut, die Box
-		// nicht: Sie holt die Liste nur bei neuer Version. Die Bremse misst
-		// mit der Uhr JETZT, nicht mit now vom Beginn: Zwei Aufrufe, die in
-		// umgekehrter Reihenfolge fertig werden, sähen sonst wie eine
-		// zurückgesprungene Uhr aus.
-		if ok, suppressed := warnings(c).allow(c.Clock.Now()); ok {
-			c.Log.Warn(warningText(err), "err", err, "unterdrueckt", suppressed)
-		}
+		// nicht: Sie holt die Liste nur bei neuer Version. Die Bremse
+		// (Core.WarnRarely) misst mit der Uhr JETZT, nicht mit now vom Beginn:
+		// Zwei Aufrufe, die in umgekehrter Reihenfolge fertig werden, sähen
+		// sonst wie eine zurückgesprungene Uhr aus.
+		c.WarnRarely("mutes", warningText(err), "err", err)
 		return err
 	}
 	return nil
@@ -98,51 +95,6 @@ func warningText(err error) string {
 		return "überfällige Stummschaltung nicht rechtzeitig gesichert – landet das Sichern noch, gilt sie; bis dahin alarmiert die Box die Betroffenen weiter stumm"
 	}
 	return "überfällige Stummschaltung nicht gesichert – die Box alarmiert die Betroffenen bis dahin weiter stumm"
-}
-
-// warnEvery: so oft steht die Warnung höchstens im Journal.
-const warnEvery = time.Minute
-
-// throttle lässt eine Zeile höchstens alle warnEvery durch und zählt, was
-// dazwischen unterdrückt wurde.
-type throttle struct {
-	mu         sync.Mutex
-	logged     bool
-	last       time.Time
-	suppressed int
-}
-
-// allow: true = jetzt ins Journal, mit der Zahl der seit der letzten Zeile
-// unterdrückten. Springt die Uhr zurück, gilt das als abgelaufen (sonst
-// schwiege die Warnung, bis die Uhr den alten Stand wieder erreicht).
-func (l *throttle) allow(now time.Time) (bool, int) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.logged && now.Sub(l.last) < warnEvery && !now.Before(l.last) {
-		l.suppressed++
-		return false, 0
-	}
-	n := l.suppressed
-	l.logged, l.last, l.suppressed = true, now, 0
-	return true, n
-}
-
-// throttles: je Core eine Bremse (im Programm gibt es einen Core; die Tests
-// bauen viele, die sich nicht gegenseitig bremsen sollen).
-var (
-	throttlesMu sync.Mutex
-	throttles   = map[*core.Core]*throttle{}
-)
-
-func warnings(c *core.Core) *throttle {
-	throttlesMu.Lock()
-	defer throttlesMu.Unlock()
-	l := throttles[c]
-	if l == nil {
-		l = &throttle{}
-		throttles[c] = l
-	}
-	return l
 }
 
 // anyStale: Zeigt st eine überfällige Stummschaltung?

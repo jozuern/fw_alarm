@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -249,7 +250,7 @@ func TestCommandStatusPart(t *testing.T) {
 		if got := b.statusCommand(reader.cookie); got != expired {
 			t.Errorf("verfallen %d: %s", i, got)
 		}
-		if took := time.Since(start); took > 500*time.Millisecond {
+		if took := time.Since(start); took > 2*time.Second { // mit Warten auf das Sichern: 5 s (Frist der Oberfläche)
 			t.Errorf("status wartete %v", took)
 		}
 	}
@@ -272,6 +273,85 @@ func TestCommandStatusPart(t *testing.T) {
 	// Danach ist das Dashboard frei.
 	if code, got := admin.do("action", "enqueue", "type", "TEST"); code != http.StatusOK || !strings.Contains(got, `"ok":true`) {
 		t.Errorf("danach anlegen: %d %s", code, got)
+	}
+}
+
+// Das Verfallen nebenher: höchstens EIN Sichern zur Zeit, wie viele Tabs auch
+// fragen – und nach einem gescheiterten frühestens 5 s (Uhr des Core) später
+// der nächste Versuch (springt die Uhr zurück, ist die Pause um). Sonst
+// begänne bei kaputter Platte jeder Abruf von status einen neuen. Gezählt
+// werden die Versuche, state.json zu schreiben.
+func TestExpireBesideOneAtATime(t *testing.T) {
+	b := commandBench(t)
+	admin := b.admin()
+	admin.do("action", "enqueue", "type", "TEST")
+	b.quiet()
+	tmp := filepath.Join(benchDir, "state.json.tmp")
+	b.fs.Fail(tmp, errors.New("Platte voll")) // jeder Versuch scheitert …
+	release := b.fs.Hang(tmp)                 // … der erste erst, wenn der Test es will
+	b.clk.Set(t0.Add(301 * time.Second))
+	base := stateWrites(b)
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b.serve(req("GET", "action=status", nil, admin.cookie))
+		}()
+	}
+	wg.Wait()
+	for deadline := time.Now().Add(5 * time.Second); stateWrites(b) == base; {
+		if time.Now().After(deadline) {
+			t.Fatal("kein Versuch begonnen")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for range 5 {
+		b.statusCommand(admin.cookie) // während der eine hängt
+	}
+	release()
+	settle := func() {
+		t.Helper()
+		if !b.c.Bg.Wait(10 * time.Second) {
+			t.Fatal("Arbeit nebenher endet nicht")
+		}
+	}
+	settle()
+	if n := stateWrites(b) - base; n != 1 {
+		t.Fatalf("%d Versuche zugleich, erwartet einer", n)
+	}
+	// Gescheitert: die nächsten 5 s kein neuer Versuch.
+	for range 5 {
+		b.statusCommand(admin.cookie)
+	}
+	b.clk.Advance(4999 * time.Millisecond)
+	b.statusCommand(admin.cookie)
+	settle()
+	if n := stateWrites(b) - base; n != 1 {
+		t.Errorf("%d Versuche vor Ablauf der Pause", n)
+	}
+	b.clk.Advance(time.Millisecond)
+	b.statusCommand(admin.cookie)
+	settle()
+	if n := stateWrites(b) - base; n != 2 {
+		t.Errorf("nach der Pause %d Versuche, erwartet 2", n)
+	}
+	// Springt die Uhr zurück (hier von 306 s auf 302 s, der Befehl ist noch
+	// zu alt), ist die Pause um – sonst wartete das Verfallen, bis die Uhr den
+	// alten Stand wieder erreicht.
+	b.clk.Set(t0.Add(302 * time.Second))
+	b.statusCommand(admin.cookie)
+	settle()
+	if n := stateWrites(b) - base; n != 3 {
+		t.Errorf("nach dem Rücksprung der Uhr %d Versuche, erwartet 3", n)
+	}
+	// Die Platte geht wieder: nach der nächsten Pause gesichert, einmal.
+	b.fs.Heal()
+	b.clk.Advance(5 * time.Second)
+	b.statusCommand(admin.cookie)
+	settle()
+	if c := b.cur(); c.State != model.CommandExpired || len(b.events(model.EvExpired)) != 1 {
+		t.Errorf("nach der Reparatur: %+v, %d Einträge", c, len(b.events(model.EvExpired)))
 	}
 }
 

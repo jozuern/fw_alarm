@@ -366,7 +366,10 @@ func TestStatusNeverTouchesDurable(t *testing.T) {
 	start := time.Now()
 	rec := b.post(encode(append([]string{"token", machineToken}, fieldsOf(fwNew, "uptime_s", "20", "reset_reason", "panic",
 		"last_alarm", "17.11.2026 11:01:40", "alarm_seq", "1", "keys_version", "41")...)...), nil)
-	if d := time.Since(start); d > 50*time.Millisecond {
+	// Wartete die Antwort auf ein Sichern, dann mindestens eine Frist (die der
+	// Box 1,5 s, nebenher 5 s) – oder ohne Ende: Hier hängt alles bis zum
+	// Aufräumen.
+	if d := time.Since(start); d > underBudget {
 		t.Errorf("Antwort nach %v", d)
 	}
 	if rec.Code != 200 || rec.Body.String() != "OK\n" {

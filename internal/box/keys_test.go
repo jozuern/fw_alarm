@@ -110,6 +110,21 @@ func newBenchOn(t *testing.T, f *storetest.FaultFS) *bench {
 	return b
 }
 
+// Zeitgrenzen der Tests, an der Frist der Box (web.BudgetBox, 1,5 s) statt
+// am Tempo des Rechners:
+//
+//   - underBudget: Wer die Frist abwartet, braucht mindestens 1,5 s; unter
+//     1,4 s hat er sie nicht abgewartet. Obergrenze für "sofort" (ein
+//     Rückfall, der die Frist abwartet, liegt immer darüber, wie langsam der
+//     Rechner auch ist) und Untergrenze, wo das Abwarten der Punkt ist.
+//   - oneBudget: höchstens EINE Frist. 2,25 s liegt in der Mitte zwischen
+//     einer (1,5 s) und zwei nacheinander (3 s): je 0,75 s Luft für einen
+//     langsamen Rechner und gegen eine zweite Frist.
+const (
+	underBudget = 1400 * time.Millisecond
+	oneBudget   = 2250 * time.Millisecond
+)
+
 // statusKey: der (erfundene) Status-Key des Admins.
 const statusKey = "statuskey0001"
 
@@ -319,8 +334,8 @@ func TestKeysWithinBoxBudget(t *testing.T) {
 	release := b.fs.Hang(filepath.Join(dir, "state.json.tmp"))
 	start := time.Now()
 	got := b.fetch("h")
-	if d := time.Since(start); d > 2500*time.Millisecond {
-		t.Errorf("Antwort nach %v", d)
+	if d := time.Since(start); d < underBudget || d > oneBudget {
+		t.Errorf("Antwort nach %v, erwartet etwa 1,5 s (die Frist, auf die Rückschaltung gewartet)", d)
 	}
 	if got != "ok=1\nnonce=h\nversion=4\ncount=1\nkey0=annakey00001\nmuted0=0\nmutevol0=0\n" {
 		t.Errorf("%q", got)
@@ -342,10 +357,23 @@ func TestKeysWithinBoxBudget(t *testing.T) {
 }
 
 // Version und Inhalt kommen aus EINEM Schnappschuss: Während demo_set (über
-// die echte Aktion) mehrmals zwischen Demo und LIVE wechselt, ist jede der
-// 1 000 Antworten entweder die volle Liste unter einer LIVE-Version oder die
-// Demo-Liste unter einer Demo-Version.
+// die echte Aktion) zwischen Demo und LIVE wechselt, ist jede Antwort an die
+// Box entweder die volle Liste unter einer LIVE-Version (gerade) oder die
+// Demo-Liste unter einer Demo-Version (ungerade).
+//
+// Unabhängig vom Tempo: Der Umschalter wechselt eine FESTE Zahl von Malen
+// (switches) und gibt dann Bescheid; die Leser fragen, bis das geschehen ist
+// UND jeder mindestens minCalls Antworten geprüft hat. Hat dabei noch keine
+// Antwort eine der beiden Listen getroffen, wird weiter umgeschaltet (bis
+// maxSwitches) statt nach der Uhr zu urteilen. Am Ende steht die Version
+// genau bei 10 + Zahl der Wechsel, und beide Arten kamen vor.
 func TestKeysAnswerFromOneSnapshot(t *testing.T) {
+	const (
+		switches    = 40
+		maxSwitches = 4000
+		workers     = 8
+		minCalls    = 50
+	)
 	b := newBench(t)
 	b.seed(10, anna, bert) // gerade Versionen = LIVE, ungerade = Demo
 	api := web.SecurityHeaders(b.c, dashapi.Handler(b.c))
@@ -375,19 +403,30 @@ func TestKeysAnswerFromOneSnapshot(t *testing.T) {
 	full := "count=2\nkey0=annakey00001\nmuted0=0\nmutevol0=0\nkey1=bertkey00002\nmuted1=0\nmutevol1=0\n"
 	demo := "count=1\nkey0=bertkey00002\nmuted0=0\nmutevol0=0\n"
 
-	var calls atomic.Int64
-	var wg sync.WaitGroup
-	errs := make(chan string, 1000)
-	for range 8 {
+	var (
+		done             atomic.Bool
+		sawFull, sawDemo atomic.Int64
+		wg               sync.WaitGroup
+		errMu            sync.Mutex
+		errs             []string
+	)
+	fail := func(s string) {
+		errMu.Lock()
+		defer errMu.Unlock()
+		if len(errs) < 20 {
+			errs = append(errs, s)
+		}
+	}
+	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for calls.Add(1) <= 1000 {
-				// Kein t.Fatal hier (nicht die Goroutine des Tests): Fehler
-				// sammeln, der Test meldet sie nach wg.Wait.
+			// Kein t.Fatal hier (nicht die Goroutine des Tests): Fehler
+			// sammeln, der Test meldet sie nach wg.Wait.
+			for n := 0; n < minCalls || !done.Load(); n++ {
 				got, ferr := b.tryFetch("s")
 				if ferr != nil {
-					errs <- ferr.Error()
+					fail(ferr.Error())
 					continue
 				}
 				rest, ok := strings.CutPrefix(got, "ok=1\nnonce=s\nversion=")
@@ -395,25 +434,33 @@ func TestKeysAnswerFromOneSnapshot(t *testing.T) {
 				v, err := strconv.Atoi(vText)
 				switch {
 				case !ok || err != nil:
-					errs <- fmt.Sprintf("unlesbar: %q", got)
+					fail(fmt.Sprintf("unlesbar: %q", got))
 				case v%2 == 0 && list != full:
-					errs <- fmt.Sprintf("LIVE-Version %d mit %q", v, list)
+					fail(fmt.Sprintf("LIVE-Version %d mit %q", v, list))
 				case v%2 == 1 && list != demo:
-					errs <- fmt.Sprintf("Demo-Version %d mit %q", v, list)
+					fail(fmt.Sprintf("Demo-Version %d mit %q", v, list))
+				case v%2 == 0:
+					sawFull.Add(1)
+				default:
+					sawDemo.Add(1)
 				}
 			}
 		}()
 	}
-	for i := 0; calls.Load() < 1000; i++ {
-		demoSet(i%2 == 0)
+	n := 0
+	for ; n < switches || (sawFull.Load() == 0 || sawDemo.Load() == 0) && n < maxSwitches; n++ {
+		demoSet(n%2 == 0)
 	}
+	done.Store(true)
 	wg.Wait()
-	close(errs)
-	for e := range errs {
+	for _, e := range errs {
 		t.Error(e)
 	}
-	if b.c.Store.State().KeysVersion <= 11 {
-		t.Errorf("kaum gewechselt: Version %d", b.c.Store.State().KeysVersion)
+	if v := b.c.Store.State().KeysVersion; v != 10+n {
+		t.Errorf("Version %d nach %d Wechseln, erwartet %d", v, n, 10+n)
+	}
+	if sawFull.Load() == 0 || sawDemo.Load() == 0 {
+		t.Errorf("nach %d Wechseln: %d volle Listen, %d Demo-Listen gesehen", n, sawFull.Load(), sawDemo.Load())
 	}
 }
 
