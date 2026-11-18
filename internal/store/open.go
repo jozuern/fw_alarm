@@ -1,7 +1,3 @@
-// Package store ist die Ablage des Servers: der Zustand im Speicher hinter
-// atomaren Zeigern (Leser warten auf nichts), das Sichern auf die Platte
-// mit Zurücklesen, die Sperre "ein Programm pro Datenordner" und die
-// Regeln, worauf der Server startet (Spec §6.1–§6.3).
 package store
 
 import (
@@ -12,17 +8,12 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"fwalarm/internal/clock"
 	"fwalarm/internal/model"
 )
-
-// ErrEmergency: Notbetrieb – die Empfängerliste ist nicht lesbar, nichts
-// Festes wird geschrieben (Spec §6.3).
-var ErrEmergency = errors.New("Notbetrieb: die Empfängerliste ist nicht lesbar, nichts Festes wird gesichert")
 
 // StartMode: worauf der Server gestartet ist (Start-Tabelle, Spec §6.3).
 type StartMode int
@@ -57,36 +48,6 @@ type StartInfo struct {
 	RuntimeDiscarded, SessionsDiscarded bool
 	LockUnavailable                     bool      // Sperre ließ sich nicht anlegen (Ordner nicht beschreibbar)
 	LastLifebeat                        time.Time // null = unbekannt
-}
-
-// Store hält den Zustand im Speicher und sichert ihn. Die Schnappschüsse
-// hinter State, Runtime und Sessions sind unveränderlich (Abmachung, Spec
-// §6.2): Wer ändern will, arbeitet auf einer Kopie (Aufgabe 7: Update).
-type Store struct {
-	dir  string
-	fsys FS
-	clk  clock.Clock
-	log  *slog.Logger
-
-	state    atomic.Pointer[model.State]
-	runtime  atomic.Pointer[model.Runtime]
-	sessions atomic.Pointer[model.Sessions]
-
-	emergency bool          // beim Start festgelegt, ändert sich danach nie
-	rescue    *model.Rescue // Not-Kopie: nur im Notbetrieb, einmal beim Start gelesen
-
-	// Ein Sichern je Datei zur Zeit. stateMu schützt auch stateOnDisk:
-	// state.json auf der Platte ist die lesbare (beim Start gelesen oder
-	// von diesem Prozess geschrieben) – nur dann wird sie zur Vorfassung.
-	stateMu     sync.Mutex
-	stateOnDisk bool
-	runtimeMu   sync.Mutex
-	sessionsMu  sync.Mutex
-	rescueMu    sync.Mutex
-	saved       saveHealth
-
-	lockMu  sync.Mutex
-	release func() error // server.lock; nil = nicht angelegt oder schon freigegeben
 }
 
 // Open öffnet den Datenordner dir: Sperre server.lock (bis Close), dann
@@ -139,19 +100,6 @@ func (s *Store) Close(ctx context.Context) error {
 	s.release = nil
 	return err
 }
-
-// State liefert den festen Zustand – Schnappschuss, nie nil. Im Notbetrieb
-// ein leerer Zustand (Listen-Version 0).
-func (s *Store) State() *model.State { return s.state.Load() }
-
-// Runtime liefert die flüchtigen Daten – Schnappschuss, nie nil.
-func (s *Store) Runtime() *model.Runtime { return s.runtime.Load() }
-
-// Sessions liefert die Sitzungen – Schnappschuss, nie nil.
-func (s *Store) Sessions() *model.Sessions { return s.sessions.Load() }
-
-// Emergency: läuft der Server im Notbetrieb?
-func (s *Store) Emergency() bool { return s.emergency }
 
 // docStatus: was beim Lesen einer Datei herauskam.
 type docStatus int
@@ -250,6 +198,22 @@ func (s *Store) openState(now time.Time, info *StartInfo) {
 		info.Mode = StartEmergency
 	}
 
+	// Ein älteres Schema wird nur angehoben, wenn sein Original vollständig
+	// abgelegt ist – sonst Notbetrieb statt eines Anhebens ohne Original.
+	var start stateRead // die Datei, auf der gestartet wird
+	switch info.Mode {
+	case StartNormal:
+		start = cur
+	case StartFallback:
+		start = prev
+	}
+	if r := start; r.lifted {
+		if err := s.keepOriginal(r); err != nil {
+			s.log.Error("Original des älteren Schemas nicht ablegbar – kein Anheben, Notbetrieb", "schema", r.from, "err", err)
+			info.Mode = StartEmergency
+		}
+	}
+
 	if info.Mode == StartEmergency {
 		s.emergency = true
 		s.state.Store(model.NewState())
@@ -265,11 +229,13 @@ func (s *Store) openState(now time.Time, info *StartInfo) {
 
 	switch info.Mode {
 	case StartNormal:
-		s.stateOnDisk = true
+		s.stateBytes = cur.raw
 		s.repairSameFile(cur.raw)
 		s.state.Store(cur.doc)
 		if cur.lifted {
-			s.saveLifted(cur, cur.doc)
+			if err := s.saveState(cur.doc); err != nil {
+				s.log.Error("angehobener Zustand nicht gesichert – gilt aus dem Speicher", "err", err)
+			}
 		}
 	case StartFallback:
 		s.log.Error("state.json nicht lesbar – Start auf der Vorfassung", "state.json", cur.describe())
@@ -282,9 +248,7 @@ func (s *Store) openState(now time.Time, info *StartInfo) {
 		st.Rewind(model.RewindPrev, now)
 		info.Rewound, info.RewindSource = true, model.RewindPrev
 		s.state.Store(st)
-		if prev.lifted {
-			s.saveLifted(prev, st)
-		} else if err := s.saveState(st); err != nil {
+		if err := s.saveState(st); err != nil {
 			s.log.Error("Zustand nach dem Rückfall nicht gesichert – gilt aus dem Speicher", "err", err)
 		}
 	case StartFresh:
@@ -347,34 +311,24 @@ func isTrace(name string) bool {
 	return false
 }
 
-// saveLifted sichert einen aus einem älteren Schema angehobenen Zustand –
-// erst, wenn das Original einmal als state.schema-<n>.json abgelegt ist
-// (sonst gälte er nur aus dem Speicher, bis ein Sichern gelingt).
-func (s *Store) saveLifted(r stateRead, st *model.State) {
-	if err := s.keepOriginal(r); err != nil {
-		s.log.Error("Original des älteren Schemas nicht ablegbar – angehobener Zustand nicht gesichert", "schema", r.from, "err", err)
-		return
-	}
-	if err := s.saveState(st); err != nil {
-		s.log.Error("angehobener Zustand nicht gesichert – gilt aus dem Speicher", "err", err)
-	}
-}
-
 // keepOriginal legt das Original eines älteren Schemas EINMAL als
-// state.schema-<n>.json ab; ein schon abgelegtes wird nie überschrieben.
+// state.schema-<n>.json ab – über Temp-Datei, Zurücklesen und Umbenennen
+// (writeDoc, die Bytes unverändert): Weil das Umbenennen unteilbar ist,
+// heißt "die Datei ist da" auch "sie ist vollständig". Eine schon
+// abgelegte, nicht leere Datei wird nie überschrieben; ein Ordner oder eine
+// leere Datei unter dem Namen zählt nicht als abgelegt – dann ein Fehler.
 func (s *Store) keepOriginal(r stateRead) error {
-	name := s.path(fmt.Sprintf("state.schema-%d.json", r.from))
-	_, err := s.fsys.Stat(name)
-	if err == nil {
+	name := fmt.Sprintf("state.schema-%d.json", r.from)
+	fi, err := s.fsys.Stat(s.path(name))
+	switch {
+	case err == nil && fi.Mode().IsRegular() && fi.Size() > 0:
 		return nil
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
+	case err == nil:
+		return fmt.Errorf("unter %s liegt kein vollständiges Original", name)
+	case !errors.Is(err, fs.ErrNotExist):
 		return err
 	}
-	if err := s.fsys.WriteFileSync(name, r.raw); err != nil {
-		return err
-	}
-	return s.fsys.SyncDir(s.dir)
+	return s.writeDoc(name, r.raw, func(b []byte) ([]byte, error) { return b, nil })
 }
 
 // repairSameFile: Sind state.json und state.prev.json dieselbe Datei (ein
@@ -425,51 +379,6 @@ func (s *Store) moveAside(name, base string, now time.Time) error {
 		return s.fsys.SyncDir(s.dir)
 	}
 	return fmt.Errorf("kein freier Name für %s", stem)
-}
-
-// openVolatile liest runtime.json und sessions.json. Unlesbar → beiseite
-// legen, leer anfangen, Merker im StartInfo; ein älteres Schema ohne
-// Umstellung zählt als unlesbar. Auch im Notbetrieb (Anmelden geht weiter).
-func (s *Store) openVolatile(now time.Time, info *StartInfo) {
-	for _, name := range []string{fileRuntime + tmpSuffix, fileSessions + tmpSuffix, fileSelfTest} {
-		s.dropTmp(s.path(name))
-	}
-	rt, discarded := readVolatile(s, fileRuntime, "runtime", model.DecodeRuntime, runtimeMigrations, now)
-	if rt == nil {
-		rt = model.NewRuntime()
-	}
-	info.RuntimeDiscarded = discarded
-	if rt.LifebeatAt > 0 {
-		info.LastLifebeat = time.Unix(rt.LifebeatAt, 0)
-	}
-	s.runtime.Store(rt)
-
-	ss, discarded := readVolatile(s, fileSessions, "sessions", model.DecodeSessions, sessionsMigrations, now)
-	if ss == nil {
-		ss = model.NewSessions()
-	}
-	info.SessionsDiscarded = discarded
-	s.sessions.Store(ss)
-}
-
-// readVolatile liest ein flüchtiges Dokument; nil ohne discarded = fehlt.
-func readVolatile[T any](s *Store, name, base string, decode func([]byte) (*T, error),
-	table map[int]func([]byte) ([]byte, error), now time.Time) (doc *T, discarded bool) {
-	raw, err := s.fsys.ReadFile(s.path(name))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false
-	}
-	if err == nil {
-		var d *T
-		if d, _, _, _, err = decodeDoc(raw, decode, table); err == nil {
-			return d, false
-		}
-	}
-	s.log.Error(name+" nicht lesbar – leer angefangen", "err", err)
-	if err := s.moveAside(name, base, now); err != nil {
-		s.log.Error(name+" nicht beiseitelegbar", "err", err)
-	}
-	return nil, true
 }
 
 // CheckState liest state.json aus dir streng (fw-alarm check-state, Ende

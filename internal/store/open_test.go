@@ -5,10 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"fwalarm/internal/clock"
 	"fwalarm/internal/model"
 	"fwalarm/internal/store"
 	"fwalarm/internal/store/storetest"
@@ -62,6 +66,62 @@ func TestStartTable(t *testing.T) {
 		}
 		if !same(t, stateIn(f, "state.json"), model.NewState()) {
 			t.Error("leerer Zustand nicht gesichert")
+		}
+	})
+
+	t.Run("Ordner fehlt und lässt sich nicht anlegen → Neuanfang im Speicher", func(t *testing.T) {
+		f := storetest.New()
+		f.ReadOnly(&fs.PathError{Op: "mkdir", Path: dir, Err: fs.ErrPermission})
+		s, info := open(t, f)
+		if info.Mode != store.StartFresh || s.Emergency() || !info.LockUnavailable {
+			t.Fatalf("Start: %s, %+v", mode(info.Mode), info)
+		}
+		if !same(t, s.State(), model.NewState()) {
+			t.Errorf("Zustand: %+v", s.State())
+		}
+		if f.IsDir(dir) || len(f.Names()) != 0 {
+			t.Errorf("angelegt: %v", f.Names())
+		}
+	})
+
+	t.Run("state.json lesbar, Vorfassung mit neuerem Schema → normal", func(t *testing.T) {
+		f := storetest.New()
+		plant(t, f, "state.json", sample(12))
+		f.Put(at("state.prev.json"), schemaDoc(t, sample(11), 2))
+		before := files(f)
+		s, info := open(t, f)
+		if info.Mode != store.StartNormal || s.Emergency() || !same(t, s.State(), sample(12)) {
+			t.Errorf("Start: %s, Version %d", mode(info.Mode), s.State().KeysVersion)
+		}
+		if after := files(f); fmt.Sprint(after) != fmt.Sprint(before) {
+			t.Error("Dateien verändert")
+		}
+	})
+
+	t.Run("Rückfall auf eine Vorfassung älteren Schemas mit Umstellung", func(t *testing.T) {
+		defer store.SetMigration("state", 0, func(b []byte) ([]byte, error) {
+			return bytes.Replace(b, []byte(`"schema": 0,`), []byte(`"schema": 1,`), 1), nil
+		})()
+		f := storetest.New()
+		f.Put(at("state.json"), garbage)
+		older := schemaDoc(t, sample(12), 0)
+		f.Put(at("state.prev.json"), older)
+		s, info := open(t, f)
+		if info.Mode != store.StartFallback || !info.Rewound {
+			t.Fatalf("Start: %s", mode(info.Mode))
+		}
+		st := s.State()
+		if !sameList(st, sample(12)) || st.KeysVersion != 1012 || st.Schema != model.Schema {
+			t.Errorf("Zustand: Version %d, Schema %d", st.KeysVersion, st.Schema)
+		}
+		if got, _ := f.Get(at("state.schema-0.json")); !bytes.Equal(got, older) {
+			t.Errorf("Original der Vorfassung nicht abgelegt: %v", f.Names())
+		}
+		if !same(t, stateIn(f, "state.json"), st) {
+			t.Error("angehobener, zurückgesetzter Zustand nicht gesichert")
+		}
+		if got, _ := f.Get(at("state.prev.json")); !bytes.Equal(got, older) {
+			t.Error("Vorfassung verändert")
 		}
 	})
 
@@ -127,6 +187,15 @@ func TestStartTable(t *testing.T) {
 		}},
 		{"state.json Schema neuer, Vorfassung fehlt", func(f *storetest.FaultFS) { f.Put(at("state.json"), schemaDoc(t, sample(12), 2)) }},
 		{"beide fehlen, aber Spuren", func(f *storetest.FaultFS) { f.Put(at("history.jsonl"), []byte(`{"event":"key_added"}`+"\n")) }},
+		{"state.json fehlt, Vorfassung kaputt", func(f *storetest.FaultFS) { f.Put(at("state.prev.json"), garbage) }},
+		{"state.json fehlt, Vorfassung kaputt, dazu Spuren", func(f *storetest.FaultFS) {
+			f.Put(at("state.prev.json"), garbage)
+			f.Put(at("runtime.json"), doc(t, model.NewRuntime()))
+		}},
+		{"state.json kaputt, Vorfassung mit neuerem Schema", func(f *storetest.FaultFS) {
+			f.Put(at("state.json"), garbage)
+			f.Put(at("state.prev.json"), schemaDoc(t, sample(12), 2))
+		}},
 		{"state.json ist ein Ordner, Vorfassung kaputt", func(f *storetest.FaultFS) {
 			f.PutDir(at("state.json"))
 			f.Put(at("state.json", "x"), []byte("x"))
@@ -313,16 +382,46 @@ func TestMigrationKeepsOriginal(t *testing.T) {
 		t.Errorf("abgelegtes Original überschrieben: %s", got)
 	}
 
-	// Lässt sich das Original nicht ablegen, wird state.json nicht ersetzt.
-	h := storetest.New()
-	h.Put(at("state.json"), orig)
-	h.Fail(at("state.schema-0.json"), errors.New("Platte voll"))
-	s, info = open(t, h)
-	if info.Mode != store.StartNormal || !same(t, s.State(), sample(12)) {
-		t.Errorf("Start ohne abgelegtes Original: %s", mode(info.Mode))
-	}
-	if got, _ := h.Get(at("state.json")); !bytes.Equal(got, orig) {
-		t.Error("state.json ersetzt, obwohl das Original nicht abgelegt ist")
+	// Lässt sich das Original nicht vollständig ablegen, wird nicht
+	// angehoben: Notbetrieb statt eines Anhebens ohne Original – nichts
+	// wird gesichert, state.json bleibt das Original. Abgelegt wird über
+	// Temp-Datei und Umbenennen; eine Datei unter dem Namen zählt nur, wenn
+	// sie eine nicht leere Datei ist (Umbenennen ist unteilbar).
+	for _, c := range []struct {
+		name  string
+		setup func(*storetest.FaultFS)
+	}{
+		{"Platte voll", func(f *storetest.FaultFS) {
+			f.Fail(at("state.schema-0.json.tmp"), errors.New("Platte voll"))
+		}},
+		{"kurzes Schreiben", func(f *storetest.FaultFS) {
+			f.ShortWrite(at("state.schema-0.json.tmp"), len(orig)/2)
+		}},
+		{"Umbenennen scheitert", func(f *storetest.FaultFS) {
+			f.Fail(at("state.schema-0.json"), errors.New("Platte voll"))
+		}},
+		{"Ordner unter dem Namen", func(f *storetest.FaultFS) { f.PutDir(at("state.schema-0.json")) }},
+		{"leere Datei unter dem Namen", func(f *storetest.FaultFS) { f.Put(at("state.schema-0.json"), nil) }},
+	} {
+		h := storetest.New()
+		h.Put(at("state.json"), orig)
+		c.setup(h)
+		s, info = open(t, h)
+		if info.Mode != store.StartEmergency || !s.Emergency() {
+			t.Errorf("%s: Start %s", c.name, mode(info.Mode))
+		}
+		if got, _ := h.Get(at("state.json")); !bytes.Equal(got, orig) {
+			t.Errorf("%s: state.json ersetzt, obwohl das Original nicht abgelegt ist", c.name)
+		}
+		if _, ok := h.Get(at("state.prev.json")); ok {
+			t.Errorf("%s: Vorfassung angelegt – es wurde angehoben gesichert", c.name)
+		}
+		if got, ok := h.Get(at("state.schema-0.json")); ok && len(got) > 0 && !bytes.Equal(got, orig) {
+			t.Errorf("%s: unvollständiges Original liegt da: %q", c.name, got)
+		}
+		if _, ok := h.Get(at("state.schema-0.json.tmp")); ok {
+			t.Errorf("%s: Temp-Datei übrig", c.name)
+		}
 	}
 
 	// Ohne Umstellung: älteres Schema = unlesbar.
@@ -521,6 +620,47 @@ func TestOpenOnUnwritableDir(t *testing.T) {
 	if !info.LockUnavailable || info.Mode != store.StartFallback || !sameList(s.State(), sample(12)) || s.State().KeysVersion != 1012 {
 		t.Errorf("Rückfall ohne Schreibrecht: %s, Version %d", mode(info.Mode), s.State().KeysVersion)
 	}
+
+	// Echter Ordner (Linux): Rechte 0500, noch keine server.lock. Die Sperre
+	// lässt sich nicht anlegen – der Start gelingt trotzdem, nie ErrLocked.
+	t.Run("echter Ordner", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Ordnerrechte wirken unter Windows nicht so")
+		}
+		if os.Geteuid() == 0 {
+			t.Skip("als root greifen Ordnerrechte nicht")
+		}
+		d := t.TempDir()
+		state := doc(t, sample(12))
+		if err := os.WriteFile(filepath.Join(d, "state.json"), state, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(d, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := os.Chmod(d, 0o700); err != nil {
+				t.Error(err)
+			}
+		})
+		s, info, err := store.Open(d, store.OSFS(), clock.NewFake(t0), quiet())
+		if err != nil || s == nil {
+			t.Fatalf("Open: %v", err)
+		}
+		t.Cleanup(func() { closeStore(t, s) })
+		if !info.LockUnavailable || info.Mode != store.StartNormal || !same(t, s.State(), sample(12)) {
+			t.Errorf("Start: %s, %+v", mode(info.Mode), info)
+		}
+		if _, err := os.Stat(filepath.Join(d, "server.lock")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("server.lock: %v", err)
+		}
+		if err := s.SaveState(sample3(13)); err == nil {
+			t.Error("Sichern in einem nicht beschreibbaren Ordner gelungen")
+		}
+		if b, err := os.ReadFile(filepath.Join(d, "state.json")); err != nil || !bytes.Equal(b, state) {
+			t.Errorf("state.json verändert: %v", err)
+		}
+	})
 }
 
 // CheckState verlangt eine lesbare state.json – die Vorfassung zählt nicht.

@@ -23,7 +23,7 @@ func syncDir(dir string) error {
 // geöffneten Datei: Schließen gibt sie frei, das Ende des Prozesses auch.
 // Zwei Öffnungen im selben Prozess sperren einander ebenfalls aus.
 func lockFile(name string) (func() error, error) {
-	f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o600)
+	f, err := openLockFile(name)
 	if err != nil {
 		return nil, err
 	}

@@ -96,6 +96,34 @@ func TestBehavesLikeOSFS(t *testing.T) {
 			names, err := fsys.ReadDir(d)
 			return fmt.Sprint(names), err
 		}},
+		{"fehlenden Ordner durchsehen", func(fsys store.FS, d string) (string, error) {
+			names, err := fsys.ReadDir(p(d, "ohne"))
+			return fmt.Sprint(len(names), errors.Is(err, errNotExist)), nil
+		}},
+		{"in einen fehlenden Ordner schreiben", func(fsys store.FS, d string) (string, error) {
+			err := fsys.WriteFileSync(p(d, "ohne", "x"), []byte("x"))
+			return fmt.Sprint(errors.Is(err, errNotExist)), nil
+		}},
+		{"in einem fehlenden Ordner anhängen", func(fsys store.FS, d string) (string, error) {
+			err := fsys.AppendSync(p(d, "ohne", "x"), []byte("x"))
+			return fmt.Sprint(errors.Is(err, errNotExist)), nil
+		}},
+		{"in einen fehlenden Ordner umbenennen", func(fsys store.FS, d string) (string, error) {
+			err := fsys.Rename(p(d, "a"), p(d, "ohne", "a"))
+			a, _ := read(fsys, d, "a")
+			return fmt.Sprint(err != nil, a), nil
+		}},
+		{"in einen fehlenden Ordner verweisen", func(fsys store.FS, d string) (string, error) {
+			return "", fsys.Link(p(d, "a"), p(d, "ohne", "b"))
+		}},
+		{"in einem fehlenden Ordner sperren", func(fsys store.FS, d string) (string, error) {
+			_, err := fsys.Lock(p(d, "ohne", "server.lock"))
+			return fmt.Sprint(errors.Is(err, errNotExist), errors.Is(err, store.ErrLocked)), nil
+		}},
+		{"der fehlende Ordner bleibt fehlend", func(fsys store.FS, d string) (string, error) {
+			_, err := fsys.Stat(p(d, "ohne"))
+			return fmt.Sprint(errors.Is(err, errNotExist)), nil
+		}},
 		{"Datei entfernen", func(fsys store.FS, d string) (string, error) {
 			if err := fsys.Remove(p(d, "b")); err != nil {
 				return "", err
@@ -136,6 +164,9 @@ func TestFaults(t *testing.T) {
 	f := storetest.New()
 	a := filepath.FromSlash("/d/a")
 	boom := errors.New("kaputt")
+	if err := f.MkdirAll(filepath.FromSlash("/d")); err != nil {
+		t.Fatal(err)
+	}
 
 	f.Fail(a, boom)
 	if err := f.WriteFileSync(a, []byte("x")); !errors.Is(err, boom) {
@@ -214,6 +245,48 @@ func TestFaults(t *testing.T) {
 	f.NoLinks(true)
 	if err := f.Link(a, filepath.FromSlash("/d/c")); err == nil {
 		t.Error("NoLinks: Link gelungen")
+	}
+	f.Heal()
+
+	// Absturz: ab dem n-ten Aufruf scheitert alles; danach sieht ein neuer
+	// Prozess dieselben Dateien, Hardlinks verbunden, ohne Fehler und Sperren.
+	b := filepath.FromSlash("/d/b")
+	if err := f.Link(a, b); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Lock(filepath.FromSlash("/d/server.lock")); err != nil {
+		t.Fatal(err)
+	}
+	f.CrashAt(f.Calls() + 2)
+	if err := f.WriteFileSync(filepath.FromSlash("/d/vorher"), []byte("1")); err != nil {
+		t.Errorf("vor dem Absturz: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := f.WriteFileSync(filepath.FromSlash("/d/nachher"), []byte("2")); !errors.Is(err, storetest.ErrInjected) {
+			t.Errorf("nach dem Absturz: %v", err)
+		}
+	}
+	g := f.AfterCrash()
+	if got, ok := g.Get(filepath.FromSlash("/d/vorher")); !ok || string(got) != "1" {
+		t.Errorf("AfterCrash: vorher %q", got)
+	}
+	if _, ok := g.Get(filepath.FromSlash("/d/nachher")); ok {
+		t.Error("AfterCrash: nachher geschrieben")
+	}
+	if !g.SameFile(a, b) {
+		t.Error("AfterCrash: Hardlink getrennt")
+	}
+	g.Put(a, []byte("neu"))
+	if got, _ := g.Get(b); string(got) != "neu" {
+		t.Errorf("AfterCrash: Hardlink nicht verbunden: %q", got)
+	}
+	if got, _ := f.Get(a); string(got) == "neu" {
+		t.Error("AfterCrash teilt Dateien mit dem Original")
+	}
+	if release, err := g.Lock(filepath.FromSlash("/d/server.lock")); err != nil {
+		t.Errorf("AfterCrash: Sperre hängt noch: %v", err)
+	} else if err := release(); err != nil {
+		t.Error(err)
 	}
 	if !slices.Contains(f.Names(), a) {
 		t.Errorf("Names: %v", f.Names())

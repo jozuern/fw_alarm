@@ -89,12 +89,13 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
   deutsche Fehlertexte beginnen mit Hauptwörtern). Kommentare deutsch mit
   Umlauten, Bezeichner englisch.
 - **GitHub prüft jeden Push auf `main`** und einmal pro Woche
-  (`.github/workflows/ci.yml`): Job „go“ – gofmt, `go vet`, staticcheck,
-  govulncheck, `go test -race` (läuft auf dem PC mangels C-Compiler nicht)
-  und Bau für `linux/arm64` und `windows/amd64`; Job „node“ – die Node-Tests
-  unter `tests/dashboard/`, `tests/server/` und `tests/watcher/` (die
-  Server-Tests unter `tests/backend/` noch nicht). Nur Leserechte, keine
-  Geheimnisse, kein Einspielen; die Aktionen sind an feste Stände gebunden.
+  (`.github/workflows/ci.yml`): Job „go“ – gofmt, `go mod tidy -diff`,
+  `go vet`, staticcheck, govulncheck, `go test -race` (läuft auf dem PC
+  mangels C-Compiler nicht) und Bau für `linux/arm64` und `windows/amd64`;
+  Job „node“ – die Node-Tests unter `tests/dashboard/`, `tests/server/` und
+  `tests/watcher/` (die Server-Tests unter `tests/backend/` noch nicht). Nur
+  Leserechte, keine Geheimnisse, kein Einspielen; die Aktionen sind an feste
+  Stände gebunden.
 - Zeilenenden (`.gitattributes`): Go-Dateien, `tools/*.sh`, `.github/` und
   alle eingebetteten Text-Dateien (`assets/app/`, `app.css`, `favicon.svg`,
   `manifest.json`) LF; `vendor/`, `testdata/`, `tests/backend/fixtures/`

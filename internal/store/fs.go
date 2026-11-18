@@ -109,3 +109,20 @@ func (osFS) ReadDir(dir string) ([]string, error) {
 }
 
 func (osFS) Lock(name string) (func() error, error) { return lockFile(name) }
+
+// openLockFile öffnet server.lock zum Sperren: schreibend, bei Bedarf
+// angelegt. Sind nur die Rechte zum Schreiben weg (Störung 10/2026: Rechte
+// nach einem Update geändert), genügt lesend – flock und LockFileEx sperren
+// auch dann, und ein zweiter Prozess bleibt ausgesperrt. Nur wenn sie sich
+// weder öffnen noch anlegen lässt, ist die Sperre nicht zu haben.
+func openLockFile(name string) (*os.File, error) {
+	f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o600)
+	if errors.Is(err, fs.ErrPermission) {
+		if ro, rerr := os.Open(name); rerr == nil {
+			return ro, nil
+		}
+		// Auch lesend nicht (fehlt, oder keinerlei Rechte): es bleibt beim
+		// ersten Fehler, er nennt den eigentlichen Grund.
+	}
+	return f, err
+}

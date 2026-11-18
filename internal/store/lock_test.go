@@ -38,6 +38,47 @@ func TestLockSecondOpen(t *testing.T) {
 	}
 }
 
+// Echter Ordner: server.lock ist da, aber nur noch lesbar (Rechte nach
+// einem Update geändert – Review Focus 5). Gesperrt wird trotzdem, über
+// einen lesenden Zugriff: Ein zweites Open bricht mit ErrLocked ab. Unter
+// Linux Dateirechte 0400 (als root wirkungslos – dann übersprungen), unter
+// Windows das Schreibschutz-Attribut.
+func TestLockOnReadOnlyFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("als root greifen Dateirechte nicht")
+	}
+	d := t.TempDir()
+	lock := filepath.Join(d, "server.lock")
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(lock, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(lock, 0o600); err != nil {
+			t.Error(err)
+		}
+	})
+	if f, err := os.OpenFile(lock, os.O_RDWR, 0); err == nil {
+		_ = f.Close() // nur die Probe: Schreibschutz wirkt hier nicht
+		t.Skip("server.lock lässt sich trotz 0400 schreibend öffnen")
+	}
+
+	first, info := openIn(t, d, store.OSFS())
+	if info.LockUnavailable {
+		t.Fatal("schreibgeschützte server.lock: keine Sperre")
+	}
+	second, _, err := store.Open(d, store.OSFS(), clock.NewFake(t0), quiet())
+	if !errors.Is(err, store.ErrLocked) || second != nil {
+		t.Fatalf("zweites Open: %v", err)
+	}
+	closeStore(t, first)
+	if _, info := openIn(t, d, store.OSFS()); info.LockUnavailable {
+		t.Error("nach Close: keine Sperre")
+	}
+}
+
 // lockHelperEnv: Ist sie gesetzt, spielt der Testprozess den ANDEREN
 // Prozess, der server.lock im genannten Ordner hält.
 const lockHelperEnv = "FW_STORE_LOCK_HELPER"

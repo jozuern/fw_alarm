@@ -191,7 +191,7 @@ func (s *Store) writeDoc(name string, data []byte, reread func([]byte) ([]byte, 
 		return fmt.Errorf("%s umbenennen: %w", name+tmpSuffix, err)
 	}
 	if name == fileState {
-		s.stateOnDisk = true // was dort liegt, ist eben streng zurückgelesen
+		s.stateBytes = data // was dort liegt, ist eben streng zurückgelesen
 	}
 	if err := s.fsys.SyncDir(s.dir); err != nil {
 		return fmt.Errorf("Datenordner sichern: %w", err)
@@ -201,26 +201,26 @@ func (s *Store) writeDoc(name string, data []byte, reread func([]byte) ([]byte, 
 
 // keepPrev hält vor dem Umbenennen die bisherige state.json als
 // state.prev.json fest (Verweis auf dieselbe Datei, notfalls Kopie) – aber
-// nur, wenn es sie gibt UND sie die lesbare ist, die der Start gelesen oder
-// dieser Prozess geschrieben hat (stateOnDisk). Beim allerersten Sichern,
-// beim Sichern nach einem Rückfall und wenn eine unlesbare state.json nicht
-// beiseitegelegt werden konnte, bleibt eine vorhandene Vorfassung
-// unangetastet, bis die neue state.json liegt. So fehlen state.json und
+// nur, wenn dort genau der Stand liegt, den dieser Prozess zuletzt gelesen
+// oder geschrieben hat (stateBytes, Byte für Byte verglichen). Beim
+// allerersten Sichern, nach einem Rückfall und wenn eine unlesbare
+// state.json nicht beiseitegelegt werden konnte, gibt es keinen solchen
+// Stand; hat jemand state.json von außen geändert, entfernt oder
+// unlesbar gemacht, gleicht sie ihm nicht. Dann bleibt die vorhandene
+// Vorfassung unangetastet, und das Umbenennen ersetzt state.json durch den
+// Stand im Speicher (er ist die Wahrheit). So fehlen state.json und
 // state.prev.json nie beide, und nie sind beide unlesbar.
 func (s *Store) keepPrev() error {
-	if !s.stateOnDisk {
+	if s.stateBytes == nil {
 		return nil
 	}
 	cur, prev := s.path(fileState), s.path(filePrev)
-	fi, err := s.fsys.Stat(cur)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil // von außen entfernt: nichts festzuhalten, die Vorfassung bleibt
-	}
-	if err != nil {
-		return err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil // keine Datei mehr (von außen ersetzt): die Vorfassung bleibt
+	data, err := s.fsys.ReadFile(cur)
+	if err != nil || !bytes.Equal(data, s.stateBytes) {
+		// Der Lesefehler zählt nicht: Er heißt nur "nicht der eigene Stand".
+		s.log.Warn("state.json ist nicht der zuletzt gelesene oder geschriebene Stand – Vorfassung bleibt, state.json wird ersetzt",
+			"datei", fileState, "vorfassung", filePrev)
+		return nil
 	}
 	if err := s.fsys.Remove(prev); err != nil {
 		return err
@@ -229,11 +229,8 @@ func (s *Store) keepPrev() error {
 		return nil
 	}
 	// Kein Verweis möglich (Dateisystem ohne Hardlinks …) – der Fehler
-	// zählt nicht, die Kopie tritt an seine Stelle.
-	data, err := s.fsys.ReadFile(cur)
-	if err != nil {
-		return err
-	}
+	// zählt nicht, die Kopie der eben verglichenen Bytes tritt an seine
+	// Stelle.
 	return s.fsys.WriteFileSync(prev, data)
 }
 

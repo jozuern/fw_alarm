@@ -199,77 +199,90 @@ func TestSaveAfterFallback(t *testing.T) {
 // unlesbare Dateien, und nie einen Neuanfang, wo vorher ein Zustand lag.
 // Dazu ein Rückfall, bei dem sich die kaputte state.json nicht beiseitelegen
 // lässt – zwei Fehler zugleich, der Fall, für den das Sichern eine
-// vorhandene state.json nur dann zur Vorfassung macht, wenn sie die lesbare
-// ist. Jede Lage einmal mit und einmal ohne Hardlinks (dann sichert die
-// Kopie die Vorfassung).
+// vorhandene state.json nur dann zur Vorfassung macht, wenn sie der eigene
+// Stand ist. Jede Lage mit und ohne Hardlinks (dann sichert die Kopie die
+// Vorfassung), und jede auch als Absturz: Ab dem n-ten Aufruf scheitert
+// alles, kein Aufräumen läuft mehr, der Neustart sieht die liegenden Dateien.
 func TestStateNeverMissing(t *testing.T) {
 	walked := map[string]int{}
-	for _, noLinks := range []bool{false, true} {
-		suffix := ""
-		if noLinks {
-			suffix = " ohne Hardlinks"
-		}
+	for _, crash := range []bool{false, true} {
+		for _, noLinks := range []bool{false, true} {
+			suffix := ""
+			if noLinks {
+				suffix += " ohne Hardlinks"
+			}
+			if crash {
+				suffix += ", Absturz"
+			}
 
-		// normal: state.json und Vorfassung lesbar, ein Sichern.
-		before, after := sample(12), sample3(13)
-		walked["normal"+suffix] = walk(t, "normal"+suffix, func(f *storetest.FaultFS) {
-			plant(t, f, "state.json", before)
-			plant(t, f, "state.prev.json", sample(11))
-		}, func(t *testing.T, f *storetest.FaultFS) (*store.Store, func() error) {
-			s, info := open(t, f)
-			if info.Mode != store.StartNormal {
-				t.Fatalf("Start: %s", mode(info.Mode))
-			}
-			return s, func() error { return s.SaveState(after) }
-		}, noLinks, func(t *testing.T, f *storetest.FaultFS, saved error, re *store.Store, info store.StartInfo) {
-			if info.Mode != store.StartNormal {
-				t.Errorf("Neustart: %s", mode(info.Mode))
-			}
-			got := re.State()
-			if saved == nil && !same(t, got, after) || !same(t, got, before) && !same(t, got, after) {
-				t.Errorf("Neustart liest Version %d (Sichern: %v)", got.KeysVersion, saved)
-			}
-		})
-
-		// Neuanfang: leerer Ordner, das allererste Sichern beim Start.
-		walked["Neuanfang"+suffix] = walk(t, "Neuanfang"+suffix, func(*storetest.FaultFS) {},
-			nil, noLinks, func(t *testing.T, f *storetest.FaultFS, saved error, re *store.Store, info store.StartInfo) {
-				switch info.Mode {
-				case store.StartFresh:
-				case store.StartNormal:
-					if !same(t, re.State(), model.NewState()) {
-						t.Errorf("Neustart liest Version %d", re.State().KeysVersion)
-					}
-				default:
-					t.Errorf("Neustart: %s (Spuren hinterlassen: %v)", mode(info.Mode), f.Names())
+			// normal: state.json und Vorfassung lesbar, ein Sichern.
+			before, after := sample(12), sample3(13)
+			walked["normal"+suffix] = walk(t, "normal"+suffix, func(f *storetest.FaultFS) {
+				plant(t, f, "state.json", before)
+				plant(t, f, "state.prev.json", sample(11))
+			}, func(t *testing.T, f *storetest.FaultFS) (*store.Store, func() error) {
+				s, info := open(t, f)
+				if info.Mode != store.StartNormal {
+					t.Fatalf("Start: %s", mode(info.Mode))
+				}
+				return s, func() error { return s.SaveState(after) }
+			}, noLinks, crash, func(t *testing.T, f *storetest.FaultFS, saved error, re *store.Store, info store.StartInfo) {
+				if info.Mode != store.StartNormal {
+					t.Errorf("Neustart: %s", mode(info.Mode))
+				}
+				got := re.State()
+				if saved == nil && !same(t, got, after) || !same(t, got, before) && !same(t, got, after) {
+					t.Errorf("Neustart liest Version %d (Sichern: %v)", got.KeysVersion, saved)
 				}
 			})
 
-		// Rückfall: state.json kaputt, Vorfassung lesbar; Beiseitelegen,
-		// Rücksprung und das Sichern ohne state.json beim Start.
-		prev := sample(12)
-		walked["Rückfall"+suffix] = walk(t, "Rückfall"+suffix, func(f *storetest.FaultFS) {
-			f.Put(at("state.json"), garbage)
-			plant(t, f, "state.prev.json", prev)
-		}, nil, noLinks, fallbackCheck(prev))
+			// Neuanfang: leerer Ordner, das allererste Sichern beim Start.
+			walked["Neuanfang"+suffix] = walk(t, "Neuanfang"+suffix, func(*storetest.FaultFS) {},
+				nil, noLinks, crash, func(t *testing.T, f *storetest.FaultFS, saved error, re *store.Store, info store.StartInfo) {
+					switch info.Mode {
+					case store.StartFresh:
+					case store.StartNormal:
+						if !same(t, re.State(), model.NewState()) {
+							t.Errorf("Neustart liest Version %d", re.State().KeysVersion)
+						}
+					default:
+						t.Errorf("Neustart: %s (Spuren hinterlassen: %v)", mode(info.Mode), f.Names())
+					}
+				})
 
-		// Rückfall, bei dem sich die kaputte state.json nicht beiseitelegen
-		// lässt (dauerhafter Fehler) – dazu scheitert ein zweiter Aufruf.
-		// Die kaputte Datei darf dann nie zur Vorfassung werden.
-		walked["Rückfall, Beiseitelegen scheitert"+suffix] = walk(t, "Rückfall, Beiseitelegen scheitert"+suffix, func(f *storetest.FaultFS) {
-			f.Put(at("state.json"), garbage)
-			plant(t, f, "state.prev.json", prev)
-			f.Fail(at(fmt.Sprintf("state.corrupt-%d.json", t0.Unix())), errors.New("nicht beiseitelegbar"))
-		}, nil, noLinks, fallbackCheck(prev))
+			// Rückfall: state.json kaputt, Vorfassung lesbar; Beiseitelegen,
+			// Rücksprung und das Sichern ohne state.json beim Start.
+			prev := sample(12)
+			walked["Rückfall"+suffix] = walk(t, "Rückfall"+suffix, func(f *storetest.FaultFS) {
+				f.Put(at("state.json"), garbage)
+				plant(t, f, "state.prev.json", prev)
+			}, nil, noLinks, crash, fallbackCheck(prev))
+
+			// Rückfall, bei dem sich die kaputte state.json nicht beiseitelegen
+			// lässt (dauerhafter Fehler) – dazu scheitert ein zweiter Aufruf.
+			// Die kaputte Datei darf dann nie zur Vorfassung werden.
+			walked["Rückfall, Beiseitelegen scheitert"+suffix] = walk(t, "Rückfall, Beiseitelegen scheitert"+suffix, func(f *storetest.FaultFS) {
+				f.Put(at("state.json"), garbage)
+				plant(t, f, "state.prev.json", prev)
+				f.Fail(at(fmt.Sprintf("state.corrupt-%d.json", t0.Unix())), errors.New("nicht beiseitelegbar"))
+			}, nil, noLinks, crash, fallbackCheck(prev))
+		}
 	}
 	names := make([]string, 0, len(walked))
-	for k := range walked {
+	single, crashes := 0, 0
+	for k, n := range walked {
 		names = append(names, k)
+		if strings.HasSuffix(k, ", Absturz") {
+			crashes += n
+		} else {
+			single += n
+		}
 	}
 	sort.Strings(names)
 	for _, k := range names {
-		t.Logf("%s: %d Aufrufe der Reihe nach scheitern lassen", k, walked[k])
+		t.Logf("%s: %d Aufrufe", k, walked[k])
 	}
+	t.Logf("zusammen: %d einzelne Fehler, %d Absturzpunkte", single, crashes)
 }
 
 // fallbackCheck: Nach einem Rückfall findet der Neustart die Liste der
@@ -289,53 +302,72 @@ func fallbackCheck(prev *model.State) func(*testing.T, *storetest.FaultFS, error
 // walk lässt für eine Ausgangslage den n-ten Aufruf scheitern, n = 1, 2, …,
 // bis der Vorgang ohne den n-ten Aufruf auskommt; liefert die Zahl der
 // Aufrufe des Vorgangs. Ohne act ist der Vorgang der Start selbst (Open),
-// sonst das, was act nach einem Start ohne Fehler liefert. Nach jedem
+// sonst das, was act nach einem Start ohne Fehler liefert.
+//
+// Zwei Arten: crash = false – nur der n-te Aufruf scheitert, danach läuft
+// alles weiter (auch das Aufräumen); crash = true – der Prozess stürzt beim
+// n-ten Aufruf ab: Ab dort scheitert jeder Aufruf, und der Neustart sieht
+// die Dateien so, wie sie dann liegen (FaultFS.AfterCrash). Nach jedem
 // Durchgang: mindestens eine der beiden Zustandsdateien lesbar (sofern es
 // vorher eine gab), dann check auf einem neuen Start ohne Fehler.
 func walk(t *testing.T, name string, setup func(*storetest.FaultFS),
-	act func(*testing.T, *storetest.FaultFS) (*store.Store, func() error), noLinks bool,
+	act func(*testing.T, *storetest.FaultFS) (*store.Store, func() error), noLinks, crash bool,
 	check func(t *testing.T, f *storetest.FaultFS, saved error, re *store.Store, info store.StartInfo)) int {
 	t.Helper()
+	what := "Aufruf"
+	if crash {
+		what = "Absturz bei Aufruf"
+	}
 	for n := 1; n < 500; n++ {
 		f := storetest.New()
 		setup(f)
 		hadState := stateIn(f, "state.json") != nil || stateIn(f, "state.prev.json") != nil
 		f.NoLinks(noLinks)
+		fail := f.FailCall
+		if crash {
+			fail = f.CrashAt
+		}
 		var s *store.Store
 		var saved error
 		var base int
 		if act == nil {
 			base = f.Calls()
-			f.FailCall(base + n)
+			fail(base + n)
 			var err error
 			s, _, err = store.Open(dir, f, clock.NewFake(t0), quiet())
 			if err != nil {
-				t.Fatalf("%s, Aufruf %d: Open: %v", name, n, err)
+				t.Fatalf("%s, %s %d: Open: %v", name, what, n, err)
 			}
 		} else {
 			var save func() error
 			s, save = act(t, f)
 			base = f.Calls()
-			f.FailCall(base + n)
+			fail(base + n)
 			saved = save()
 		}
 		reached := f.Calls() >= base+n
-		f.Heal()
+		failed := callAt(f, base+n)
+		view := f // nach einem einzelnen Fehler: dieselbe Platte, Fehler zurückgenommen
+		if crash {
+			view = f.AfterCrash() // der abgestürzte Prozess hält nichts mehr
+		} else {
+			f.Heal()
+		}
 		if err := s.Close(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		if hadState && stateIn(f, "state.json") == nil && stateIn(f, "state.prev.json") == nil {
-			t.Errorf("%s, Aufruf %d (%v): weder state.json noch state.prev.json lesbar: %v",
-				name, n, callAt(f, base+n), f.Names())
+		if hadState && stateIn(view, "state.json") == nil && stateIn(view, "state.prev.json") == nil {
+			t.Errorf("%s, %s %d (%v): weder state.json noch state.prev.json lesbar: %v",
+				name, what, n, failed, view.Names())
 		}
-		re, info, err := store.Open(dir, f, clock.NewFake(t0), quiet())
+		re, info, err := store.Open(dir, view, clock.NewFake(t0), quiet())
 		if err != nil {
-			t.Fatalf("%s, Aufruf %d: Neustart: %v", name, n, err)
+			t.Fatalf("%s, %s %d: Neustart: %v", name, what, n, err)
 		}
 		failedBefore := t.Failed()
-		check(t, f, saved, re, info)
+		check(t, view, saved, re, info)
 		if !failedBefore && t.Failed() {
-			t.Logf("%s, Aufruf %d gescheitert: %v", name, n, callAt(f, base+n))
+			t.Logf("%s, %s %d gescheitert: %v", name, what, n, failed)
 		}
 		if err := re.Close(context.Background()); err != nil {
 			t.Fatal(err)
@@ -377,6 +409,67 @@ func sameList(a, b *model.State) bool {
 		}
 	}
 	return true
+}
+
+// Jemand bearbeitet state.json an Ort und Stelle, während der Server läuft,
+// und verdirbt sie. Das nächste Sichern macht die fremde Fassung nicht zur
+// Vorfassung (die alte bleibt) und ersetzt sie durch den Stand im Speicher;
+// scheitert dabei ein Aufruf – auch das Umbenennen danach –, findet ein
+// Neustart trotzdem einen lesbaren Zustand.
+func TestForeignEditKeepsPrev(t *testing.T) {
+	before, prev, after := sample(12), sample(11), sample3(13)
+	setup := func(f *storetest.FaultFS) {
+		plant(t, f, "state.json", before)
+		plant(t, f, "state.prev.json", prev)
+	}
+	edit := func(t *testing.T, f *storetest.FaultFS) (*store.Store, func() error) {
+		s, info := open(t, f)
+		if info.Mode != store.StartNormal {
+			t.Fatalf("Start: %s", mode(info.Mode))
+		}
+		f.Put(at("state.json"), garbage) // an Ort und Stelle: derselbe inode
+		return s, func() error { return s.SaveState(after) }
+	}
+
+	f := storetest.New()
+	setup(f)
+	prevBytes, _ := f.Get(at("state.prev.json"))
+	_, save := edit(t, f)
+	if err := save(); err != nil {
+		t.Fatalf("Sichern: %v", err)
+	}
+	if got, _ := f.Get(at("state.prev.json")); !bytes.Equal(got, prevBytes) {
+		t.Errorf("Vorfassung ersetzt durch:\n%s", got)
+	}
+	if !same(t, stateIn(f, "state.json"), after) {
+		t.Error("state.json ist nicht der Stand im Speicher")
+	}
+	for _, c := range f.Log() {
+		if (c.Op == "Remove" || c.Op == "Link") && contains(c.Names, at("state.prev.json")) {
+			t.Errorf("Vorfassung angefasst: %v", c)
+		}
+	}
+
+	for _, c := range []struct{ noLinks, crash bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		name := fmt.Sprintf("fremd bearbeitet, ohne Hardlinks %v, Absturz %v", c.noLinks, c.crash)
+		n := walk(t, name, setup, edit, c.noLinks, c.crash,
+			func(t *testing.T, f *storetest.FaultFS, saved error, re *store.Store, info store.StartInfo) {
+				got := re.State()
+				switch info.Mode {
+				case store.StartNormal:
+					if !same(t, got, after) {
+						t.Errorf("Neustart normal, aber Version %d", got.KeysVersion)
+					}
+				case store.StartFallback:
+					if !sameList(got, prev) || got.KeysVersion != prev.KeysVersion+1000 {
+						t.Errorf("Rückfall, aber Version %d", got.KeysVersion)
+					}
+				default:
+					t.Errorf("Neustart: %s", mode(info.Mode))
+				}
+			})
+		t.Logf("%s: %d Aufrufe", name, n)
+	}
 }
 
 // Echter Ordner: ein nicht leerer Ordner unter state.json.tmp. Der Start

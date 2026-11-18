@@ -33,9 +33,13 @@ var ErrInjected = errors.New("storetest: eingebauter Fehler")
 //     lässt sich nicht entfernen.
 //   - Ein Ordner kann unter einem Dateinamen liegen; Schreiben dorthin und
 //     Lesen von dort scheitern.
+//   - In einem fehlenden Ordner lässt sich nichts anlegen (Schreiben,
+//     Umbenennen, Verweisen, Sperren: "fehlt"), und ReadDir eines fehlenden
+//     Ordners meldet "fehlt". Put und PutDir legen fehlende Ordner mit an.
 //
 // Fehler je Datei: Fail, Hang, ShortWrite, Mangle; für alles: FailCall,
-// ReadOnly, NoLinks. Heal nimmt alle Fehler zurück (Hänger nicht – die
+// CrashAt, ReadOnly, NoLinks; AfterCrash liefert, was ein neuer Prozess
+// danach auf der Platte fände. Heal nimmt alle Fehler zurück (Hänger nicht – die
 // gibt ihre release-Funktion frei).
 type FaultFS struct {
 	mu    sync.Mutex
@@ -45,6 +49,7 @@ type FaultFS struct {
 	calls    int
 	log      []Call
 	failAt   int
+	crashAt  int
 	fails    map[string]error
 	hangs    map[string]chan struct{}
 	short    map[string]int
@@ -164,6 +169,38 @@ func (f *FaultFS) FailCall(n int) {
 	f.failAt = n
 }
 
+// CrashAt: Ab dem n-ten Aufruf insgesamt scheitert jeder Aufruf mit
+// ErrInjected – der Prozess ist "abgestürzt": Nichts erreicht mehr die
+// Platte, auch kein Aufräumen danach. 0 nimmt das zurück.
+func (f *FaultFS) CrashAt(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.crashAt = n
+}
+
+// AfterCrash liefert eine neue FaultFS mit denselben Dateien und Ordnern
+// (Hardlinks bleiben untereinander verbunden) – ohne Fehler, Hänger,
+// Sperren und Log: was ein neuer Prozess nach einem Absturz vorfände.
+func (f *FaultFS) AfterCrash() *FaultFS {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	g := New()
+	copies := map[*inode]*inode{}
+	for name, nd := range f.nodes {
+		if nd.dir {
+			g.nodes[name] = &node{dir: true}
+			continue
+		}
+		c, ok := copies[nd.ino]
+		if !ok {
+			c = &inode{data: bytes.Clone(nd.ino.data), modTime: nd.ino.modTime}
+			copies[nd.ino] = c
+		}
+		g.nodes[name] = &node{ino: c}
+	}
+	return g
+}
+
 // ReadOnly: Jeder Aufruf, der etwas ändern würde (Writes, auch Lock),
 // scheitert mit err – ein Ordner ohne Schreibrecht. nil nimmt das zurück.
 func (f *FaultFS) ReadOnly(err error) {
@@ -179,8 +216,8 @@ func (f *FaultFS) NoLinks(on bool) {
 	f.noLinks = on
 }
 
-// Heal nimmt Fail, ShortWrite, Mangle, FailCall, ReadOnly und NoLinks
-// zurück.
+// Heal nimmt Fail, ShortWrite, Mangle, FailCall, CrashAt, ReadOnly und
+// NoLinks zurück.
 func (f *FaultFS) Heal() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -188,6 +225,7 @@ func (f *FaultFS) Heal() {
 	f.short = map[string]int{}
 	f.mangle = map[string]func([]byte) []byte{}
 	f.failAt = 0
+	f.crashAt = 0
 	f.readOnly = nil
 	f.noLinks = false
 }
@@ -214,11 +252,13 @@ func (f *FaultFS) Log() []Call {
 // ---- Dateien anlegen und ansehen (zählen nicht als Aufruf) ---------------
 
 // Put legt eine Datei an oder ersetzt ihren Inhalt (eine verbundene
-// Datei ändert sich mit).
+// Datei ändert sich mit); fehlende Ordner darüber entstehen mit – eine
+// Datei liegt immer in einem Ordner.
 func (f *FaultFS) Put(name string, data []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	name = clean(name)
+	f.mkParents(name)
 	if n, ok := f.nodes[name]; ok && !n.dir {
 		n.ino.data = bytes.Clone(data)
 		return
@@ -226,10 +266,11 @@ func (f *FaultFS) Put(name string, data []byte) {
 	f.nodes[name] = &node{ino: &inode{data: bytes.Clone(data)}}
 }
 
-// PutDir legt einen (leeren) Ordner an.
+// PutDir legt einen (leeren) Ordner an, samt fehlender Ordner darüber.
 func (f *FaultFS) PutDir(name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.mkParents(clean(name))
 	f.nodes[clean(name)] = &node{dir: true}
 }
 
@@ -275,7 +316,7 @@ func (f *FaultFS) begin(op string, writes bool, names ...string) (int, error) {
 	n := f.calls
 	f.log = append(f.log, Call{N: n, Op: op, Names: names})
 	var err error
-	if f.failAt == n {
+	if f.failAt == n || f.crashAt > 0 && n >= f.crashAt {
 		err = ErrInjected
 	}
 	var wait []chan struct{}
@@ -363,8 +404,8 @@ func (f *FaultFS) write(op, name string, data []byte, appendTo bool) error {
 	switch {
 	case ok && nd.dir:
 		err = pathErr("open", name, errIsDir)
-	case f.parentIsFile(name):
-		err = pathErr("open", name, errNotDir)
+	case f.parentErr(name) != nil:
+		err = pathErr("open", name, f.parentErr(name))
 	case !ok:
 		f.nodes[name] = &node{ino: &inode{data: data, modTime: f.stamp()}}
 	case appendTo:
@@ -381,6 +422,32 @@ func (f *FaultFS) write(op, name string, data []byte, appendTo bool) error {
 // stamp liefert eine Änderungszeit, die mit jedem Aufruf wächst.
 func (f *FaultFS) stamp() time.Time {
 	return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(f.calls) * time.Second)
+}
+
+// parentErr: Lässt sich unter name etwas anlegen? errNotDir, wenn darüber
+// eine Datei liegt; fs.ErrNotExist, wenn der Ordner darüber fehlt (wie
+// ENOENT). Die Wurzel gibt es immer.
+func (f *FaultFS) parentErr(name string) error {
+	if f.parentIsFile(name) {
+		return errNotDir
+	}
+	p := filepath.Dir(name)
+	if p == name || filepath.Dir(p) == p || p == "." {
+		return nil
+	}
+	if _, ok := f.nodes[p]; !ok {
+		return fs.ErrNotExist
+	}
+	return nil
+}
+
+// mkParents legt die fehlenden Ordner über name an (nur für Put/PutDir).
+func (f *FaultFS) mkParents(name string) {
+	for p := filepath.Dir(name); p != name; name, p = p, filepath.Dir(p) {
+		if _, ok := f.nodes[p]; !ok {
+			f.nodes[p] = &node{dir: true}
+		}
+	}
 }
 
 // parentIsFile: Liegt über name eine Datei statt eines Ordners?
@@ -423,8 +490,8 @@ func (f *FaultFS) Rename(from, to string) error {
 		err = errIsDir // eine Datei oder einen Ordner nie über einen Ordner
 	case okDst && src.dir:
 		err = errNotDir
-	case f.parentIsFile(to):
-		err = errNotDir
+	case f.parentErr(to) != nil:
+		err = f.parentErr(to)
 	case src.dir:
 		for _, child := range f.children(from) {
 			f.nodes[to+strings.TrimPrefix(child, from)] = f.nodes[child]
@@ -462,8 +529,8 @@ func (f *FaultFS) Link(from, to string) error {
 		err = errIsDir
 	case okDst:
 		err = fs.ErrExist
-	case f.parentIsFile(to):
-		err = errNotDir
+	case f.parentErr(to) != nil:
+		err = f.parentErr(to)
 	default:
 		f.nodes[to] = &node{ino: src.ino} // derselbe inode
 	}
@@ -572,8 +639,14 @@ func (f *FaultFS) ReadDir(dir string) ([]string, error) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if nd, ok := f.nodes[dir]; ok && !nd.dir {
+	nd, ok := f.nodes[dir]
+	switch {
+	case ok && !nd.dir:
 		err = pathErr("readdir", dir, errNotDir)
+	case !ok && filepath.Dir(dir) != dir:
+		err = pathErr("open", dir, fs.ErrNotExist) // wie das echte System
+	}
+	if err != nil {
 		f.log[n-1].Err = err
 		return nil, err
 	}
@@ -601,6 +674,8 @@ func (f *FaultFS) Lock(name string) (func() error, error) {
 	switch {
 	case ok && nd.dir:
 		err = pathErr("open", name, errIsDir)
+	case !ok && f.parentErr(name) != nil:
+		err = pathErr("open", name, f.parentErr(name)) // im fehlenden Ordner nicht anlegbar
 	case f.locks[name]:
 		err = store.ErrLocked
 	}

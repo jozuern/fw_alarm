@@ -16,7 +16,7 @@ func syncDir(string) error { return nil }
 // ebenso abgewiesen wie ein anderer Prozess; das Ende des Prozesses gibt
 // sie frei.
 func lockFile(name string) (func() error, error) {
-	f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o600)
+	f, err := openLockFile(name)
 	if err != nil {
 		return nil, err
 	}
