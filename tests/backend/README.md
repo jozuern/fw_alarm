@@ -3,20 +3,23 @@
 Diese Tests prüfen die Server-Seite von außen: was die Box, der Außen-Wächter,
 ein Kurzbefehl und das Dashboard über HTTP sehen, was bei Bark ankommt und was
 der Server gespeichert hat. Sie kennen keine PHP-Funktion und keine Datei beim
-Namen – dieselben Tests müssen auch eine künftige Fassung in einer anderen
-Sprache bestehen (geplant: Go). Wer eine Regel der Server-Seite ändert oder
-ergänzt, schreibt den Test dazu hier.
+Namen – dieselben Tests muss auch die Go-Fassung bestehen, die gerade
+entsteht (Treiber `harness-go.mjs`, siehe unten). Wer eine Regel der
+Server-Seite ändert oder ergänzt, schreibt den Test dazu hier.
 
 ```bash
-node --test "tests/backend/*.test.mjs"            # alles (ca. 1 min)
+node --test "tests/backend/*.test.mjs"            # alles gegen PHP (ca. 1 min)
 node --test "tests/backend/box-poll-ack.test.mjs" # eine Datei
+bash tools/test-go.sh                             # gegen Go: die Dateien aus tools/go-green.txt
+bash tools/test-go.sh tests/backend/session.test.mjs   # gegen Go: genau diese Datei
 ```
 
-Voraussetzung: Node 24 und `php` (8.3) im Pfad. Kein Chrome, kein npm, keine
-Sandbox von Hand: Jede Testdatei startet über `harness.mjs` ihr eigenes
-Dashboard (`php -S` auf einem freien Port, leerer Datenordner im Temp-Ordner)
-und eine Bark-Attrappe im Testprozess; am Ende wird alles entfernt
-(`FW_KEEP=1` lässt den Ordner zum Nachsehen liegen).
+Voraussetzung: Node 24 und `php` (8.3) im Pfad, für Go zusätzlich Go (das
+Skript findet die Installation pro Benutzer selbst). Kein Chrome, kein npm,
+keine Sandbox von Hand: Jede Testdatei startet über `harness.mjs` ihr eigenes
+Dashboard (`php -S` bzw. `fw-alarm serve` auf einem freien Port, leerer
+Datenordner im Temp-Ordner) und eine Bark-Attrappe im Testprozess; am Ende
+wird alles entfernt (`FW_KEEP=1` lässt den Ordner zum Nachsehen liegen).
 Von Hand: `node tests/backend/serve.mjs [--port 8787]` startet dasselbe Dashboard
 und gibt die Adresse aus (bis Strg+C). Dieselbe Fassung (`FW_BACKEND`) fahren
 die Chrome-Szenarien (`tests/dashboard/e2e/run.mjs`, README unter `tests/dashboard/e2e/`).
@@ -38,6 +41,7 @@ die Chrome-Szenarien (`tests/dashboard/e2e/run.mjs`, README unter `tests/dashboa
 | `dashboard-log.test.mjs` | Verlauf im Dashboard: freigegebene Felder, Filter, Menge, rotierte Datei |
 | `php-storage.test.mjs` | Nur PHP (unter einer anderen Fassung übersprungen): was allein an PHPs Ablage hängt (Sperren, kaputte Dateien, `.bak`, `health_check_url`, Wächter als eigener Prozess) und was die Go-Fassung bewusst anders regelt – die Fälle stehen unverändert so da wie in ihrer Herkunftsdatei |
 | `php-health.test.mjs` | Nur PHP: Selbsttest des Datenordners (`api/health.php`): Antwort, Störungen, über einen Proxy 404 |
+| `go-driver.test.mjs` | Nur Go: der Treiber selbst – Starten, Anhalten, hartes Beenden, zweiter Server auf demselben Ordner, Konfiguration, Neustarts ohne tote Verbindungen, jeder Helfer schreibt, was der Server annimmt, Sichern scheitern lassen |
 
 ## Regeln für neue Tests
 
@@ -57,14 +61,16 @@ die Chrome-Szenarien (`tests/dashboard/e2e/run.mjs`, README unter `tests/dashboa
   `log()`, `muteFailures()`, `notifyStored()` …
 - **Speichern scheitern lassen:** `backend.storage.fail('selftest' | 'durable'
   | 'history' | 'volatile')` und `repair(...)`; was das bei PHP heißt, steht
-  über `PHP_STORAGE` in `harness.mjs`.
+  über `PHP_STORAGE` in `harness-php.mjs`, bei Go oben in `harness-go.mjs`.
 - **Langer Verlauf:** `backend.state.seedLog([...])` legt Einträge roh in den
   Verlauf (`{ rotated: true }` = die ältere Datei) – statt hunderter Aktionen.
 - **Texte mit dem Namen der Konfigurationsdatei** bauen die Erwartung aus
   `backend.words.configFile` (`config.php` bzw. `config.toml`).
 - **Nur eine Fassung:** `php-*.test.mjs` prüfen, was allein an PHPs Ablage
   hängt, und fassen als einzige die Dateien von PHP an (`backend.data`);
-  `go-*.test.mjs` prüfen, was sich nur die Go-Fassung fragen lässt. Eine
+  `go-*.test.mjs` prüfen, was sich nur die Go-Fassung fragen lässt, und
+  fassen als einzige ihren Datenordner roh an (`backend.files`, dazu
+  `hardKill()`, `writeRawConfig()`, `health()`, `cli()`). Eine
   solche Datei hängt alles an EIN `describe` mit
   `{ skip: BACKEND_KIND !== 'php' && 'nur PHP' }` (bzw. `'go'`). (Die
   Chrome-Szenarien unter `tests/dashboard/e2e/` nutzen `backend.data` noch,
@@ -97,11 +103,29 @@ die Chrome-Szenarien (`tests/dashboard/e2e/run.mjs`, README unter `tests/dashboa
 
 ## Eine andere Server-Fassung prüfen
 
-`FW_BACKEND` wählt den Treiber in `harness.mjs` (heute nur `php`; im Test als
-`BACKEND_KIND`). Ein Treiber liefert `kind`, `base`, `dataDir`, `configure()`,
-`reset()`, `runWatchdog()`, `stop()` und die Absichts-Helfer `state`, `storage`
-und `words`; ihre Eingaben prüft `startBackend()` für jeden Treiber gleich
-(dieselbe falsche Eingabe, derselbe Fehler). Alles andere (Attrappe, übrige
-Helfer, Tests) bleibt gleich. `FW_BACKEND_SRC=<Ordner>`
-prüft eine Kopie von `nas_dashboard/` statt des Repo-Stands – z.B. eine
-absichtlich verfälschte, um zu sehen, dass die Tests anschlagen.
+`FW_BACKEND` wählt den Treiber (im Test als `BACKEND_KIND`): `php` (Standard,
+`harness-php.mjs`) oder `go` (`harness-go.mjs`, Programm aus `FW_GO_BIN`).
+`harness.mjs` lädt ihn und hält alles Gemeinsame: Prüfstand, Bark-Attrappe,
+die Helfer der Tests und die Prüfungen der Eingaben, die für jeden Treiber
+gleich sind (dieselbe falsche Eingabe, derselbe Fehler). Ein Treiber liefert
+`kind`, `base`, `dataDir`, `configure()`, `reset()`, `runWatchdog()`,
+`startServer()`/`stopServer()`, `stop()` und die Absichts-Helfer `state`,
+`storage` und `words`; fehlt ihm einer, scheitert schon der Start. Alles
+andere (Attrappe, übrige Helfer, Tests) bleibt gleich.
+
+**Go:** `bash tools/test-go.sh [dateien…]` baut `bin/fw-alarm` (ohne CGO, mit
+`vendor/`) und lässt die Dateien mit `FW_BACKEND=go` laufen; ohne Angabe die
+aus `tools/go-green.txt` (die unter Go schon ganz grünen – so auch GitHub,
+Job „server-tests“). Der Treiber startet `fw-alarm serve` auf einem freien
+Port aus 20000–29999 mit eigenem `config.toml`, Datenordner und
+Steuer-Socket im Temp-Ordner. Zustand ändert er, indem er den Server
+geordnet anhält (`fw-alarm stop`), die Dateien des Datenordners ändert und
+neu startet; gelesen wird nach `fw-alarm flush`. Nach jedem Start prüft er,
+dass der Server gesund ist und nichts abgelehnt hat – sonst wirft er mit
+der Ausgabe des Servers (Einzelheiten oben in `harness-go.mjs`). Ein Lauf
+mit `reset()` vor jedem Fall dauert dadurch etwa eine halbe Sekunde pro Fall
+länger als unter PHP.
+
+`FW_BACKEND_SRC=<Ordner>` prüft unter PHP eine Kopie von `nas_dashboard/`
+statt des Repo-Stands – z.B. eine absichtlich verfälschte, um zu sehen, dass
+die Tests anschlagen.

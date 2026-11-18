@@ -52,6 +52,24 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor -trimpath -o "$RUNNER_TEMP/linux-arm64/fw-alarm" ./cmd/fw-alarm
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -mod=vendor -trimpath -o "$RUNNER_TEMP/windows-amd64/fw-alarm.exe" ./cmd/fw-alarm
 
+  # Die Server-Tests (tests/backend/) gegen die Go-Fassung: genau die Dateien
+  # aus tools/go-green.txt, gebaut wie das Produkt.
+  server-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Server-Tests gegen Go
+        run: bash tools/test-go.sh
+
   node:
     runs-on: ubuntu-24.04
     steps:

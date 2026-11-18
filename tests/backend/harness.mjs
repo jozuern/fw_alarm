@@ -4,26 +4,27 @@
 // Testprozess - eigene Ports, eigener Temp-Ordner, nichts bleibt liegen.
 // Die Tests sprechen HTTP und sagen über backend.state / backend.storage,
 // WAS sie brauchen ("der letzte Status ist 200 s alt", "Sichern scheitert");
-// WO das liegt, weiß allein der Treiber hier (FW_BACKEND: heute PHP, später
-// Go). backend.data (die Dateien von PHP) fasst unter tests/backend/ nur
-// php-*.test.mjs an - die Chrome-Szenarien (tests/dashboard/e2e/) noch, bis
-// sie auf dieselben Helfer umgestellt sind.
+// WO das liegt, weiß allein der Treiber (FW_BACKEND): PHP in
+// harness-php.mjs, Go in harness-go.mjs. Hier stehen der Prüfstand, die
+// Bark-Attrappe, die Helfer für die Tests und die Prüfungen, die jeder
+// Treiber teilt; die Tests importieren nur von hier. backend.data (die
+// Dateien von PHP) fasst unter tests/backend/ nur php-*.test.mjs an - die
+// Chrome-Szenarien (tests/dashboard/e2e/) noch, bis sie auf dieselben Helfer
+// umgestellt sind; backend.files (der Datenordner von Go) nur go-*.test.mjs.
 //
-// Aufruf: node --test "tests/backend/*.test.mjs"
-import { execFile, execFileSync, spawn } from 'node:child_process';
+// Aufruf: node --test "tests/backend/*.test.mjs"            (PHP)
+//         bash tools/test-go.sh [dateien…]                   (Go)
 import { createHash } from 'node:crypto';
-import {
-  appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync,
-  statSync, writeFileSync,
-} from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createServer as createTcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const REPO = join(here, '..', '..');
+// Für die Treiber: das Repo (PHP kopiert nas_dashboard/ von dort).
+export const REPO = join(here, '..', '..');
 
 // Welche Server-Fassung geprüft wird. Eine Datei, die nur für eine Fassung
 // gilt, hängt alles an EIN describe:
@@ -57,12 +58,12 @@ export const STATUS_KEY = 'statuskey0001';
 export const ADMIN = { user: 'admin', password: 'test' };
 export const READER = { user: 'leser', password: 'test' };
 // bcrypt-Hash von "test" (cost 4, damit die Anmeldung im Test nichts kostet).
-const TEST_PASSWORD_HASH = '$2y$04$r60I68m5mVq98EDvnpGXGeS1SZtBd2wWlr0dy0MuX73YPDZ27VzZy';
+export const TEST_PASSWORD_HASH = '$2y$04$r60I68m5mVq98EDvnpGXGeS1SZtBd2wWlr0dy0MuX73YPDZ27VzZy';
 // bcrypt-Hash von "anderes" (cost 4): ein geändertes Passwort in der Konfiguration.
 export const OTHER_PASSWORD_HASH = '$2y$04$arQ57ZxGZu0qqkyhgNiBc.Ri6mtxzvUCvCwP8PvCH/TfBrFX9abKO';
-const DATA_FILE_GUARD = '<?php http_response_code(404); exit; ?>\n';
 
-function freePort() {
+// Ein freier Port, den das System vergibt (Bark-Attrappe, PHP-Server).
+export function freePort() {
   return new Promise((resolve, reject) => {
     const probe = createTcpServer();
     probe.on('error', reject);
@@ -146,114 +147,65 @@ export async function startBarkMock() {
   return mock;
 }
 
-// ============================ DATENORDNER (PHP) =============================
-// Laufzeitdateien wie die Anwendung sie schreibt: <name>.php, erste Zeile =
-// Guard, danach JSON (bzw. beim Verlauf eine JSON-Zeile pro Eintrag). name ist
-// der logische Name aus CLAUDE.md, z.B. 'latest_status.json', 'commands.log'.
-// Als backend.data unter tests/backend/ nur für php-*.test.mjs (Regeln, die
-// allein PHPs Ablage betreffen); alle anderen Tests nehmen backend.state /
-// backend.storage. (Die Chrome-Szenarien unter tests/dashboard/e2e/ nutzen
-// es noch, bis sie umgestellt sind.)
-function dataAccess(dataDir) {
-  const file = (name) => join(dataDir, `${name}.php`);
-  const body = (name) => {
-    const raw = readFileSync(file(name), 'utf8');
-    return raw.startsWith('<?php') ? raw.slice(raw.indexOf('\n') + 1) : raw;
-  };
-  const api = {
-    dir: dataDir,
-    path: file,
-    exists: (name) => existsSync(file(name)),
-    read(name) {
-      return existsSync(file(name)) ? JSON.parse(body(name)) : null;
-    },
-    write(name, value) {
-      writeFileSync(file(name), DATA_FILE_GUARD + JSON.stringify(value, null, 4));
-      return value;
-    },
-    // Ändert eine vorhandene Datei; fehlt sie, bekommt fn ein leeres Objekt.
-    edit(name, fn) {
-      const value = api.read(name) ?? {};
-      fn(value);
-      return api.write(name, value);
-    },
-    remove(name) {
-      rmSync(file(name), { recursive: true, force: true });
-    },
-    // Kaputte Datei (kein JSON) - wie nach einem abgebrochenen Schreiben von Hand.
-    corrupt(name) {
-      writeFileSync(file(name), DATA_FILE_GUARD + '{kaputt');
-    },
-    // Macht das Speichern DIESER Datei unmöglich, auf jedem System: An ihrer
-    // Stelle liegt ein nicht leerer Ordner, das Ersetzen per rename scheitert.
-    // (Ein Schreibschutz per chmod wirkt unter Windows und als root nicht.)
-    block(name) {
-      rmSync(file(name), { recursive: true, force: true });
-      mkdirSync(file(name));
-      writeFileSync(join(file(name), 'belegt'), 'x');
-    },
-    unblock(name) {
-      rmSync(file(name), { recursive: true, force: true });
-    },
-    // Alle Einträge des Verlaufs (älteste zuerst), roh wie gespeichert.
-    log() {
-      if (!existsSync(file('commands.log'))) return [];
-      return body('commands.log').split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line));
-    },
-    // Hängt Einträge roh an den Verlauf an (eine JSON-Zeile pro Eintrag, ohne
-    // eigenes log_at) - so entsteht ein Verlauf beliebiger Länge ohne die
-    // Aktionen dafür. Eine neue Datei bekommt zuerst die Guard-Zeile.
-    // name = 'commands.log.1' füllt die rotierte (ältere) Datei.
-    appendLog(entries, name = 'commands.log') {
-      const lines = entries.map((entry) => `${JSON.stringify(entry)}\n`).join('');
-      appendFileSync(file(name), (existsSync(file(name)) ? '' : DATA_FILE_GUARD) + lines);
-    },
-  };
-  return api;
-}
-
 // ============================ ABSICHTS-HELFER ===============================
-// Vertrag für JEDEN Treiber (PHP hier, Go später): backend.state,
-// backend.storage, backend.words. Alle Helfer sind async. Sekunden heißen
-// "so lange her"; eine negative Zahl liegt in der Zukunft.
+// Vertrag für JEDEN Treiber (PHP: harness-php.mjs, Go: harness-go.mjs):
+// backend.state, backend.storage, backend.words. Alle Helfer sind async.
+// Sekunden sind ganze Zahlen und heißen "so lange her"; eine negative Zahl
+// liegt in der Zukunft. Die Namen der Felder sind überall die von PHP – wo
+// Go anders speichert (recipients statt keys, keys_version statt version,
+// die Felder der Box als Liste von Paaren), übersetzt der Go-Treiber; die
+// Tests sehen unter beiden dieselben Formen.
 //
 // backend.state
 //   Zeit verschieben (der Eintrag muss schon da sein, sonst Fehler - außer
-//   bei ageMark):
+//   bei ageMark und ageLog):
 //     ageBoxStatus(s)          letzter Status der Box kam vor s Sekunden an
 //     ageDevice(deviceId, s)   dieses Board hat sich zuletzt vor s gemeldet
 //     ageMute(id|'all', s)     Stummschaltung begann vor s ('all' = alle, die gerade stumm sind)
-//     ageDemo(s)               Demo-Zustand zuletzt geändert vor s
+//     ageDemo(s)               Demo-Zustand zuletzt geändert vor s (Fehler, solange er nie
+//                              geändert wurde)
 //     ageCommand(which, s)     laufender Befehl: which 'created' | 'delivered' vor s
 //     ageWatcher(s)            Außen-Wächter zuletzt gesehen vor s (bark_failed_at bleibt)
-//     ageMark(name, s)         Merker des Wächters (WATCH_MARKS) = vor s
-//     ageRetry(kind, s)        nur Go: Sperrfrist nach gescheitertem Versand
+//     ageMark(name, s)         Merker des Wächters (WATCH_MARKS) = vor s; nur Zeitpunkte
+//                              (unter Go wirft ein Wahrheitswert oder Zähler)
+//     ageRetry(kind, s)        nur Go (PHP wirft): Sperrfrist nach gescheitertem Versand einer
+//                              Meldung dieser Art (ADMIN_KINDS: box_offline, nas_web,
+//                              outside_watcher …) = frühester neuer Versuch vor s
 //     ageMuteThrottle(s)       gezählte Fehlversuche am Kurzbefehl-Link begannen vor s
 //     ageLog(s, match)         passende Verlaufs-Einträge um s älter (log_at -= s) - als
 //                              einziger RELATIV ("um s älter machen"), die übrigen age*
 //                              setzen ein absolutes "vor s". match ist eine Bedingung
 //                              (eintrag) => boolean über den gespeicherten Eintrag, ohne
-//                              Angabe alle Einträge. Wirft, wenn ein passender Eintrag
-//                              kein log_at als Zahl hat (dann ändert sich nichts).
-//     ageSession(cookie, s)    nur Go: diese Sitzung ist seit s untätig
+//                              Angabe alle Einträge. Passt keiner, ändert sich nichts.
+//                              Wirft, wenn ein passender Eintrag kein log_at als Zahl hat
+//                              (dann ändert sich auch sonst nichts).
+//     ageSession(cookie, s)    nur Go (PHP wirft): die Sitzung mit diesem Cookie
+//                              ('name=wert', wie es die Anmeldung setzt) ist seit s untätig
 //   Herstellen:
 //     setWatcher({ seenAgo, barkFailedAt = 0 })   Außen-Wächter zuletzt gesehen vor seenAgo
 //     setMarks({ name: wert|null })                mehrere Merker in einem Zug; null löscht
+//                                                  (unter Go: 0 bzw. false)
 //     setCommand(patch)                            Felder des laufenden Befehls (COMMAND_FIELDS);
 //                                                  wirft ohne laufenden Befehl
 //     seedLog(entries, { rotated = false })        Einträge wie gegeben (ohne uid, ohne eigenes
 //                                                  log_at); rotated = die ältere Datei
 //     seedRecipients(entries, { version = 1, nextId = größte id + 1 })
 //                                                  Empfängerliste ersetzen, nur gültige Einträge
+//                                                  (unter Go bekommt ein Eintrag ohne mute_token
+//                                                  einen neuen, fehlende Felder ihren Standard)
 //   Lesen - wie gespeichert, nicht wie angezeigt:
-//     boxStatus()      gepushte Felder + seen_at + via_bridge ('0'|'1'), null = nie
-//     recipients()     { version, keys: [...] }
+//     boxStatus()      gepushte Felder als Objekt + seen_at (Zahl) + via_bridge ('0'|'1'),
+//                      ohne remote_addr; null = nie
+//     recipients()     { version, keys: [...] } - Einträge mit den Feldern von PHP
+//                      (id, key, label, muted, muted_at …)
 //     recipient(id)    Eintrag oder null
 //     listVersion()    Version der Empfängerliste
 //     demo()           Demo-Zustand ({ enabled: false } ohne Eintrag)
-//     command()        laufender Befehl oder null
+//     command()        laufender Befehl oder null (unter Go stehen alle COMMAND_FIELDS da,
+//                      nie gesetzte als 0 bzw. '')
 //     watcher()        { seen_at, bark_failed_at } oder null
-//     marks()          Merker des Wächters als Objekt
+//     marks()          Merker des Wächters als Objekt (unter Go alle, nie gesetzte als 0
+//                      bzw. false - also nur auf Wahrheit prüfen, nicht auf undefined)
 //     log()            alle Verlaufs-Einträge roh, älteste zuerst
 //     muteFailures()   Summe der gezählten Fehlversuche am Kurzbefehl-Link
 //     notifyStored()   { global, types }: nur ausdrücklich Gespeichertes
@@ -262,6 +214,7 @@ function dataAccess(dataDir) {
 //   'volatile' - das Sichern dieses Teils scheitert bzw. geht wieder;
 //   repair stellt den Stand von vor fail() her. Ein zweites fail(what) ohne
 //   repair dazwischen tut nichts, ebenso repair(what) ohne vorheriges fail.
+//   Beides wirkt im laufenden Betrieb, ohne Neustart.
 // backend.words
 //   configFile: Name der Konfigurationsdatei in Texten ('config.php' | 'config.toml').
 //
@@ -273,51 +226,84 @@ function dataAccess(dataDir) {
 // Neustart des Servers hinein).
 const yieldFirst = () => new Promise((resolve) => setImmediate(resolve));
 
+// Die festen Tabellen unten (Name → Art des Werts) gelten für jeden Treiber;
+// der Go-Treiber baut aus ihnen auch die Felder, die er neu anlegt. Arten:
+// 'time' (Unix-Sekunden), 'int' (ganze Zahl), 'bool', 'string'. Nur lesen.
+//
 // Merker des Wächters - die Namen aus watchdog_state.json von PHP, die auch
 // die Go-Fassung führt (Plan: "File formats", runtime.json "watch").
-const WATCH_MARKS = new Set([
-  'last_run_at', 'offline_notified', 'offline_since', 'offline_seen_at', 'offline_reminded_at',
-  'offline_push_pending', 'web_fail_count', 'web_fail_since', 'web_fail_notified_at', 'web_push_pending',
-  'watcher_watch_since', 'watcher_silent_seen_at', 'watcher_notified_at', 'watcher_push_pending',
-  'demo_reminded_at', 'demo_reminded_for', 'mute_reminded_at', 'permanent_mute_reminded_at',
-  'health_bad_runs', 'health_notified_at', 'weekly_report_at', 'last_send_ok_at', 'last_send_failed_at',
+export const MARK_KINDS = new Map([
+  ['last_run_at', 'time'], ['offline_notified', 'bool'], ['offline_since', 'time'],
+  ['offline_seen_at', 'time'], ['offline_reminded_at', 'time'], ['offline_push_pending', 'bool'],
+  ['web_fail_count', 'int'], ['web_fail_since', 'time'], ['web_fail_notified_at', 'time'],
+  ['web_push_pending', 'bool'], ['watcher_watch_since', 'time'], ['watcher_silent_seen_at', 'time'],
+  ['watcher_notified_at', 'time'], ['watcher_push_pending', 'bool'], ['demo_reminded_at', 'time'],
+  ['demo_reminded_for', 'time'], ['mute_reminded_at', 'time'], ['permanent_mute_reminded_at', 'time'],
+  ['health_bad_runs', 'int'], ['health_notified_at', 'time'], ['weekly_report_at', 'time'],
+  ['last_send_ok_at', 'time'], ['last_send_failed_at', 'time'],
+]);
+export const WATCH_MARKS = new Set(MARK_KINDS.keys());
+// Arten der Meldungen an den Admin (PHP: admin_notify_types()) - die
+// Schlüssel der Sperrfrist nach gescheitertem Versand (ageRetry).
+export const ADMIN_KINDS = new Set([
+  'box_offline', 'nas_web', 'outside_watcher', 'demo_reminder', 'mute_reminder', 'permanent_mute_reminder',
+  'login_lockout', 'login_success', 'mute_changed', 'mute_expired', 'box_restart', 'box_health', 'weekly_report',
 ]);
 // Felder des laufenden Befehls (wie api/poll.php, api/ack.php und
 // dashboard_api.php sie schreiben).
-const COMMAND_FIELDS = new Set([
-  'id', 'type', 'state', 'created_at', 'created_by', 'demo_changed_at', 'delivered_at', 'delivered_to',
-  'acked_at', 'acked_by', 'ack_result', 'ack_message', 'cancelled_at', 'cancelled_by', 'cancel_reason',
-  'expired_at',
+export const COMMAND_FIELDS = new Map([
+  ['id', 'int'], ['type', 'string'], ['state', 'string'], ['created_at', 'time'], ['created_by', 'string'],
+  ['demo_changed_at', 'time'], ['delivered_at', 'time'], ['delivered_to', 'string'], ['acked_at', 'time'],
+  ['acked_by', 'string'], ['ack_result', 'string'], ['ack_message', 'string'], ['cancelled_at', 'time'],
+  ['cancelled_by', 'string'], ['cancel_reason', 'string'], ['expired_at', 'time'],
 ]);
 // Felder eines Empfängers, die sich herstellen lassen.
-const RECIPIENT_FIELDS = new Set([
-  'id', 'key', 'label', 'phone', 'added_at', 'muted', 'muted_at', 'mute_volume', 'mute_permanent', 'mute_token',
+export const RECIPIENT_FIELDS = new Map([
+  ['id', 'int'], ['key', 'string'], ['label', 'string'], ['phone', 'string'], ['added_at', 'time'],
+  ['muted', 'bool'], ['muted_at', 'time'], ['mute_volume', 'int'], ['mute_permanent', 'bool'],
+  ['mute_token', 'string'],
 ]);
 const BARK_KEY = /^[A-Za-z0-9_-]{5,64}$/;   // wie valid_bark_key() und die Firmware
+const MUTE_TOKEN = /^[A-Za-z0-9_-]{8,32}$/; // wie valid_mute_token()
 const MAX_RECIPIENTS = 10;
 const STORAGE_PARTS = ['selftest', 'durable', 'history', 'volatile'];
 
-function stateError(helper, why) {
+// Fehler eines Helfers - auch die Treiber werfen damit.
+export function stateError(helper, why) {
   return new Error(`backend.state.${helper}: ${why}`);
+}
+
+// Passt value zur Art aus einer der Tabellen oben?
+export function fitsKind(kind, value) {
+  switch (kind) {
+    case 'time':
+    case 'int': return Number.isSafeInteger(value);
+    case 'bool': return typeof value === 'boolean';
+    case 'string': return typeof value === 'string';
+    default: return false;
+  }
 }
 
 function checkMark(helper, name) {
   if (!WATCH_MARKS.has(name)) throw stateError(helper, `unbekannter Merker "${name}"`);
 }
 
+// Zeitpunkte sind ganze Unix-Sekunden (Go liest sie streng als ganze Zahl).
 function checkSeconds(helper, seconds) {
-  if (!Number.isFinite(seconds)) throw stateError(helper, `Sekunden müssen eine Zahl sein, nicht ${seconds}`);
+  if (!Number.isSafeInteger(seconds)) throw stateError(helper, `Sekunden müssen eine ganze Zahl sein, nicht ${seconds}`);
 }
 
 // Nur gültige Einträge (die Go-Fassung kann ungültige gar nicht speichern):
-// höchstens 10, jede id und jeder Key einmal, bekannte Felder. Liefert die
-// größte id (0 ohne Einträge).
+// höchstens 10, jede id, jeder Key und jedes mute_token einmal, bekannte
+// Felder mit Werten ihrer Art, Stumm-Lautstärke 0 bis 10, dauerhaft stumm
+// nur, wenn stumm. Liefert die größte id (0 ohne Einträge).
 function checkRecipients(entries) {
   if (!Array.isArray(entries) || entries.length > MAX_RECIPIENTS) {
     throw stateError('seedRecipients', `höchstens ${MAX_RECIPIENTS} Einträge als Liste`);
   }
   const ids = new Set();
   const keys = new Set();
+  const tokens = new Set();
   for (const entry of entries) {
     const where = JSON.stringify(entry);
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw stateError('seedRecipients', `kein Eintrag: ${where}`);
@@ -326,8 +312,16 @@ function checkRecipients(entries) {
     if (!Number.isInteger(entry.id) || entry.id < 1 || ids.has(entry.id)) throw stateError('seedRecipients', `id fehlt, ungültig oder doppelt: ${where}`);
     if (typeof entry.key !== 'string' || !BARK_KEY.test(entry.key) || keys.has(entry.key)) throw stateError('seedRecipients', `Key ungültig oder doppelt: ${where}`);
     if (typeof entry.label !== 'string') throw stateError('seedRecipients', `label fehlt: ${where}`);
+    const wrong = Object.entries(entry).filter(([name, value]) => !fitsKind(RECIPIENT_FIELDS.get(name), value));
+    if (wrong.length) throw stateError('seedRecipients', `falsche Art bei ${wrong.map(([name]) => name).join(', ')}: ${where}`);
+    if ((entry.mute_volume ?? 0) < 0 || (entry.mute_volume ?? 0) > 10) throw stateError('seedRecipients', `mute_volume 0 bis 10: ${where}`);
+    if (entry.mute_permanent && !entry.muted) throw stateError('seedRecipients', `dauerhaft stumm, aber nicht stumm: ${where}`);
+    if (entry.mute_token !== undefined && (!MUTE_TOKEN.test(entry.mute_token) || tokens.has(entry.mute_token))) {
+      throw stateError('seedRecipients', `mute_token ungültig oder doppelt: ${where}`);
+    }
     ids.add(entry.id);
     keys.add(entry.key);
+    if (entry.mute_token !== undefined) tokens.add(entry.mute_token);
   }
   return Math.max(0, ...ids);
 }
@@ -347,29 +341,55 @@ const STATE_INPUT = {
     return [which, s];
   },
   ageWatcher: (s) => { checkSeconds('ageWatcher', s); return [s]; },
-  ageMark: (name, s) => { checkMark('ageMark', name); checkSeconds('ageMark', s); return [name, s]; },
-  ageRetry: (kind, s) => { checkSeconds('ageRetry', s); return [kind, s]; },
+  ageMark: (name, s) => {
+    checkMark('ageMark', name);
+    checkSeconds('ageMark', s);
+    if (MARK_KINDS.get(name) !== 'time') throw stateError('ageMark', `"${name}" ist kein Zeitpunkt`);
+    return [name, s];
+  },
+  ageRetry: (kind, s) => {
+    checkSeconds('ageRetry', s);
+    if (!ADMIN_KINDS.has(kind)) throw stateError('ageRetry', `unbekannte Art "${kind}"`);
+    return [kind, s];
+  },
   ageMuteThrottle: (s) => { checkSeconds('ageMuteThrottle', s); return [s]; },
   ageLog: (s, match = () => true) => {
     checkSeconds('ageLog', s);
     if (typeof match !== 'function') throw stateError('ageLog', 'match ist eine Bedingung (eintrag) => boolean');
     return [s, match];
   },
-  ageSession: (cookie, s) => { checkSeconds('ageSession', s); return [cookie, s]; },
+  ageSession: (cookie, s) => {
+    checkSeconds('ageSession', s);
+    if (typeof cookie !== 'string' || !/^[^=;\s]+=[^;\s]+$/.test(cookie)) {
+      throw stateError('ageSession', `Cookie als 'name=wert', nicht ${JSON.stringify(cookie)}`);
+    }
+    return [cookie, s];
+  },
 
   setWatcher: ({ seenAgo, barkFailedAt = 0 } = {}) => {
     checkSeconds('setWatcher', seenAgo);
+    if (!Number.isSafeInteger(barkFailedAt)) throw stateError('setWatcher', `barkFailedAt ist eine ganze Zahl, nicht ${barkFailedAt}`);
     return [{ seenAgo, barkFailedAt }];
   },
   setMarks: (marks) => {
     if (!marks || typeof marks !== 'object' || Array.isArray(marks)) throw stateError('setMarks', 'Merker als Objekt { name: wert|null }');
-    for (const name of Object.keys(marks)) checkMark('setMarks', name);
+    for (const [name, value] of Object.entries(marks)) {
+      checkMark('setMarks', name);
+      if (value !== null && !fitsKind(MARK_KINDS.get(name), value)) {
+        throw stateError('setMarks', `"${name}" ist ${MARK_KINDS.get(name)}, nicht ${JSON.stringify(value)}`);
+      }
+    }
     return [marks];
   },
   setCommand: (patch) => {
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw stateError('setCommand', 'Felder als Objekt');
     const unknown = Object.keys(patch).filter((name) => !COMMAND_FIELDS.has(name));
     if (unknown.length) throw stateError('setCommand', `unbekannte Felder ${unknown.join(', ')}`);
+    for (const [name, value] of Object.entries(patch)) {
+      if (value !== null && !fitsKind(COMMAND_FIELDS.get(name), value)) {
+        throw stateError('setCommand', `"${name}" ist ${COMMAND_FIELDS.get(name)}, nicht ${JSON.stringify(value)}`);
+      }
+    }
     return [patch];
   },
   seedLog: (entries, { rotated = false } = {}) => {
@@ -417,424 +437,61 @@ function contractHelpers(kind, part, impl, inputs) {
   }]));
 }
 
-// PHP: Zustand liegt in den Laufzeitdateien von dataAccess().
-//
-// storage.fail(what) legt nicht leere Ordner an die Stelle dieser Dateien
-// (das Ersetzen per rename bzw. das Öffnen der Lock-Datei scheitert dann);
-// geprüft gegen with_lock() (fatal: 500 mit dem Satz "Datenordner nicht
-// beschreibbar"), with_lock_soft() (still, der Ausweichwert) und
-// read_alarm_keys_state():
-//   selftest  health_probe.json - api/health.php scheitert im Schritt write,
-//             der Wächter meldet "WEB_FAIL (n) Datenordner nicht beschreibbar".
-//   durable   erst die Liste nach alarm_keys.json.bak kopieren (so bleibt sie
-//             über den Rückgriff lesbar, wie unter Go aus dem Speicher), dann
-//             alarm_keys.json, keys.lock, command.lock, notify.lock,
-//             settings.lock - Änderungen an Empfängern, Demo-Modus,
-//             Befehlen, Meldungs- und App-Einstellungen scheitern (Dashboard:
-//             500 mit code storage), der Poll liefert keinen Befehl aus, die
-//             Box bekommt die Liste weiter.
-//   history   commands.log und log.lock - kein Verlaufseintrag wird
-//             geschrieben, die Aktion selbst läuft weiter.
-//   volatile  latest_status.json und watcher_seen.json - der Status-Push
-//             antwortet 500 WRITE_FAILED (anders als Go), alive.php stored=0.
-// repair(what) entfernt die Ordner und schreibt zurück, was vorher dort lag
-// (bei durable auch die alte alarm_keys.json.bak).
-const PHP_STORAGE = {
-  selftest: ['health_probe.json'],
-  durable: ['alarm_keys.json', 'keys.lock', 'command.lock', 'notify.lock', 'settings.lock'],
-  history: ['commands.log', 'log.lock'],
-  volatile: ['latest_status.json', 'watcher_seen.json'],
-};
-
-function phpBench(dataDir) {
-  const files = dataAccess(dataDir);
-  const failed = new Set();
-  const saved = new Map();   // name -> Inhalt vor fail() (null = gab es nicht)
-  const isFile = (name) => {
-    try { return statSync(files.path(name)).isFile(); } catch { return false; }
-  };
-  // Inhalt einer Laufzeitdatei, null wenn sie fehlt (oder gerade ein Ordner ist).
-  const read = (name) => (isFile(name) ? files.read(name) : null);
-  const ago = (seconds) => now() - seconds;
-  // Vorhandene Datei ändern; fehlt sie, ist der Aufruf ein Fehler im Test.
-  const change = (helper, name, missing, fn) => {
-    const value = read(name);
-    if (value === null) throw stateError(helper, missing);
-    fn(value);
-    files.write(name, value);
-  };
-  const recipientsState = () => {
-    // Wie read_alarm_keys_state(): Fehlt die Liste (oder liegt dort während
-    // storage.fail('durable') ein Ordner), gilt die Sicherung.
-    for (const name of ['alarm_keys.json', 'alarm_keys.json.bak']) {
-      const value = read(name);
-      if (value && (value.keys === undefined || Array.isArray(value.keys))) return value;
-    }
-    return { version: 0, keys: [] };
-  };
-  const logEntries = (name) => (isFile(name)
-    ? readFileSync(files.path(name), 'utf8').split('\n')
-      .filter((line) => line.trim().startsWith('{')).map((line) => JSON.parse(line))
-    : []);
-  const watchState = () => read('watchdog_state.json') ?? {};
-
-  // Die Eingaben sind hier schon geprüft (STATE_INPUT, STORAGE_INPUT).
-  const state = {
-    ageBoxStatus(seconds) {
-      change('ageBoxStatus', 'latest_status.json', 'noch kein Status der Box gespeichert',
-        (d) => { d.seen_at = ago(seconds); });
-    },
-    ageDevice(deviceId, seconds) {
-      change('ageDevice', 'devices_seen.json', 'noch kein Board gesehen', (all) => {
-        if (!all[deviceId]) throw stateError('ageDevice', `Board "${deviceId}" hat sich nie gemeldet`);
-        all[deviceId].seen_at = ago(seconds);
-      });
-    },
-    ageMute(idOrAll, seconds) {
-      change('ageMute', 'alarm_keys.json', 'keine Empfängerliste gespeichert', (list) => {
-        const keys = (list.keys ?? []).filter((k) => k && typeof k === 'object');
-        const targets = idOrAll === 'all' ? keys.filter((k) => k.muted) : keys.filter((k) => k.id === idOrAll);
-        if (idOrAll !== 'all' && targets.length === 0) throw stateError('ageMute', `kein Empfänger mit id ${idOrAll}`);
-        if (targets.length === 0) throw stateError('ageMute', 'niemand ist stumm');
-        for (const k of targets) {
-          if (!k.muted) throw stateError('ageMute', `Empfänger ${k.id} ist nicht stumm`);
-          k.muted_at = ago(seconds);
-        }
-      });
-    },
-    ageDemo(seconds) {
-      change('ageDemo', 'demo_mode.json', 'noch kein Demo-Zustand gespeichert', (d) => { d.changed_at = ago(seconds); });
-    },
-    ageCommand(which, seconds) {
-      change('ageCommand', 'command_state.json', 'kein Befehl gespeichert', (d) => {
-        if (!d.current) throw stateError('ageCommand', 'kein laufender Befehl');
-        d.current[`${which}_at`] = ago(seconds);
-      });
-    },
-    ageWatcher(seconds) {
-      change('ageWatcher', 'watcher_seen.json', 'der Außen-Wächter hat sich nie gemeldet', (d) => { d.seen_at = ago(seconds); });
-    },
-    ageMark(name, seconds) {
-      files.write('watchdog_state.json', { ...watchState(), [name]: ago(seconds) });
-    },
-    ageRetry() {
-      throw stateError('ageRetry', 'nur unter Go - PHP versucht eine gescheiterte Meldung beim nächsten Lauf erneut, eine Sperrfrist gibt es dort nicht');
-    },
-    ageMuteThrottle(seconds) {
-      change('ageMuteThrottle', 'mute_throttle.json', 'keine Fehlversuche gezählt', (all) => {
-        if (Object.keys(all).length === 0) throw stateError('ageMuteThrottle', 'keine Fehlversuche gezählt');
-        for (const who of Object.keys(all)) all[who].first_at = ago(seconds);
-      });
-    },
-    ageLog(seconds, match) {
-      // Erst beide Dateien ausrechnen, dann schreiben: Wirft ein Eintrag,
-      // bleibt alles, wie es war.
-      const changed = [];
-      for (const name of ['commands.log.1', 'commands.log']) {
-        if (!isFile(name)) continue;
-        const path = files.path(name);
-        // Zeile für Zeile wie gespeichert; nur passende Einträge ändern sich.
-        const lines = readFileSync(path, 'utf8').split('\n').map((line) => {
-          if (!line.startsWith('{')) return line;
-          const entry = JSON.parse(line);
-          if (!match(entry)) return line;
-          if (typeof entry.log_at !== 'number' || !Number.isFinite(entry.log_at)) {
-            throw stateError('ageLog', `passender Eintrag ohne log_at als Zahl: ${line}`);
-          }
-          entry.log_at -= seconds;
-          return JSON.stringify(entry);
-        });
-        changed.push([path, lines.join('\n')]);
-      }
-      for (const [path, text] of changed) writeFileSync(path, text);
-    },
-    ageSession() {
-      throw stateError('ageSession', 'nicht unter PHP - die Sitzungen von PHP liegen außerhalb des Prüfstands');
-    },
-
-    setWatcher({ seenAgo, barkFailedAt }) {
-      files.write('watcher_seen.json', { seen_at: ago(seenAgo), bark_failed_at: barkFailedAt });
-    },
-    setMarks(marks) {
-      const next = watchState();
-      for (const [name, value] of Object.entries(marks)) {
-        if (value === null) delete next[name]; else next[name] = value;
-      }
-      files.write('watchdog_state.json', next);
-    },
-    setCommand(patch) {
-      change('setCommand', 'command_state.json', 'kein Befehl gespeichert', (d) => {
-        if (!d.current) throw stateError('setCommand', 'kein laufender Befehl');
-        Object.assign(d.current, patch);
-      });
-    },
-    seedLog(entries, { rotated }) {
-      files.appendLog(entries, rotated ? 'commands.log.1' : 'commands.log');
-    },
-    seedRecipients(entries, { version, nextId }) {
-      files.write('alarm_keys.json', { next_id: nextId, version, keys: entries });
-    },
-
-    boxStatus() {
-      const stored = read('latest_status.json');
-      if (stored === null) return null;
-      const { remote_addr: _remoteAddr, ...fields } = stored;   // die Absender-Adresse gehört nicht dazu
-      return fields;
-    },
-    recipients() {
-      const list = recipientsState();
-      return { version: Number(list.version ?? 0), keys: list.keys ?? [] };
-    },
-    recipient(id) {
-      return (recipientsState().keys ?? []).find((k) => k && k.id === id) ?? null;
-    },
-    listVersion() {
-      return Number(recipientsState().version ?? 0);
-    },
-    demo() {
-      return read('demo_mode.json') ?? { enabled: false };
-    },
-    command() {
-      return read('command_state.json')?.current ?? null;
-    },
-    watcher() {
-      const seen = read('watcher_seen.json');
-      return seen === null ? null : { seen_at: seen.seen_at, bark_failed_at: seen.bark_failed_at };
-    },
-    marks() {
-      return watchState();
-    },
-    log() {
-      return [...logEntries('commands.log.1'), ...logEntries('commands.log')];
-    },
-    muteFailures() {
-      return Object.values(read('mute_throttle.json') ?? {}).reduce((sum, who) => sum + Number(who?.count ?? 0), 0);
-    },
-    notifyStored() {
-      const stored = read('notify_settings.json') ?? {};
-      return { global: stored.global ?? {}, types: stored.types ?? {} };
-    },
-  };
-
-  const remember = (name) => {
-    if (!saved.has(name)) saved.set(name, isFile(name) ? readFileSync(files.path(name)) : null);
-  };
-  const restore = (name) => {
-    const before = saved.get(name);
-    saved.delete(name);
-    if (before) writeFileSync(files.path(name), before);
-    else rmSync(files.path(name), { recursive: true, force: true });
-  };
-  const storage = {
-    fail(what) {
-      const names = PHP_STORAGE[what];
-      if (failed.has(what)) return;
-      if (what === 'durable' && isFile('alarm_keys.json')) {
-        remember('alarm_keys.json.bak');
-        writeFileSync(files.path('alarm_keys.json.bak'), readFileSync(files.path('alarm_keys.json')));
-      }
-      for (const name of names) {
-        remember(name);
-        files.block(name);
-      }
-      failed.add(what);
-    },
-    repair(what) {
-      const names = PHP_STORAGE[what];
-      if (!failed.has(what)) return;
-      for (const name of names) {
-        files.unblock(name);
-        restore(name);
-      }
-      if (what === 'durable' && saved.has('alarm_keys.json.bak')) restore('alarm_keys.json.bak');
-      failed.delete(what);
-    },
-  };
-
-  return {
-    state,
-    storage,
-    // Nach reset(): Der Datenordner ist leer, nichts ist mehr gestört.
-    forget() {
-      failed.clear();
-      saved.clear();
-    },
-  };
-}
-
-// ============================ TREIBER: PHP ==================================
-let phpInfo = null;
-function php() {
-  if (phpInfo) return phpInfo;
-  const out = execFileSync('php', ['-r',
-    'echo PHP_BINARY, "\\n", (int)extension_loaded("curl"), (int)extension_loaded("openssl");'],
-  { encoding: 'utf8' }).trim().split('\n');
-  const bin = out[0].trim();
-  const flags = [];
-  // Lokales PHP ohne php.ini (Windows): curl/openssl von Hand dazuladen.
-  if (out[1] !== '11') {
-    flags.push('-d', `extension_dir=${join(dirname(bin), 'ext')}`);
-    if (out[1][0] !== '1') flags.push('-d', 'extension=curl');
-    if (out[1][1] !== '1') flags.push('-d', 'extension=openssl');
-  }
-  phpInfo = { bin, flags };
-  return phpInfo;
-}
-
-// data_dir muss mit "/" beginnen: unter Windows die laufwerks-relative Form
-// (/Users/...), PHP läuft dafür mit Arbeitsordner auf demselben Laufwerk.
-const phpPath = (p) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '');
-
-// config.php des Prüfstands: Vorlage aus dem Repo plus die Werte aus
-// config.test.json - so stellt backend.configure() ohne Neustart um.
-const CONFIG_PHP = `<?php
-$c = require __DIR__ . '/config.example.php';
-$o = json_decode((string)@file_get_contents(__DIR__ . '/config.test.json'), true);
-return array_replace($c, is_array($o) ? $o : []);
-`;
-
-async function startPhp(root, bark, options = {}) {
-  const { bin, flags } = php();
-  const site = join(root, 'site');
-  const dataDir = join(root, 'data');
-  // FW_BACKEND_SRC: ein anderer Stand der Anwendung als der im Repo (z.B.
-  // eine absichtlich verfälschte Kopie, um zu prüfen, dass die Tests anschlagen).
-  const source = process.env.FW_BACKEND_SRC || join(REPO, 'nas_dashboard');
-  cpSync(source, site, {
-    recursive: true,
-    filter: (src) => {
-      const rel = relative(source, src);
-      return rel !== 'config.php' && rel.split(sep)[0] !== 'data';
-    },
-  });
-  mkdirSync(dataDir, { recursive: true });
-  writeFileSync(join(site, 'config.php'), CONFIG_PHP);
-
-  const port = options.port || await freePort();
-  const base = `http://127.0.0.1:${port}`;
-  const baseConfig = {
-    machine_token_sha256: sha256(MACHINE_TOKEN),
-    dashboard_user: ADMIN.user,
-    dashboard_password_hash: TEST_PASSWORD_HASH,
-    dashboard_readonly_user: READER.user,
-    dashboard_readonly_password_hash: TEST_PASSWORD_HASH,
-    bark_key_status: STATUS_KEY,
-    bark_host: bark.base,
-    bark_keys_alarm: ['startkey0001'],
-    data_dir: phpPath(dataDir),
-    health_check_url: `${base}/api/health.php`,
-  };
-  const writeConfig = (overrides) => writeFileSync(join(site, 'config.test.json'),
-    JSON.stringify({ ...baseConfig, ...overrides }));
-  writeConfig({});
-
-  let log = '';
-  let child = null;
-  let exited = null;
-  let alive = false;
-  const keep = (chunk) => { log = (log + chunk).slice(-200000); };
-  const killOnExit = () => { try { child?.kill(); } catch { /* schon beendet */ } };
-  process.on('exit', killOnExit);
-
-  // Startet den Server (auf demselben Port) und wartet, bis er antwortet.
-  const startServer = async () => {
-    if (alive) return;
-    const mine = spawn(bin, [...flags, '-S', `127.0.0.1:${port}`, '-t', site],
-      { cwd: site, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    child = mine;
-    alive = true;
-    mine.stdout.on('data', keep);
-    mine.stderr.on('data', keep);
-    exited = new Promise((resolve) => mine.on('exit', () => { alive = false; resolve(); }));
-    let up = false;
-    for (let i = 0; i < 100 && !up; i++) {
-      try {
-        await fetch(`${base}/manifest.json`, { signal: AbortSignal.timeout(1000) });
-        up = true;
-      } catch {
-        if (!alive) break;
-        await sleep(100);
-      }
-    }
-    if (!up) {
-      killOnExit();
-      throw new Error(`PHP-Server startet nicht (Port ${port}):\n${log}`);
-    }
-  };
-  // Hält den Server an; der Datenordner bleibt unberührt.
-  const stopServer = async () => {
-    if (!alive) return;
-    killOnExit();
-    await exited;
-  };
-  await startServer();
-  const bench = phpBench(dataDir);
-
-  return {
-    kind: 'php',
-    base,
-    dataDir,
-    state: bench.state,
-    storage: bench.storage,
-    words: { configFile: 'config.php' },
-    serverLog: () => log,
-    startServer,
-    stopServer,
-    // Konfiguration = Standard des Prüfstands + overrides (nicht aufsummiert).
-    async configure(overrides = {}) {
-      writeConfig(overrides);
-    },
-    // Ein Lauf des Wächters (wie der systemd-Timer auf dem Server).
-    runWatchdog() {
-      return new Promise((resolve, reject) => {
-        execFile(bin, [...flags, join(site, 'cron', 'check_offline.php')],
-          { cwd: site, encoding: 'utf8', timeout: 60000 },
-          (error, stdout, stderr) => (error
-            ? reject(new Error(`Wächter-Lauf gescheitert: ${error.message}\n${stderr}`))
-            : resolve(String(stdout).trim())));
-      });
-    },
-    // Zurück auf Anfang: leerer Datenordner, Standard-Konfiguration.
-    async reset() {
-      for (const name of readdirSync(dataDir)) {
-        rmSync(join(dataDir, name), { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
-      }
-      bench.forget();
-      writeConfig({});
-    },
-    async stop() {
-      process.off('exit', killOnExit);
-      await stopServer();
-    },
-  };
-}
-
 // ============================ START =========================================
 // options.config: Abweichungen von der Standard-Konfiguration ab dem Start.
 // options.port: fester Port statt eines freien (Handarbeit, serve.mjs).
-// Treiber-Vertrag: base, dataDir, configure, runWatchdog, reset, stop,
+// Treiber-Vertrag: kind, base, dataDir, configure, runWatchdog, reset, stop,
 // stopServer()/startServer() (Server anhalten/wieder starten: gleicher Port,
-// Daten unberührt) sowie state, storage und words (siehe ABSICHTS-HELFER).
+// Daten unberührt), serverLog() sowie state, storage und words (siehe
+// ABSICHTS-HELFER).
+//
+// Nur unter Go (unter PHP werfen sie):
+//   hardKill()             Server ohne Vorwarnung beenden (wie ein Absturz)
+//   writeRawConfig(text)   config.toml genau so schreiben (ein Tippfehler von Hand)
+//                          und warten, bis der Server sie beurteilt hat
+//   configText(overrides)  der Text, den configure(overrides) schriebe (Vorlage dafür)
+//   health()               was fw-alarm health sagt ({ ok, running, state,
+//                          save_ok, config_ok, hints, text })
+//   cli(args)              ein fw-alarm-Befehl mit --config/--last-good des Prüfstands
+//   files                  der Datenordner von Go roh (nur go-*.test.mjs)
+//   startServer({ expectUnhealthy: true })  nach Absicht Kaputtem starten
+// Was die Go-Fassung dabei tut und prüft, steht oben in harness-go.mjs.
+//
+// Die Treiber werden erst hier geladen: harness-php.mjs und harness-go.mjs
+// importieren aus dieser Datei, nie umgekehrt.
+const DRIVERS = {
+  php: async () => {
+    const mod = await import('./harness-php.mjs');
+    return { start: mod.startPhp, data: mod.dataAccess };
+  },
+  go: async () => {
+    const mod = await import('./harness-go.mjs');
+    return { start: mod.startGo };
+  },
+};
+const GO_ONLY = ['hardKill', 'writeRawConfig', 'configText', 'health', 'cli'];
+
 export async function startBackend(options = {}) {
   const kind = BACKEND_KIND;
-  const drivers = { php: startPhp };
-  if (!drivers[kind]) {
-    throw new Error(`Unbekanntes FW_BACKEND "${kind}" (vorhanden: ${Object.keys(drivers).join(', ')})`);
+  if (!DRIVERS[kind]) {
+    throw new Error(`Unbekanntes FW_BACKEND "${kind}" (vorhanden: ${Object.keys(DRIVERS).join(', ')})`);
   }
+  const loaded = await DRIVERS[kind]();
   const root = mkdtempSync(join(tmpdir(), 'fw-backend-'));
   const bark = await startBarkMock();
   let driver;
   let state;
   let storage;
   try {
-    driver = await drivers[kind](root, bark, options);
-    // Dieselben Prüfungen der Eingaben für jeden Treiber (ABSICHTS-HELFER).
+    driver = await loaded.start(root, bark, options);
     try {
+      // Dieselben Prüfungen der Eingaben für jeden Treiber (ABSICHTS-HELFER).
       state = contractHelpers(kind, 'state', driver.state, STATE_INPUT);
       storage = contractHelpers(kind, 'storage', driver.storage, STORAGE_INPUT);
+      if (options.config) await driver.configure(options.config);
     } catch (error) {
       // Scheitert auch das Anhalten, zählt trotzdem der eigentliche Fehler.
-      try { await driver.stop(); } catch { /* bewusst verschluckt: der Vertragsfehler sagt, was los ist */ }
+      try { await driver.stop(); } catch { /* bewusst verschluckt: der erste Fehler sagt, was los ist */ }
       throw error;
     }
   } catch (error) {
@@ -842,27 +499,40 @@ export async function startBackend(options = {}) {
     rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     throw error;
   }
-  if (options.config) await driver.configure(options.config);
   const backend = {
     ...driver,
     state,
     storage,
     root,
     bark,
-    // Die Dateien von PHP - unter tests/backend/ nur für php-*.test.mjs.
-    data: dataAccess(driver.dataDir),
     async reset() {
       await driver.reset();
       bark.clear();
     },
     async stop() {
-      await driver.stop();
-      await bark.stop();
-      if (!process.env.FW_KEEP) {
-        rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      try {
+        await driver.stop();
+      } finally {
+        await bark.stop();
+        if (!process.env.FW_KEEP) {
+          rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+        }
       }
     },
   };
+  for (const name of GO_ONLY) {
+    if (typeof driver[name] !== 'function') {
+      backend[name] = () => { throw new Error(`backend.${name}: nur unter Go, nicht unter "${kind}"`); };
+    }
+  }
+  // Die Dateien von PHP - unter tests/backend/ nur für php-*.test.mjs; die von
+  // Go (backend.files) nur für go-*.test.mjs.
+  const absent = (name, owner) => ({
+    get() { throw new Error(`backend.${name}: nur unter ${owner}, nicht unter "${kind}"`); },
+  });
+  if (loaded.data) backend.data = loaded.data(driver.dataDir);
+  else Object.defineProperty(backend, 'data', absent('data', 'PHP'));
+  if (!driver.files) Object.defineProperty(backend, 'files', absent('files', 'Go'));
   return backend;
 }
 
@@ -878,8 +548,13 @@ export function parseKv(text) {
   return out;
 }
 
+// Jede Anfrage auf einer eigenen Verbindung (connection: close): Hält der
+// Prüfstand den Server zwischendurch an (unter Go bei jedem state-Helfer),
+// liefe eine weiterverwendete Verbindung ins Leere.
 export async function request(url, init = {}) {
-  const res = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(30000), ...init });
+  const headers = new Headers(init.headers ?? {});
+  if (!headers.has('connection')) headers.set('connection', 'close');
+  const res = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(30000), ...init, headers });
   const text = await res.text();
   return { status: res.status, text, headers: res.headers, kv: parseKv(text) };
 }

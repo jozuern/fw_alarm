@@ -108,8 +108,10 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
   (`.github/workflows/ci.yml`): Job „go“ – gofmt, `go mod tidy -diff`,
   `go vet`, staticcheck, govulncheck, `go test -race` (läuft auf dem PC
   mangels C-Compiler nicht) und Bau für `linux/arm64` und `windows/amd64`;
-  Job „node“ – die Node-Tests unter `tests/dashboard/`, `tests/server/` und
-  `tests/watcher/` (die Server-Tests unter `tests/backend/` noch nicht). Nur
+  Job „server-tests“ – `bash tools/test-go.sh` (die Server-Tests aus
+  `tools/go-green.txt` gegen Go); Job „node“ – die Node-Tests unter
+  `tests/dashboard/`, `tests/server/` und `tests/watcher/` (die Server-Tests
+  unter `tests/backend/` gegen PHP noch nicht). Nur
   Leserechte, keine Geheimnisse, kein Einspielen; die Aktionen sind an feste
   Stände gebunden.
 - Zeilenenden (`.gitattributes`): Go-Dateien, `tools/*.sh`, `.github/` und
@@ -168,9 +170,12 @@ Kurzbefehl-Link, Wächter, Alarm-Versand – prüft
 eigenes Dashboard (`php -S`, leerer Datenordner im Temp-Ordner, freier Port)
 und eine Bark-Attrappe im Testprozess (`harness.mjs`), spricht nur HTTP und
 sagt über `backend.state`/`backend.storage`, welchen gespeicherten Zustand
-sie braucht (die Dateien von PHP, `backend.data`, nur in `php-*.test.mjs`).
+sie braucht (die Dateien von PHP, `backend.data`, nur in `php-*.test.mjs`;
+der Datenordner von Go, `backend.files`, nur in `go-*.test.mjs`).
 Sie sind der Maßstab für die
-geplante Go-Fassung (Treiber über `FW_BACKEND`; Design – Neubau innen, außen
+geplante Go-Fassung (Treiber über `FW_BACKEND`: `harness-php.mjs` bzw.
+`harness-go.mjs`, der hält den Server zum Ändern des Zustands an und startet
+ihn neu; `bash tools/test-go.sh`; Design – Neubau innen, außen
 gleich – in `docs/superpowers/specs/2026-11-17-go-server-neubau-design.md`,
 Plan daneben unter `plans/`): nur Beobachtbares prüfen, nie interne Namen. Eine neue oder geänderte Server-Regel bekommt dort ihren Test –
 für die alte UND die neue Firmware (`box().oldStatus()`).
