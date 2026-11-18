@@ -59,10 +59,25 @@ type partSet struct {
 	taken map[string]bool
 }
 
-func newPartSet() *partSet {
+func newPartSet() *partSet { return buildPartSet(statusPartNames, emptyParts) }
+
+// buildPartSet: je Name die Funktion aus empty. Ein Name ohne Funktion dort
+// (oder eine Funktion ohne Namen) ist ein Fehler im Aufbau des Programms –
+// Abbruch beim Start (parts entsteht beim Laden des Pakets), nicht eine
+// Panik bei jedem Abruf von status.
+func buildPartSet(names []string, empty map[string]func(x *Ctx) any) *partSet {
 	p := &partSet{fns: map[string]func(x *Ctx) any{}, taken: map[string]bool{}}
-	for _, name := range statusPartNames {
-		p.fns[name] = emptyParts[name]
+	for _, name := range names {
+		fn := empty[name]
+		if fn == nil {
+			panic(fmt.Sprintf("dashapi: Teil %q der Antwort von status ohne Wert für einen frischen Datenordner (emptyParts)", name))
+		}
+		p.fns[name] = fn
+	}
+	for name := range empty {
+		if _, ok := p.fns[name]; !ok {
+			panic(fmt.Sprintf("dashapi: emptyParts nennt %q, statusPartNames nicht", name))
+		}
 	}
 	return p
 }

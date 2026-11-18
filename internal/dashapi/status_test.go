@@ -3,6 +3,7 @@ package dashapi
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -207,6 +208,34 @@ func TestStatusParts(t *testing.T) {
 	for _, name := range []string{"command", "demo", "nas_keys_version", "demo_sync_ok", "device_hint", "watchdog"} {
 		p.set(name, f)
 		mustPanic(name+" zweimal", func() { p.set(name, f) })
+	}
+}
+
+// Ein Teil ohne Wert für den frischen Datenordner (oder ein Wert ohne Teil)
+// ist ein Fehler im Aufbau des Programms: Abbruch beim Start, nicht eine
+// Panik bei jedem Abruf von status.
+func TestPartSetNeedsEmptyValue(t *testing.T) {
+	mustPanic := func(what string, fn func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s: kein Abbruch", what)
+			}
+		}()
+		fn()
+	}
+	mustPanic("Teil ohne Wert", func() { buildPartSet(append(slices.Clone(statusPartNames), "neu"), emptyParts) })
+	mustPanic("Wert ohne Teil", func() { buildPartSet(statusPartNames[1:], emptyParts) })
+	mustPanic("Wert nil", func() {
+		empty := maps.Clone(emptyParts)
+		empty["command"] = nil
+		buildPartSet(statusPartNames, empty)
+	})
+	p := buildPartSet(statusPartNames, emptyParts) // so baut ihn das Programm
+	for _, name := range statusPartNames {
+		if p.fns[name] == nil {
+			t.Errorf("%s ohne Funktion", name)
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -115,6 +116,43 @@ func TestAppPageValues(t *testing.T) {
 	}
 	if rec.Code != 429 {
 		t.Errorf("Status %d", rec.Code)
+	}
+}
+
+// Ein Benutzername mit Zeichen, die in HTML etwas bedeuten, kommt maskiert an
+// – als stehen gebliebener Name auf der Anmeldeseite wie im meta-Tag der
+// App-Hülle – und nirgends roh. Schützt davor, dass später text/template an
+// diese Stelle gerät oder eine Zeile mit dem Namen als fertiges HTML
+// (template.HTML) gebaut wird (die Vergleichsdateien von PHP enthalten solche
+// Zeichen nicht).
+func TestPagesEscapeUserName(t *testing.T) {
+	b := pageBench(t)
+	const evil = `"><script>&'`
+	cases := []struct {
+		name   string
+		render func(w http.ResponseWriter)
+		attr   *regexp.Regexp
+	}{
+		{"Anmeldeseite", func(w http.ResponseWriter) { renderLogin(b.c, w, 200, textLoginFailed, evil) },
+			regexp.MustCompile(`spellcheck="false"\s+value="([^"]*)"`)},
+		{"App-Hülle", func(w http.ResponseWriter) {
+			renderApp(b.c, w, 200, &Session{User: evil, Role: "admin", CSRF: "0123456789abcdef"})
+		}, regexp.MustCompile(`<meta name="user" content="([^"]*)">`)},
+	}
+	for _, tc := range cases {
+		rec := httptest.NewRecorder()
+		tc.render(rec)
+		body := rec.Body.String()
+		if strings.Contains(body, evil) || strings.Contains(body, "<script>") {
+			t.Errorf("%s: Name roh in der Seite:\n%s", tc.name, body)
+		}
+		m := tc.attr.FindStringSubmatch(body)
+		if m == nil {
+			t.Fatalf("%s: Attribut mit dem Namen nicht gefunden:\n%s", tc.name, body)
+		}
+		if strings.ContainsAny(m[1], `<>"'`) || html.UnescapeString(m[1]) != evil {
+			t.Errorf("%s: %q – nicht maskiert oder nicht der Name", tc.name, m[1])
+		}
 	}
 }
 

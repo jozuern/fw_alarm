@@ -148,6 +148,11 @@ func (e Entry) lookup(k string) (any, bool) {
 // als "1", false/null/fehlend als "", Objekte und Listen als "".
 func (e Entry) Str(k string) string {
 	v, _ := e.lookup(k)
+	return StrOf(v)
+}
+
+// StrOf: ein Wert, wie ihn Str liest (nil = fehlt).
+func StrOf(v any) string {
 	switch x := v.(type) {
 	case string:
 		return x
@@ -173,6 +178,12 @@ func (e Entry) Str(k string) string {
 // alles andere 0.
 func (e Entry) Int(k string) int64 {
 	v, _ := e.lookup(k)
+	return IntOf(v)
+}
+
+// IntOf: ein Wert, wie ihn Int liest (nil = fehlt) – auch für einen Text aus
+// einer Anfrage, den PHP mit (int) liest.
+func IntOf(v any) int64 {
 	switch x := v.(type) {
 	case json.Number:
 		return phpInt(string(x))
@@ -196,6 +207,11 @@ func (e Entry) Int(k string) int64 {
 // 0, "", "0" und leere Objekte/Listen – alles andere ist wahr.
 func (e Entry) Bool(k string) bool {
 	v, _ := e.lookup(k)
+	return BoolOf(v)
+}
+
+// BoolOf: ein Wert, wie ihn Bool liest (nil = fehlt).
+func BoolOf(v any) bool {
 	switch x := v.(type) {
 	case nil:
 		return false

@@ -90,4 +90,14 @@ func TestEntryAccessors(t *testing.T) {
 			t.Errorf("Bool(%q) = %v, erwartet %v", k, got, want)
 		}
 	}
+	// Dieselben Regeln für einen Wert ohne Eintrag (etwa einen Parameter
+	// der Anfrage).
+	for k, v := range e {
+		if StrOf(v) != e.Str(k) || IntOf(v) != e.Int(k) || BoolOf(v) != e.Bool(k) {
+			t.Errorf("%q: StrOf/IntOf/BoolOf weichen von Str/Int/Bool ab", k)
+		}
+	}
+	if IntOf(" 25x") != 25 || IntOf("abc") != 0 || IntOf(nil) != 0 || StrOf(nil) != "" || BoolOf(nil) {
+		t.Error("Werte ohne Eintrag")
+	}
 }

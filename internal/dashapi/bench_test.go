@@ -43,9 +43,19 @@ type bench struct {
 
 func newBench(t *testing.T) *bench {
 	t.Helper()
+	return newBenchOn(t, storetest.New())
+}
+
+// benchDir: der Datenordner des Prüfstands in seiner Dateischicht.
+var benchDir = filepath.FromSlash("/daten")
+
+// newBenchOn: der Prüfstand auf einer Dateischicht, in die der Test vorher
+// Dateien gelegt hat (etwa einen Verlauf).
+func newBenchOn(t *testing.T, f *storetest.FaultFS) *bench {
+	t.Helper()
 	log := slog.New(slog.DiscardHandler)
 	b := &bench{t: t, clk: clock.NewFake(t0)}
-	st, _, err := store.Open(filepath.FromSlash("/daten"), storetest.New(), clock.NewFake(t0), log)
+	st, _, err := store.Open(benchDir, f, clock.NewFake(t0), log)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,8 +8,8 @@ import (
 	"fwalarm/internal/model"
 )
 
-// Die Leseseite des Verlaufs: History und LogAndWait. Beide lesen nur den
-// Speicher – nie eine Datei.
+// Die Leseseite des Verlaufs: History, HistoryScan und LogAndWait. Alle
+// lesen nur den Speicher – nie eine Datei.
 
 // History liefert Verlaufseinträge, neueste zuerst – aus dem Speicher, nie
 // aus einer Datei: zuerst, was noch nicht angehängt ist (übergeben, oder
@@ -18,6 +18,20 @@ import (
 // werden übersprungen; keep (nil = alle) wählt aus, limit begrenzt. Jeder
 // Eintrag ist eine eigene Kopie.
 func (s *Store) History(limit int, keep func(model.Entry) bool) []model.Entry {
+	return s.HistoryScan(limit, 0, nil, keep)
+}
+
+// HistoryScan ist History für Leser, die nur wenige Einträge suchen (PHP:
+// read_command_log_matching): Eine Zeile der Dateien, die may ablehnt, wird
+// nicht dekodiert – may sieht die rohe Zeile (nur lesen, nicht behalten) und
+// muss großzügiger sein als keep; nil = jede Zeile. Nach
+// maxBytes Bytes an Zeilen der Dateien (samt Zeilenende, neueste zuerst, über
+// beide Dateien; ≤ 0 = ohne Grenze) ist Schluss, auch wenn limit noch nicht
+// erreicht ist: So kostet ein Aufruf höchstens so viel, wie die Grenze
+// erlaubt. Was noch nicht angehängt ist, zählt nicht dazu und geht nicht
+// durch may (es ist noch keine Zeile) – das sind höchstens die Einträge
+// zweier outboxen.
+func (s *Store) HistoryScan(limit int, maxBytes int64, may func(line []byte) bool, keep func(model.Entry) bool) []model.Entry {
 	out := make([]model.Entry, 0, min(max(limit, 0), 100))
 	if limit <= 0 {
 		return out
@@ -35,8 +49,18 @@ func (s *Store) History(limit int, keep func(model.Entry) bool) []model.Entry {
 			return out
 		}
 	}
+	budget := maxBytes
 	for _, lines := range [][][]byte{cur, old} {
 		for i := len(lines) - 1; i >= 0; i-- {
+			if maxBytes > 0 {
+				if budget <= 0 {
+					return out
+				}
+				budget -= int64(len(lines[i])) + 1
+			}
+			if may != nil && !may(lines[i]) {
+				continue
+			}
 			if e, ok := parseLine(lines[i]); ok && add(e) {
 				return out
 			}

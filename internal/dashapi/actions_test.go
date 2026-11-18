@@ -52,12 +52,10 @@ func TestActionTable(t *testing.T) {
 	}
 
 	src := phpSource(t, "dashboard_api.php")
-	start := strings.Index(src, "const DASHBOARD_ACTIONS = [\n")
-	end := strings.Index(src[start:], "\n];\n")
-	if start < 0 || end < 0 {
+	block, ok := phpBlock(src, "const DASHBOARD_ACTIONS = [\n", "\n];\n")
+	if !ok {
 		t.Fatal("DASHBOARD_ACTIONS nicht gefunden")
 	}
-	block := src[start : start+end]
 	row := regexp.MustCompile(`^\s*'([a-z_]+)'\s*=> \['post' => (true|false), 'csrf' => (true|false), 'admin' => (true|false)\],$`)
 	var php []rule
 	for _, line := range strings.Split(block, "\n")[1:] {
@@ -76,6 +74,33 @@ func TestActionTable(t *testing.T) {
 	for i := range php {
 		if php[i] != table[i] {
 			t.Errorf("Zeile %d: PHP %+v, Go %+v", i, php[i], table[i])
+		}
+	}
+}
+
+// phpBlock: der Text ab open bis vor das erste close danach; false, wenn
+// eines fehlt – dann scheitert der Test mit seiner Meldung, statt beim
+// Zerschneiden abzustürzen (etwa nach einer Umbenennung im PHP-Code).
+func phpBlock(src, open, close string) (string, bool) {
+	start := strings.Index(src, open)
+	if start < 0 {
+		return "", false
+	}
+	end := strings.Index(src[start:], close)
+	if end < 0 {
+		return "", false
+	}
+	return src[start : start+end], true
+}
+
+func TestPHPBlock(t *testing.T) {
+	src := "a\nconst X = [\n  1,\n];\nb"
+	if got, ok := phpBlock(src, "const X = [\n", "\n];\n"); !ok || got != "const X = [\n  1," {
+		t.Errorf("gefunden: %q %v", got, ok)
+	}
+	for _, m := range [][2]string{{"const Y = [\n", "\n];\n"}, {"const X = [\n", "\n);\n"}, {"b", "a"}} {
+		if got, ok := phpBlock(src, m[0], m[1]); ok || got != "" {
+			t.Errorf("%q … %q: %q %v", m[0], m[1], got, ok)
 		}
 	}
 }

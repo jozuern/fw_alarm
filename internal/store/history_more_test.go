@@ -261,3 +261,64 @@ func checkNewest(t *testing.T, got, all []model.Entry, limit int) {
 		t.Errorf("%d Bytes im Speicher, Grenze %d", size, limit)
 	}
 }
+
+// HistoryScan ist History für Leser mit Filter: Zeilen, die die Vorprüfung
+// ablehnt, kommen nie bei keep an; nach maxBytes Bytes an Zeilen der Dateien
+// (neueste zuerst, samt Zeilenende) ist Schluss – auch über beide Dateien
+// hinweg. Was noch nicht angehängt ist, zählt nicht zur Grenze und geht
+// nicht durch die Vorprüfung (es ist keine Zeile). Ohne Grenze und ohne
+// Vorprüfung ist es History.
+func TestHistoryScan(t *testing.T) {
+	f := storetest.New()
+	plant(t, f, "state.json", sample(12))
+	lines := []string{
+		`{"event":"key_added","label":"A","log_at":1763373000,"uid":"a"}`,
+		`{"event":"key_added","label":"B skip","log_at":1763373001,"uid":"b"}`,
+		`{"event":"key_added","label":"C","log_at":1763373002,"uid":"c"}`,
+		`{"event":"key_added","label":"D","log_at":1763373003,"uid":"d"}`,
+	}
+	f.Put(at("history.1.jsonl"), []byte(lines[0]+"\n"+lines[1]+"\n"))
+	f.Put(at("history.jsonl"), []byte(lines[2]+"\n"+lines[3]+"\n"))
+	s, _ := openFake(t, f)
+	release := hang(t, f, at("history.jsonl"))
+	pend := entryAt("skip, aber noch nicht angehängt", t0)
+	s.Log(pend)
+
+	var seen []string
+	may := func(line []byte) bool {
+		e, _ := store.ParseHistoryLine(line)
+		seen = append(seen, uidOf(e))
+		return !strings.Contains(string(line), "skip")
+	}
+	size := func(i int) int64 { return int64(len(lines[i])) + 1 }
+	cases := []struct {
+		name     string
+		maxBytes int64
+		want     []string
+		seen     []string
+	}{
+		{"ohne Grenze", 0, []string{uidOf(pend), "d", "c", "a"}, []string{"d", "c", "b", "a"}},
+		{"Grenze nach C", size(3) + size(2), []string{uidOf(pend), "d", "c"}, []string{"d", "c"}},
+		{"ein Byte mehr: B wird noch angesehen", size(3) + size(2) + 1, []string{uidOf(pend), "d", "c"}, []string{"d", "c", "b"}},
+		{"Grenze über beide Dateien", size(3) + size(2) + size(1) + 1, []string{uidOf(pend), "d", "c", "a"}, []string{"d", "c", "b", "a"}},
+	}
+	for _, tc := range cases {
+		seen = nil
+		if got := uidsOf(s.HistoryScan(10, tc.maxBytes, may, nil)); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: %v statt %v", tc.name, got, tc.want)
+		}
+		if !slices.Equal(seen, tc.seen) {
+			t.Errorf("%s: Vorprüfung sah %v statt %v", tc.name, seen, tc.seen)
+		}
+	}
+	// limit zählt wie bei History nur, was keep annimmt.
+	onlyC := func(e model.Entry) bool { return e.Str("label") == "C" || e.Str("label") == "A" }
+	if got := uidsOf(s.HistoryScan(1, 0, may, onlyC)); !slices.Equal(got, []string{"c"}) {
+		t.Errorf("limit 1: %v", got)
+	}
+	if got, want := uidsOf(s.HistoryScan(10, 0, nil, nil)), uidsOf(s.History(10, nil)); !slices.Equal(got, want) {
+		t.Errorf("ohne Grenze und Vorprüfung %v, History %v", got, want)
+	}
+	release()
+	flush(t, s)
+}

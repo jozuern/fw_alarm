@@ -64,10 +64,13 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
 - Aufbau: Modul `fwalarm` (`go.mod`, Go-Version festgeschrieben);
   `cmd/fw-alarm/` verteilt nur auf die Unterbefehle (einzige Stelle mit
   `os.Exit`), alles andere liegt in `internal/` (`clock`, `bg`, `textde`,
-  `config`, `model`, `store`, `bark`, `core`, `web`, `dashapi`, `control`,
-  `app`, weitere folgen laut Plan). Die Zugangsregeln aller
+  `config`, `model`, `store`, `bark`, `core`, `logview`, `web`, `dashapi`,
+  `control`, `app`, weitere folgen laut Plan). Die Zugangsregeln aller
   Dashboard-Aktionen stehen als EINE Tabelle in `internal/dashapi/actions.go`
-  (wie `DASHBOARD_ACTIONS`); Anmeldeseite und App-Hülle kommen aus
+  (wie `DASHBOARD_ACTIONS`), die Verlaufs-Ereignisse (Kategorie, nur Admin,
+  freigegebene Felder) in `internal/logview/events.go` (wie
+  `log_event_types()`; ein neues Ereignis braucht dort eine Zeile und in
+  `logic.js` einen Text); Anmeldeseite und App-Hülle kommen aus
   `internal/web/templates/` (Byte für Byte wie `lib/shell.php`, Vergleich mit
   `internal/web/testdata/`). Abhängigkeiten nur
   Standardbibliothek plus `golang.org/x/crypto`, `x/sys`, `x/term` und
