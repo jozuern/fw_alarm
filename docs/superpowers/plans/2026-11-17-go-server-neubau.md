@@ -863,9 +863,9 @@ func (s *State) Enqueue(typ, by string, now time.Time, lockSeconds int) (Command
 func (s *State) ExpirePending(now time.Time, ttl int) bool                                    // pending zu alt → expired
 func (s *State) NoteBoxCommandID(last int) bool           // PHP api/poll.php:61-77: next_id über die Nummer der Box heben, wartenden Befehl neu nummerieren; true = etwas geändert
 func (s *State) Deliver(to string, now time.Time) *Command           // pending → delivered; nil, wenn nichts wartet
-func (s *State) Ack(id int, by, result, message string, now time.Time) AckKind   // AckFirst | AckRepeat | AckLate | AckUnknown
+func (s *State) Ack(id int, by, result, message string, now time.Time) (AckKind, Entry)   // AckFirst | AckRepeat | AckLate | AckUnknown; für AckLate/AckUnknown der late_ack-Eintrag, den der Handler über Store.Log schreibt (nichts Dauerhaftes) – so gebaut in der Nachbesserung von Aufgabe 18
 func (s *State) Cancel(by, reason string, now time.Time) (Command, bool)
-func (s *State) DemoAlarmStillSafe(cmd Command) bool      // PHP: demo_alarm_still_safe
+func (s *State) DemoAlarmStillSafe(cmd Command, box *BoxStatus) bool      // PHP: demo_alarm_still_safe – braucht den letzten Status der Box (keys_count == 1), der in Runtime liegt; im Poll INNERHALB der Änderung gelesen
 ```
 
 - Poll (spec §6.2), one `web.Budget(web.BudgetBox)` for everything: machine auth (else 403 `FORBIDDEN`) → `mutes.Expire` → for the expected board: one `Update` that applies `NoteBoxCommandID`, expires an old pending command, cancels an ALARM command whose demo state changed, and marks the waiting one `delivered`. **Only when that update returned nil does the answer carry the command.** Every other outcome: 200 `type=NONE`. The answer always carries `keys_version` (0 in emergency mode). A poll for which none of these steps changes anything saves nothing.
