@@ -78,7 +78,8 @@ oben und unten Beschriebene); nichts an der Go-Fassung darf ihr Verhalten
   `control_socket`, `check_interval_seconds` und die Probe-Sperre
   `send_guard_keys`/`send_guard_until`; fehlt ein Schlüssel, gilt der Wert,
   den der PHP-Code dafür nimmt; eine Datei ohne einen einzigen Wert ist
-  fehlerhaft, und `config.Write` schreibt die Probe-Sperre als Erstes. Im
+  fehlerhaft, und `config.Write` schreibt die Probe-Sperre als Erstes
+  (`send_guard_keys`, `timezone`, `send_guard_until`). Im
   laufenden Server prüft ein Hintergrund-Prüfer die Datei alle 2 s; eine
   geänderte Fassung – gültig oder fehlerhaft – gilt bzw. gilt als fehlerhaft
   erst, wenn sie 2 s später unverändert ist (eine halb geschriebene Datei

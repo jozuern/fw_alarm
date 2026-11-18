@@ -38,9 +38,11 @@ import (
 // Die Reihenfolge der Felder ist die Reihenfolge in der geschriebenen Datei.
 type Config struct {
 	// Probe-Sperre: Solange sie gilt, sendet der Server an keinen anderen Key.
-	// Sie steht als Erstes in der Datei – so hält sie auch ein abgeschnittener
-	// Anfang der Datei noch.
+	// Sie steht als Erstes in der Datei, zwischen ihren beiden Werten die
+	// Zeitzone ihres Endes – so hält ein abgeschnittener Anfang der Datei sie
+	// entweder ganz (samt Zeitzone) oder ist fehlerhaft.
 	SendGuardKeys  []string `toml:"send_guard_keys"`
+	Timezone       string   `toml:"timezone"`
 	SendGuardUntil string   `toml:"send_guard_until"` // Ortszeit "JJJJ-MM-TT HH:MM" in Timezone
 
 	// Zugang der Box: SHA-256 des Maschinen-Tokens (vereinheitlicht: ohne
@@ -89,8 +91,6 @@ type Config struct {
 	BarkFalseAlarmSound  string `toml:"bark_false_alarm_sound"`
 	BarkFalseAlarmVolume int    `toml:"bark_false_alarm_volume"` // ohne Eintrag: BarkAlarmVolume
 
-	Timezone string `toml:"timezone"`
-
 	// Neu in der Go-Fassung.
 	StateDir             string `toml:"state_dir"`
 	Listen               string `toml:"listen"`         // host:port oder unix:<Pfad>
@@ -114,6 +114,7 @@ const (
 func defaults() *Config {
 	return &Config{
 		SendGuardKeys:                 []string{},                                  // neu
+		Timezone:                      "Europe/Berlin",                             // Vorgabe des Plans (PHP: die des Servers)
 		SendGuardUntil:                "",                                          // neu
 		MachineTokenSHA256:            "",                                          // common.php:609
 		DashboardUser:                 "",                                          // common.php:835 (index.php:69 ohne ??)
@@ -144,7 +145,6 @@ func defaults() *Config {
 		BarkMaxTries:                  3,                                           // common.php:3008
 		BarkFalseAlarmSound:           "glass",                                     // common.php:2976
 		BarkFalseAlarmVolume:          10,                                          // common.php:2972 (= bark_alarm_volume)
-		Timezone:                      "Europe/Berlin",                             // Vorgabe des Plans (PHP: die des Servers)
 		StateDir:                      DefaultStateDir,                             // neu
 		Listen:                        "127.0.0.1:8080",                            // neu
 		ControlSocket:                 DefaultControlSocket,                        // neu

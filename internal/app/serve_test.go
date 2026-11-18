@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -468,8 +469,8 @@ func TestDefaultLastGoodPath(t *testing.T) {
 // Server, den niemand fragen oder beenden kann, gibt es nicht).
 func TestWaitForStop(t *testing.T) {
 	type result struct {
-		err      error
-		ctlEnded bool
+		err                error
+		srvEnded, ctlEnded bool
 	}
 	run := func(name string, feed func(cancel context.CancelFunc, stop chan struct{}, srv, ctl chan error)) result {
 		t.Helper()
@@ -479,8 +480,8 @@ func TestWaitForStop(t *testing.T) {
 		srv, ctl := make(chan error, 1), make(chan error, 1)
 		got := make(chan result, 1)
 		go func() {
-			err, ended := waitForStop(ctx, stop, srv, ctl, slog.New(slog.DiscardHandler))
-			got <- result{err, ended}
+			srvEnded, ctlEnded, err := waitForStop(ctx, stop, srv, ctl, slog.New(slog.DiscardHandler))
+			got <- result{err, srvEnded, ctlEnded}
 		}()
 		feed(cancel, stop, srv, ctl)
 		select {
@@ -491,18 +492,18 @@ func TestWaitForStop(t *testing.T) {
 			return result{}
 		}
 	}
-	if r := run("Signal", func(cancel context.CancelFunc, _ chan struct{}, _, _ chan error) { cancel() }); r.err != nil || r.ctlEnded {
+	if r := run("Signal", func(cancel context.CancelFunc, _ chan struct{}, _, _ chan error) { cancel() }); r.err != nil || r.srvEnded || r.ctlEnded {
 		t.Errorf("Signal: %+v", r)
 	}
-	if r := run("stop", func(_ context.CancelFunc, stop chan struct{}, _, _ chan error) { close(stop) }); r.err != nil || r.ctlEnded {
+	if r := run("stop", func(_ context.CancelFunc, stop chan struct{}, _, _ chan error) { close(stop) }); r.err != nil || r.srvEnded || r.ctlEnded {
 		t.Errorf("stop: %+v", r)
 	}
-	if r := run("HTTP", func(_ context.CancelFunc, _ chan struct{}, srv, _ chan error) { srv <- errors.New("accept: kaputt") }); r.err == nil || r.ctlEnded {
+	if r := run("HTTP", func(_ context.CancelFunc, _ chan struct{}, srv, _ chan error) { srv <- errors.New("accept: kaputt") }); r.err == nil || !r.srvEnded || r.ctlEnded {
 		t.Errorf("HTTP-Server endet: %+v", r)
 	}
 	for _, e := range []error{errors.New("accept: kaputt"), nil} {
 		r := run("Steuer-Zugang", func(_ context.CancelFunc, _ chan struct{}, _, ctl chan error) { ctl <- e })
-		if r.err == nil || !r.ctlEnded || !strings.Contains(r.err.Error(), "Steuer-Zugang") {
+		if r.err == nil || r.srvEnded || !r.ctlEnded || !strings.Contains(r.err.Error(), "Steuer-Zugang") {
 			t.Errorf("Steuer-Zugang endet (%v): %+v", e, r)
 		}
 	}
@@ -539,4 +540,104 @@ func TestServeQuickRestart(t *testing.T) {
 		t.Error(err)
 	}
 	gone(t, b.ctl, b.http)
+}
+
+// brokenAccept ist eine Hülle um einen Lauscher, deren Annehmen nach break
+// dauerhaft scheitert – wie ENOMEM oder ENOBUFS beim accept, was net/http
+// nicht als vorübergehend ansieht.
+type brokenAccept struct {
+	net.Listener
+	broken atomic.Bool
+}
+
+var errAcceptBroken = errors.New("accept: kein Speicher mehr (Probe)")
+
+func (b *brokenAccept) Accept() (net.Conn, error) {
+	c, err := b.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if b.broken.Load() {
+		c.Close()
+		return nil, errAcceptBroken
+	}
+	return c, nil
+}
+
+// unexpectedEnd: Der Lauscher which ("http" oder "control") hört mitten im
+// Betrieb auf. Serve muss geordnet enden – mit einem Fehler, der den Grund
+// nennt, freier Sperre und ohne Socket-Datei –, auch wenn danach noch ein
+// stop oder ein Signal kommt.
+func unexpectedEnd(t *testing.T, which, cause string) {
+	b := newBench(t)
+	wrapped := make(chan *brokenAccept, 1)
+	logs := &syncBuffer{}
+	opts := ServeOptions{ConfigPath: b.config, LastGoodPath: b.lastGood, Version: "test-ende",
+		Log: slog.New(slog.NewTextHandler(logs, nil)),
+		wrapListener: func(w string, ln net.Listener) net.Listener {
+			if w != which {
+				return ln
+			}
+			ba := &brokenAccept{Listener: ln}
+			wrapped <- ba
+			return ba
+		}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, opts) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, _, err := control.Call(b.ctl, "health", time.Second); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Server antwortet nicht\n%s", logs)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	ba := <-wrapped
+	ba.broken.Store(true)
+	sock := b.http
+	if which == "control" {
+		sock = b.ctl
+	}
+	if conn, err := net.DialTimeout("unix", sock, time.Second); err == nil {
+		conn.Close() // nur der Anstoß für das scheiternde Annehmen
+	}
+
+	// Ein stop und ein Signal, während der Server schon schließt, ändern
+	// nichts und halten nichts auf.
+	waitFor := time.Now().Add(10 * time.Second)
+	for !strings.Contains(logs.String(), cause) && time.Now().Before(waitFor) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	go b.run("stop")
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), cause) || !strings.Contains(err.Error(), "kein Speicher mehr") {
+			t.Errorf("Serve: %v – erwartet einen Fehler mit %q", err, cause)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatalf("Serve endet nicht, nachdem %s aufhörte\n%s", which, logs)
+	}
+	st, _, err := store.Open(b.state, store.OSFS(), clock.Real(), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Sperre nach dem Ende nicht frei: %v", err)
+	}
+	if err := st.Close(context.Background()); err != nil {
+		t.Error(err)
+	}
+	gone(t, b.ctl, b.http)
+}
+
+func TestServeHTTPListenerEnds(t *testing.T) {
+	unexpectedEnd(t, "http", "HTTP-Server unerwartet beendet")
+}
+
+func TestServeControlListenerEnds(t *testing.T) {
+	unexpectedEnd(t, "control", "Steuer-Zugang unerwartet beendet")
 }

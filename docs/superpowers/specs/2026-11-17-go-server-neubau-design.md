@@ -528,7 +528,9 @@ sie bei der nächsten Prüfung unverändert ist: Ein Editor, der gerade
 schreibt, löst nichts aus, auch nicht mit einem halben Stand, der gültiges
 TOML mit weniger Werten ist (es gälten die Standards – ohne Probe-Sperre).
 Eine Datei, die keinen einzigen Wert setzt, ist fehlerhaft; die Probe-Sperre
-steht in der geschriebenen Datei als Erstes.
+steht in der geschriebenen Datei als Erstes (`send_guard_keys`, `timezone`,
+`send_guard_until`) – ein abgeschnittener Anfang hält sie samt Zeitzone oder
+ist fehlerhaft.
 
 **Ist die Datei fehlerhaft**, gilt die letzte gute weiter – aber nicht
 stillschweigend (ein Passwort mit Tippfehler zu ändern, darf nicht so

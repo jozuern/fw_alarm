@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime"
 	"runtime/debug"
@@ -100,11 +101,13 @@ func Serve(ctx context.Context, socketPath string, h Hooks, log *slog.Logger) er
 }
 
 // ServeListener wie Serve, auf einem schon offenen Socket (so erfährt der
-// Start einen Fehler beim Lauschen, bevor er weitermacht). Endet der Socket
-// von selbst (Fehler beim Annehmen), kommt dieser Fehler zurück. Wenn
-// ServeListener zurückkehrt, ist der Socket geschlossen, seine Datei fort
-// (sofern sie noch die eigene war), und nichts von ihm fasst den Pfad mehr an.
-func ServeListener(ctx context.Context, ln *Socket, h Hooks, log *slog.Logger) error {
+// Start einen Fehler beim Lauschen, bevor er weitermacht) – gedacht für das
+// Ergebnis von ListenUnix (oder eine Hülle darum, deren Close es schließt).
+// Endet der Socket von selbst (Fehler beim Annehmen), kommt dieser Fehler
+// zurück. Wenn ServeListener zurückkehrt, ist der Socket geschlossen, seine
+// Datei fort (sofern sie noch die eigene war), und nichts von ihm fasst den
+// Pfad mehr an.
+func ServeListener(ctx context.Context, ln net.Listener, h Hooks, log *slog.Logger) error {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -134,7 +137,7 @@ func ServeListener(ctx context.Context, ln *Socket, h Hooks, log *slog.Logger) e
 		<-served // Serve schließt den Socket beim Zurückkehren – erst danach geht es weiter
 	}
 	if cerr := ln.Close(); cerr != nil { // schon geschlossen: dasselbe Ergebnis noch einmal
-		log.Warn("Steuer-Socket nicht sauber geschlossen", "pfad", ln.Path(), "err", cerr)
+		log.Warn("Steuer-Socket nicht sauber geschlossen", "pfad", ln.Addr().String(), "err", cerr)
 	}
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil

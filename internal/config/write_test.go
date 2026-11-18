@@ -226,7 +226,10 @@ func TestWriteSendGuardFirst(t *testing.T) {
 			keys = append(keys, name)
 		}
 	}
-	if len(keys) < 3 || keys[0] != "send_guard_keys" || keys[1] != "send_guard_until" {
+	// Erst die Keys, dann die Zeitzone, dann das Ende: Ein Anfang, der die
+	// Sperre ganz enthält, enthält auch ihre Zeitzone; einer mit Keys ohne
+	// Ende ist fehlerhaft (nur einer der beiden Werte gesetzt).
+	if len(keys) < 4 || keys[0] != "send_guard_keys" || keys[1] != "timezone" || keys[2] != "send_guard_until" {
 		t.Fatalf("Reihenfolge der Schlüssel: %q", keys)
 	}
 	end := strings.Index(written, "send_guard_until = ")
@@ -234,5 +237,39 @@ func TestWriteSendGuardFirst(t *testing.T) {
 	prefix := mustParse(t, []byte(written[:end]))
 	if _, _, active := prefix.SendGuard(loadMoment(t)); !active {
 		t.Error("der Anfang bis zur Sperre hält sie nicht")
+	}
+}
+
+// Jeder Anfang der geschriebenen Datei, abgeschnitten an einem Zeilenende,
+// ist entweder fehlerhaft oder hält die Sperre – mit demselben Ende, auch
+// in einer anderen Zeitzone als der voreingestellten.
+func TestWritePrefixesKeepTheLock(t *testing.T) {
+	full := Write(mustParse(t, tomlFile(map[string]string{
+		"timezone":         `"America/New_York"`,
+		"send_guard_keys":  `["statuskey0001"]`,
+		"send_guard_until": `"2026-11-20 05:30"`, // New York: 11:30 in Berlin
+	})))
+	now := loadMoment(t)
+	_, wantUntil, active := mustParse(t, full).SendGuard(now)
+	if !active {
+		t.Fatal("die Sperre der ganzen Datei gilt nicht")
+	}
+	cuts := 0
+	for i, b := range full {
+		if b != '\n' {
+			continue
+		}
+		cuts++
+		c, err := ParseAt(full[:i+1], now)
+		if err != nil {
+			continue
+		}
+		if _, until, ok := c.SendGuard(now); !ok || !until.Equal(wantUntil) {
+			t.Fatalf("Anfang bis Zeile %d: Sperre aktiv=%v bis %v, erwartet bis %v\n%s",
+				cuts, ok, until, wantUntil, full[:i+1])
+		}
+	}
+	if cuts < 50 {
+		t.Fatalf("nur %d Zeilen", cuts)
 	}
 }

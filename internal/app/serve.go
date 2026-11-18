@@ -35,6 +35,12 @@ type ServeOptions struct {
 	LastGoodPath string       // Kopie der letzten gültigen Fassung, gelesen, wenn config.toml nicht ladbar ist
 	Version      string       // Stand des Programms (fw-alarm version)
 	Log          *slog.Logger // nil = Text auf stdout
+
+	// wrapListener: nur für die Tests dieses Pakets (von außen nicht
+	// erreichbar) – legt eine Hülle um den Lauscher von listen ("http") und
+	// den des Steuer-Zugangs ("control"), um ein unerwartetes Ende beim
+	// Annehmen zu prüfen. nil = die Lauscher, wie sie sind.
+	wrapListener func(which string, ln net.Listener) net.Listener
 }
 
 // Serve ist der Server (fw-alarm serve). Start: Konfiguration (sonst die
@@ -134,11 +140,16 @@ func Serve(ctx context.Context, o ServeOptions) error {
 	if err := prov.KeepCopies(cfg.StateDir); err != nil {
 		log.Warn("Kopie der Konfiguration nicht geschrieben", "err", err)
 	}
+	// Was die Server annehmen; Schließen schließt immer auch das Original.
+	var httpAccept, ctlAccept net.Listener = httpLn, ctlLn
+	if o.wrapListener != nil {
+		httpAccept, ctlAccept = o.wrapListener("http", httpLn), o.wrapListener("control", ctlLn)
+	}
 
 	ctlCtx, ctlCancel := context.WithCancel(context.Background())
 	defer ctlCancel()
 	ctlDone := make(chan error, 1)
-	go func() { ctlDone <- control.ServeListener(ctlCtx, ctlLn, hooks, log) }()
+	go func() { ctlDone <- control.ServeListener(ctlCtx, ctlAccept, hooks, log) }()
 
 	provCtx, provCancel := context.WithCancel(context.Background())
 	defer provCancel()
@@ -150,28 +161,38 @@ func Serve(ctx context.Context, o ServeOptions) error {
 
 	srv := rt.Server(httpSock != nil)
 	srvDone := make(chan error, 1)
-	go func() { srvDone <- srv.Serve(httpLn) }()
+	go func() { srvDone <- srv.Serve(httpAccept) }()
 
 	log.Info("Server läuft", "version", o.Version, "adresse", httpLn.Addr().String(),
 		"steuer", cfg.ControlSocket, "datenordner", cfg.StateDir, "start", info.Mode.String(),
 		"konfiguration_ok", prov.OK())
 
-	runErr, ctlEnded := waitForStop(ctx, stopRequested, srvDone, ctlDone, log)
+	srvEnded, ctlEnded, runErr := waitForStop(ctx, stopRequested, srvDone, ctlDone, log)
 	stopNow()
 
 	// Beenden, in dieser Reihenfolge – ist der Steuer-Socket fort (darauf
 	// wartet fw-alarm stop), fasst dieser Server weder den Datenordner noch
-	// einen der beiden Socket-Pfade mehr an:
+	// einen der beiden Socket-Pfade mehr an. Ein Signal oder ein stop, das
+	// jetzt noch kommt, ändert nichts: Hier wartet nichts mehr darauf, und
+	// jedes Warten unten endet von selbst (Frist, oder der Server ist schon
+	// fort und wird nicht noch einmal abgewartet).
 	// 1. HTTP: keine neuen Verbindungen, offene Anfragen höchstens drainLimit,
 	//    der Socket ist zu (seine Datei fort, wenn sie noch die eigene ist).
 	dctx, cancel := context.WithTimeout(context.Background(), drainLimit)
-	if err := srv.Shutdown(dctx); err != nil {
+	switch err := srv.Shutdown(dctx); {
+	case err == nil:
+	case errors.Is(err, context.DeadlineExceeded):
 		log.Warn("offene Anfragen nach der Frist abgebrochen", "frist", drainLimit)
 		_ = srv.Close() // hart schließen; ein Fehler dabei ändert nichts mehr
+	default:
+		log.Warn("HTTP-Lauscher nicht sauber geschlossen", "err", err)
+		_ = srv.Close() // wie oben
 	}
 	cancel()
-	if !errors.Is(<-srvDone, http.ErrServerClosed) && runErr == nil {
-		log.Warn("HTTP-Server endete beim Beenden mit einem Fehler")
+	if !srvEnded { // sonst hat waitForStop sein Ergebnis schon genommen
+		if err := <-srvDone; !errors.Is(err, http.ErrServerClosed) {
+			log.Warn("HTTP-Server endete beim Beenden mit einem Fehler", "err", err)
+		}
 	}
 	if err := httpLn.Close(); err != nil && httpSock != nil {
 		log.Warn("Socket von listen nicht sauber geschlossen", "pfad", httpSock.Path(), "err", err)
@@ -228,8 +249,9 @@ func (g *gate) close() {
 // – oder das unerwartete Ende des HTTP-Servers oder des Steuer-Zugangs. Ein
 // Server, den niemand mehr fragen oder beenden kann, ist nicht gesund: Er
 // beendet sich geordnet mit einem Fehler (systemd startet ihn neu).
-// ctlEnded: Der Steuer-Zugang ist schon fort (auf ihn wird nicht mehr gewartet).
-func waitForStop(ctx context.Context, stop <-chan struct{}, srvDone, ctlDone <-chan error, log *slog.Logger) (err error, ctlEnded bool) {
+// srvEnded/ctlEnded: Dessen Ergebnis ist schon genommen – der HTTP-Server
+// bzw. der Steuer-Zugang ist fort und wird nicht noch einmal abgewartet.
+func waitForStop(ctx context.Context, stop <-chan struct{}, srvDone, ctlDone <-chan error, log *slog.Logger) (srvEnded, ctlEnded bool, err error) {
 	select {
 	case <-ctx.Done():
 		log.Info("Beenden angefordert (Signal)")
@@ -237,15 +259,15 @@ func waitForStop(ctx context.Context, stop <-chan struct{}, srvDone, ctlDone <-c
 		log.Info("Beenden angefordert (fw-alarm stop)")
 	case err := <-srvDone:
 		log.Error("HTTP-Server unerwartet beendet – der Server beendet sich", "err", err)
-		return fmt.Errorf("HTTP-Server unerwartet beendet: %w", err), false
+		return true, false, fmt.Errorf("HTTP-Server unerwartet beendet: %w", err)
 	case err := <-ctlDone:
 		if err == nil {
 			err = errors.New("ohne Fehlermeldung")
 		}
 		log.Error("Steuer-Zugang unerwartet beendet – der Server beendet sich", "err", err)
-		return fmt.Errorf("Steuer-Zugang unerwartet beendet: %w", err), true
+		return false, true, fmt.Errorf("Steuer-Zugang unerwartet beendet: %w", err)
 	}
-	return nil, false
+	return false, false, nil
 }
 
 // health ist die Antwort auf fw-alarm health.

@@ -47,9 +47,18 @@ endet die Sperre von selbst. Damit eine vertippte Sperre nie einen echten
 Alarm von Hand blockiert, ist die Datei fehlerhaft (wird nicht angenommen),
 wenn die Zeit mehr als 3 Stunden voraus liegt, nur einer der beiden Werte
 gesetzt ist oder ein Eintrag kein gültiger Bark-Key ist.
-Die Sperre steht als Erstes in der Datei: So hält sie auch eine Datei, die
-beim Speichern abgeschnitten wurde.`,
-		[]string{"send_guard_keys", "send_guard_until"}},
+Die Sperre steht als Erstes in der Datei, zwischen ihren beiden Werten die
+Zeitzone: Eine Datei, die beim Speichern abgeschnitten wurde, hält die
+Sperre so entweder ganz (samt Zeitzone) oder ist fehlerhaft.`,
+		[]string{"send_guard_keys"}},
+	{`==== Zeitzone =============================================================
+Für Zeitstempel in Meldungen, Ruhezeiten und die Probe-Sperre. Name aus der
+Zeitzonen-Datenbank, z.B. "Europe/Berlin"; ein unbekannter Name macht die
+Datei fehlerhaft.`,
+		[]string{"timezone"}},
+	{`Ende der Probe-Sperre (Ortszeit in timezone, Form "JJJJ-MM-TT HH:MM");
+leer, wenn send_guard_keys leer ist.`,
+		[]string{"send_guard_until"}},
 	{`==== Zugang der Box =======================================================
 Lange zufällige Zeichenfolge, die in boss925_alarm_bark/config.h als
 REMOTE_MACHINE_TOKEN eingetragen wird. Hier steht NUR der SHA-256-Hash
@@ -191,11 +200,6 @@ kurzes „Pling“), "bell", "chime", "telegraph" oder "paymentsuccess".`,
 		[]string{"bark_false_alarm_sound"}},
 	{`Lautstärke 0-10. Ohne Eintrag gilt bark_alarm_volume.`,
 		[]string{"bark_false_alarm_volume"}},
-	{`==== Zeitzone =============================================================
-Für Zeitstempel in Meldungen, Ruhezeiten und die Probe-Sperre. Name aus der
-Zeitzonen-Datenbank, z.B. "Europe/Berlin"; ein unbekannter Name macht die
-Datei fehlerhaft.`,
-		[]string{"timezone"}},
 	{`==== Server (Änderungen gelten erst nach einem Neustart des Dienstes) =====
 Datenordner (Empfängerliste, Verlauf, Sitzungen) – absoluter Pfad, außerhalb
 jedes Webroots, gehört dem Benutzer fwalarm. Hier liegen die Bark-Keys im

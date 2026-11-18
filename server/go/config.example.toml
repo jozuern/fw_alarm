@@ -26,9 +26,19 @@
 # Alarm von Hand blockiert, ist die Datei fehlerhaft (wird nicht angenommen),
 # wenn die Zeit mehr als 3 Stunden voraus liegt, nur einer der beiden Werte
 # gesetzt ist oder ein Eintrag kein gültiger Bark-Key ist.
-# Die Sperre steht als Erstes in der Datei: So hält sie auch eine Datei, die
-# beim Speichern abgeschnitten wurde.
+# Die Sperre steht als Erstes in der Datei, zwischen ihren beiden Werten die
+# Zeitzone: Eine Datei, die beim Speichern abgeschnitten wurde, hält die
+# Sperre so entweder ganz (samt Zeitzone) oder ist fehlerhaft.
 send_guard_keys = []
+
+# ==== Zeitzone =============================================================
+# Für Zeitstempel in Meldungen, Ruhezeiten und die Probe-Sperre. Name aus der
+# Zeitzonen-Datenbank, z.B. "Europe/Berlin"; ein unbekannter Name macht die
+# Datei fehlerhaft.
+timezone = "Europe/Berlin"
+
+# Ende der Probe-Sperre (Ortszeit in timezone, Form "JJJJ-MM-TT HH:MM");
+# leer, wenn send_guard_keys leer ist.
 send_guard_until = ""
 
 # ==== Zugang der Box =======================================================
@@ -199,12 +209,6 @@ bark_false_alarm_sound = "glass"
 
 # Lautstärke 0-10. Ohne Eintrag gilt bark_alarm_volume.
 bark_false_alarm_volume = 10
-
-# ==== Zeitzone =============================================================
-# Für Zeitstempel in Meldungen, Ruhezeiten und die Probe-Sperre. Name aus der
-# Zeitzonen-Datenbank, z.B. "Europe/Berlin"; ein unbekannter Name macht die
-# Datei fehlerhaft.
-timezone = "Europe/Berlin"
 
 # ==== Server (Änderungen gelten erst nach einem Neustart des Dienstes) =====
 # Datenordner (Empfängerliste, Verlauf, Sitzungen) – absoluter Pfad, außerhalb

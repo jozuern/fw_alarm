@@ -74,29 +74,23 @@ func ListenUnix(path string) (*Socket, error) {
 	}
 	// Gelöscht wird nur über Socket.Close, nach dem Vergleich der Datei.
 	ln.SetUnlinkOnClose(false)
-	fail := func(err error) (*Socket, error) {
-		if cerr := ln.Close(); cerr != nil {
-			err = errors.Join(err, cerr)
-		}
-		// Gerade selbst angelegt und noch nie benutzt: die eigene Datei.
-		if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
-			err = errors.Join(err, rerr)
-		}
-		return nil, err
-	}
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(path, 0o600); err != nil {
-			return fail(fmt.Errorf("Rechte des Unix-Sockets %s: %w", path, err))
-		}
-	}
 	own, err := os.Lstat(path)
 	if err != nil {
-		return fail(fmt.Errorf("Unix-Socket %s nicht prüfbar: %w", path, err))
+		// Ohne die eigene Datei zu kennen, wird nichts gelöscht; ein Rest wird
+		// beim nächsten Start als verwaist erkannt.
+		return nil, errors.Join(fmt.Errorf("Unix-Socket %s nicht prüfbar: %w", path, err), ln.Close())
 	}
 	// Unter Windows holt Go die Dateinummer erst beim ersten Vergleich – über
 	// den Pfad; ein Vergleich gleich hier hält die der eigenen Datei fest.
 	_ = os.SameFile(own, own) // nur für die Wirkung, das Ergebnis ist immer true
-	return &Socket{UnixListener: ln, path: path, own: own}, nil
+	s := &Socket{UnixListener: ln, path: path, own: own}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o600); err != nil {
+			// Close löscht die Datei nur, wenn sie noch die eigene ist.
+			return nil, errors.Join(fmt.Errorf("Rechte des Unix-Sockets %s: %w", path, err), s.Close())
+		}
+	}
+	return s, nil
 }
 
 // removeStale löscht eine verwaiste Socket-Datei unter path.
