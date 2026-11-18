@@ -24,13 +24,19 @@
 // Nach JEDEM Start prüft der Treiber, dass der Server so gesund ist, wie der
 // Test es erwartet: fw-alarm health sagt state=normal, save_ok=1 (außer
 // während storage.fail), config_ok=1 (außer nach einem kaputten
-// writeRawConfig), der Start war "normal" oder "neu" (kein Rückfall), und
-// im Datenordner liegt keine NEUE *.corrupt-*-Datei (dann hätte der Server
-// etwas abgelehnt, das der Treiber schrieb, und still neu angefangen).
-// Sonst wirft der Start mit der Ausgabe des Servers. Ein go-*-Test, der
-// über backend.files absichtlich etwas zerstört, startet mit
+// writeRawConfig); die Zeile "Ablage geöffnet" im Journal sagt start=neu nur
+// auf einem vorher leeren Datenordner (erster Start, reset), sonst
+// start=normal, und ruecksprung, laufzeit_verworfen, sitzungen_verworfen
+// sind false; im Datenordner liegt keine NEUE *.corrupt-*-Datei. Sonst hätte
+// der Server etwas abgelehnt, das der Treiber schrieb, und still neu
+// angefangen - der Start wirft dann mit der Ausgabe des Servers. Ein
+// go-*-Test, der über backend.files absichtlich etwas zerstört, startet mit
 // startServer({ expectUnhealthy: true }); das gilt auch für die Neustarts
 // der Helfer danach, bis zum nächsten startServer() oder reset().
+//
+// Keine Konfiguration, die der Server liest, zeigt je auf einen fremden
+// Bark-Server: Wächter über configure, writeRawConfig und
+// backend.files.write (Regeln unten bei HOST_RULE).
 //
 // storage.fail(what) legt einen nicht leeren Ordner an den festen Namen der
 // Zwischendatei, das Sichern dieses Teils scheitert dann im laufenden
@@ -39,15 +45,17 @@
 //   selftest  selftest.tmp
 //   durable   state.json.tmp - feste Änderungen werden abgelehnt
 //   history   history.jsonl wandert nach beiseite/, an seine Stelle ein
-//             Ordner; repair holt die Datei zurück
+//             Ordner; repair legt alles Beiseitegelegte in seiner Reihenfolge
+//             zurück (Einzelheiten bei failHistory)
 //   volatile  runtime.json.tmp und sessions.json.tmp
 // Solange etwas gestört ist, lesen die Helfer, was zuletzt gesichert wurde
 // (fw-alarm flush scheitert dann, das ist erwartet), und der Server darf mit
 // Rückgabe 1 enden (er konnte beim Beenden nicht alles sichern).
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
-  appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
+  appendFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync,
+  writeFileSync,
 } from 'node:fs';
 import { createServer as createTcpServer } from 'node:net';
 import { join } from 'node:path';
@@ -66,9 +74,12 @@ const PORT_MAX = 29999;
 const START_TIMEOUT_MS = 15000;     // bis der Server antwortet
 const PORT_BUSY_RETRY_MS = 10000;   // so lange erneut versuchen, solange der Port noch belegt ist
 const EXIT_AFTER_STOP_MS = 10000;   // nach fw-alarm stop muss der Prozess fort sein
-const RAW_CONFIG_WAIT_MS = 8000;    // writeRawConfig: so lange auf das Urteil warten
-const CHECKER_ROUNDS_MS = 4500;     // zwei Prüfungen des Konfigurations-Prüfers (je 2 s) und Luft
+const RAW_CONFIG_WAIT_MS = 10000;   // writeRawConfig: so lange auf das Urteil des Servers warten
 const LOG_KEEP = 200000;
+// Was nach einem Neustart sonst woanders hinzeigte (Datenordner, Port,
+// Steuer-Zugang): configure() lehnt diese Schlüssel ab, eine gültige rohe
+// Fassung muss ihre Zeilen behalten.
+const FIXED_KEYS = ['state_dir', 'listen', 'control_socket'];
 
 // Befehle, die --last-good kennen (die übrigen lehnen es ab).
 const SERVER_COMMANDS = new Set(['serve', 'health', 'check', 'flush', 'reload', 'stop']);
@@ -133,27 +144,31 @@ function tomlText(values) {
   return `${lines.join('\n')}\n`;
 }
 
-// bark_host darf nur leer sein (der Server sendet dann nichts) oder auf
-// diesen Rechner zeigen - nie auf einen echten Bark-Server.
-function localBarkHost(value) {
-  if (typeof value !== 'string') return false;
-  if (value.trim() === '') return true;
-  let url;
-  try { url = new URL(value.trim()); } catch { return false; }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
-  const host = url.hostname;
-  return host === 'localhost' || host === '[::1]' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
-}
-
-// Der Wert von bark_host in einem rohen TOML-Text (einfache Formen
-// bark_host = "…" bzw. '…'); undefined = keine solche Zeile.
-function rawBarkHost(text) {
-  const line = /^[ \t]*bark_host[ \t]*=[ \t]*("(?:[^"\\]|\\.)*"|'[^']*')/m.exec(text);
-  if (!line) return undefined;
-  const quoted = line[1];
-  if (quoted.startsWith("'")) return quoted.slice(1, -1);
-  try { return JSON.parse(quoted); } catch { return null; }
-}
+// ---- Wächter über jede Konfiguration -------------------------------------
+// Der Prüfstand schreibt nie eine Konfiguration, mit der der Server an einen
+// echten Bark-Server sendete - über keinen Weg (configure, writeRawConfig,
+// backend.files.write auf *.toml). Regeln (guardConfigText unten):
+//   a) """ oder ''' irgendwo im Text: abgelehnt, ob gültig oder nicht - in
+//      einem mehrzeiligen Text kann eine Zeile wie bark_host = "…" stehen,
+//      die kein Schlüssel ist, und der echte Wert stünde woanders.
+//   b) Nimmt der Parser des Servers den Text an (fw-alarm check-config auf
+//      einer Kopie - der Treiber rät die Gültigkeit nie selbst), muss er
+//      GENAU EINE Zeile bark_host = "http://127.0.0.1:<port>" oder
+//      bark_host = "" enthalten und keine weitere Zeile, auf der bark_host
+//      vor einem = steht (Schlüssel in Anführungszeichen, ohne Leerzeichen,
+//      eingerückt: alles abgelehnt). Ohne die Zeile gälte der Standard des
+//      Servers - der echte Bark-Server.
+//   c) Einen Text, den der Parser ablehnt, schreibt der Treiber, wie er ist
+//      (Tests wollen kaputte Dateien). Das ist sicher: Der Server übernimmt
+//      nur, was config.ParseAt annimmt (beim Start wie beim Prüfer und bei
+//      reload), und check-config urteilt mit genau diesem Parser.
+//   d) Die Fassung des Prüfstands (configText) nennt bark_host als ersten
+//      Schlüssel: Jeder Anfang davon bis zu einem Zeilenende ist kaputt
+//      oder trägt schon den lokalen Host - ein Test, der sie abschneidet
+//      (halb geschriebene Datei), bekommt nie eine gültige Fassung ohne ihn.
+const BENCH_HOST_LINE = /^bark_host = "(?:http:\/\/127\.0\.0\.1:\d{1,5})?"$/;
+const MENTIONS_HOST = /bark_host[^=]*=/;
+const HOST_RULE = 'muss genau eine Zeile bark_host = "http://127.0.0.1:<port>" enthalten – sonst sendete der Server an das echte Bark';
 
 // ---- Ports -----------------------------------------------------------------
 function portFree(port) {
@@ -229,17 +244,19 @@ export async function startGo(root, bark, options = {}) {
   const port = options.port || await pickPort();
   const base = `http://127.0.0.1:${port}`;
   // Wie der PHP-Treiber (baseConfig) ohne data_dir und health_check_url, dazu
-  // was nur Go kennt. bark_alarm_title: PHP nimmt ihn aus config.example.php
-  // (dort mit "(manuell)"), Go ohne Eintrag den Wert aus dem PHP-Code - so
-  // sehen die Tests unter beiden denselben Titel.
+  // was nur Go kennt. bark_host steht zuerst (Wächter, Regel d). bark_alarm_title:
+  // PHP nimmt ihn aus config.example.php (dort mit "(manuell)"), Go ohne
+  // Eintrag den Wert aus dem PHP-Code - so sehen die Tests unter beiden
+  // denselben Titel.
+  if (!/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(bark.base)) throw new Error(`Bark-Attrappe nicht lokal: ${bark.base}`);
   const baseConfig = {
+    bark_host: bark.base,
     machine_token_sha256: sha256(MACHINE_TOKEN),
     dashboard_user: ADMIN.user,
     dashboard_password_hash: TEST_PASSWORD_HASH,
     dashboard_readonly_user: READER.user,
     dashboard_readonly_password_hash: TEST_PASSWORD_HASH,
     bark_key_status: STATUS_KEY,
-    bark_host: bark.base,
     bark_keys_alarm: ['startkey0001'],
     bark_alarm_title: 'FEUERWEHR-ALARM (manuell)',
     state_dir: stateDir,
@@ -249,10 +266,13 @@ export async function startGo(root, bark, options = {}) {
   };
 
   // ---- fw-alarm aufrufen ------------------------------------------------
-  const flagsFor = (command) => {
-    if (SERVER_COMMANDS.has(command)) return ['--config', configPath, '--last-good', lastGoodPath];
-    if (command === 'check-config') return ['--config', configPath];
-    return [];
+  // Jeder Befehl bekommt --config (außer der Aufrufer nennt eine eigene),
+  // --last-good nur die Befehle, die es kennen.
+  const flagsFor = (args) => {
+    const flags = [];
+    if (!args.includes('--config')) flags.push('--config', configPath);
+    if (SERVER_COMMANDS.has(args[0]) && !args.includes('--last-good')) flags.push('--last-good', lastGoodPath);
+    return flags;
   };
   // Ein Befehl; liefert { code, stdout, stderr } (code null = abgebrochen).
   const run = (args, timeoutMs) => new Promise((resolve) => {
@@ -263,8 +283,44 @@ export async function startGo(root, bark, options = {}) {
         resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') + (code === null ? `\n${error.message}` : '') });
       });
   });
-  const cli = (args, { timeoutMs = 30000 } = {}) => run([...args, ...flagsFor(args[0])], timeoutMs);
+  const cli = (args, { timeoutMs = 30000 } = {}) => run([...args, ...flagsFor(args)], timeoutMs);
   const health = async () => parseHealth(await cli(['health'], { timeoutMs: 20000 }));
+
+  // Der Wächter über jede Konfiguration (Regeln oben bei HOST_RULE). Liefert,
+  // ob der Parser des Servers den Text annimmt; wirft, wenn er nicht
+  // geschrieben werden darf. Synchron, damit auch backend.files.write ihn
+  // nutzen kann. Ein gültiges Urteil wird je Text gemerkt (reset schreibt
+  // immer dieselbe Fassung).
+  const acceptedTexts = new Set();
+  const guardConfigText = (text, where) => {
+    if (typeof text !== 'string') throw new Error(`${where}: die Konfiguration als Text`);
+    if (text.includes('"""') || text.includes("'''")) {
+      throw new Error(`${where}: dreifache Anführungszeichen (""" oder ''') sind im Prüfstand verboten – `
+        + 'in einem mehrzeiligen Text sähe der Wächter nicht sicher, wohin der Server sendet');
+    }
+    if (acceptedTexts.has(text)) return true;
+    const probe = join(root, 'config.guard.toml');
+    writeFileSync(probe, text);
+    let verdict;
+    try {
+      verdict = spawnSync(bin, ['check-config', '--config', probe], { cwd: root, encoding: 'utf8', timeout: 30000, windowsHide: true });
+    } finally {
+      rmSync(probe, { force: true });
+    }
+    if (verdict.error || (verdict.status !== 0 && verdict.status !== 1)) {
+      throw new Error(`${where}: fw-alarm check-config urteilte nicht (${verdict.status ?? verdict.error?.message}): `
+        + `${verdict.stdout ?? ''}${verdict.stderr ?? ''}`);
+    }
+    if (verdict.status !== 0) return false;   // kaputt: geht durch, der Server übernimmt ihn nie (Regel c)
+    const lines = text.split('\n').map((line) => line.replace(/\r$/, ''));
+    const exact = lines.filter((line) => BENCH_HOST_LINE.test(line));
+    const mentions = lines.filter((line) => MENTIONS_HOST.test(line));
+    if (exact.length !== 1 || mentions.length !== 1) {
+      throw new Error(`${where}: eine gültige Konfiguration ${HOST_RULE} (gefunden: ${mentions.length ? mentions.join(' | ') : 'keine'})`);
+    }
+    acceptedTexts.add(text);
+    return true;
+  };
 
   // ---- Prozess ------------------------------------------------------------
   let log = '';
@@ -275,7 +331,8 @@ export async function startGo(root, bark, options = {}) {
   let configBroken = false;      // config.toml ist (nach Absicht) fehlerhaft
   const failed = new Set();      // gestörte Teile (storage.fail)
   const saved = new Map();       // Name im Datenordner -> Inhalt vor fail() (null = gab es nicht)
-  let historyAside = false;      // history.jsonl liegt in beiseite/
+  let historyPieces = [];        // was von history.jsonl in beiseite/ liegt, in der Reihenfolge des Entstehens
+  let asideSeq = 0;              // laufende Nummer für Namen in beiseite/ (nie zweimal derselbe)
   const keep = (chunk) => { log = (log + chunk).slice(-LOG_KEEP); };
   const killOnExit = () => { try { child?.kill('SIGKILL'); } catch { /* schon beendet */ } };
   process.on('exit', killOnExit);
@@ -287,7 +344,7 @@ export async function startGo(root, bark, options = {}) {
 
   // Ein Startversuch: 'up', oder { code, busy, text } wenn der Prozess endete.
   const spawnOnce = async () => {
-    const mine = spawn(bin, ['serve', ...flagsFor('serve')], {
+    const mine = spawn(bin, ['serve', ...flagsFor(['serve'])], {
       cwd: root, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
     let text = '';
@@ -321,8 +378,17 @@ export async function startGo(root, bark, options = {}) {
     throw new Error(`Go-Server antwortet nach ${START_TIMEOUT_MS} ms nicht (Port ${port}):\n${text}`);
   };
 
+  // Die Felder einer Zeile des Journals (slog-Text: name=wert …) mit dieser Nachricht.
+  const journalLine = (text, msg) => {
+    const line = text.split('\n').find((l) => l.includes(`msg="${msg}"`));
+    if (!line) return null;
+    return Object.fromEntries([...line.matchAll(/(\w+)=("(?:[^"\\]|\\.)*"|\S*)/g)].map(([, k, v]) => [k, v]));
+  };
+
   // Ist der Server so gesund, wie der Test es erwartet? (siehe oben)
-  const checkStarted = async (corruptBefore, text) => {
+  // emptyBefore: Der Datenordner war vor dem Start leer - nur dann darf er
+  // neu anfangen.
+  const checkStarted = async (corruptBefore, emptyBefore, text) => {
     if (expectUnhealthy) return;
     const h = await health();
     const problems = [];
@@ -330,8 +396,17 @@ export async function startGo(root, bark, options = {}) {
     if (h.state !== 'normal') problems.push(`state=${h.state}`);
     if (h.config_ok !== '1' && !configBroken) problems.push(`config_ok=${h.config_ok}`);
     if (h.save_ok !== '1' && failed.size === 0) problems.push(`save_ok=${h.save_ok}`);
-    const mode = /msg="Server läuft".*?\bstart=(\S+)/.exec(text)?.[1];
-    if (mode !== 'normal' && mode !== 'neu') problems.push(`Start "${mode}" statt normal`);
+    const opened = journalLine(text, 'Ablage geöffnet');
+    if (!opened) {
+      problems.push('Zeile "Ablage geöffnet" fehlt im Journal');
+    } else {
+      if (emptyBefore && opened.start !== 'neu') problems.push(`start=${opened.start} statt neu auf einem leeren Datenordner`);
+      if (!emptyBefore && opened.start === 'neu') problems.push('start=neu auf einem nicht leeren Datenordner');
+      if (!emptyBefore && opened.start !== 'neu' && opened.start !== 'normal') problems.push(`start=${opened.start} statt normal`);
+      for (const flag of ['ruecksprung', 'laufzeit_verworfen', 'sitzungen_verworfen']) {
+        if (opened[flag] !== 'false') problems.push(`${flag}=${opened[flag]}`);
+      }
+    }
     const fresh = [...corruptFiles()].filter((name) => !corruptBefore.has(name));
     if (fresh.length) problems.push(`beiseitegelegt: ${fresh.join(', ')}`);
     if (problems.length) {
@@ -347,9 +422,12 @@ export async function startGo(root, bark, options = {}) {
     const busyUntil = Date.now() + PORT_BUSY_RETRY_MS;
     for (;;) {
       const corruptBefore = corruptFiles();
+      // Jeder Versuch für sich: Ein am belegten Port gescheiterter Versuch hat
+      // den Datenordner schon angelegt, der nächste startet dann "normal".
+      const emptyBefore = readdirSync(stateDir).length === 0;
       const outcome = await spawnOnce();
       if (outcome.up) {
-        await checkStarted(corruptBefore, outcome.text);
+        await checkStarted(corruptBefore, emptyBefore, outcome.text);
         return;
       }
       if (outcome.busy && Date.now() < busyUntil) {
@@ -398,24 +476,32 @@ export async function startGo(root, bark, options = {}) {
   };
 
   // ---- Konfiguration ------------------------------------------------------
+  // Der Text der Fassung des Prüfstands mit overrides. Ein überschriebener
+  // Schlüssel behält seinen Platz (bark_host bleibt vorn); null entfernt ihn.
   const configText = (overrides) => {
+    const fixed = Object.keys(overrides).filter((key) => FIXED_KEYS.includes(key));
+    if (fixed.length) {
+      throw new Error(`configure: state_dir, listen und control_socket gehören dem Prüfstand (${fixed.join(', ')}) – `
+        + 'nach einem Neustart zeigte der Server woanders hin, die Helfer änderten still den alten Ordner');
+    }
     const values = { ...baseConfig };
     for (const [key, value] of Object.entries(overrides)) {
       if (value === undefined) continue;
       if (value === null) delete values[key];
       else values[key] = value;
     }
-    if (!localBarkHost(values.bark_host)) {
-      throw new Error(`configure: bark_host ${JSON.stringify(values.bark_host)} ist keine Adresse auf diesem Rechner – `
-        + 'der Prüfstand sendet nie an einen echten Bark-Server');
-    }
     return tomlText(values);
   };
-  const writeConfig = (overrides) => writeFileSync(configPath, configText(overrides));
-  // Die Zeilen, die nach einem Neustart sonst woanders hinzeigten
-  // (Datenordner, Port, Steuer-Zugang) - eine gültige rohe Fassung muss sie
-  // behalten.
-  const fixedLines = ['state_dir', 'listen', 'control_socket'].map((key) => `${key} = ${tomlValue(key, baseConfig[key])}`);
+  // Schreibt config.toml nur nach dem Wächter; liefert dessen Urteil (gültig?).
+  const writeConfigText = (text, where) => {
+    const valid = guardConfigText(text, where);
+    writeFileSync(configPath, text);
+    return valid;
+  };
+  const writeConfig = (overrides) => writeConfigText(configText(overrides), 'configure');
+  // Die Zeilen, die nach einem Neustart sonst woanders hinzeigten - eine
+  // gültige rohe Fassung muss sie behalten.
+  const fixedLines = FIXED_KEYS.map((key) => `${key} = ${tomlValue(key, baseConfig[key])}`);
 
   // ---- Datenordner --------------------------------------------------------
   const file = (name) => join(stateDir, name);
@@ -624,6 +710,17 @@ export async function startGo(root, bark, options = {}) {
         throw stateError('seedRecipients', `Demo-Modus ist an (Empfänger id ${st.demo.key_id}) – `
           + 'die neue Liste muss ihn mit demselben Key enthalten');
       }
+      // Unter Go sind keys_version und next_id selbst die Hochwassermarken
+      // (PHP führt eigene, sein nächster Schritt läge darüber): Senken hieße,
+      // eine Nummer ginge zweimal raus.
+      if (version < st.keys_version) {
+        throw stateError('seedRecipients', `Version ${version} unter der gespeicherten ${st.keys_version} – `
+          + 'unter Go ist sie selbst die Hochwassermarke, ein Test darf sich auf Senken nicht verlassen');
+      }
+      if (nextId < st.next_id) {
+        throw stateError('seedRecipients', `next_id ${nextId} unter dem gespeicherten ${st.next_id} – `
+          + 'unter Go ist es selbst die Hochwassermarke, ein Test darf sich auf Senken nicht verlassen');
+      }
       st.recipients = list;
       st.keys_version = version;
       st.next_id = nextId;
@@ -640,7 +737,11 @@ export async function startGo(root, bark, options = {}) {
         pairs.push([name, value]);
       }
       // Object.fromEntries legt jedes Feld als eigenes an (auch "__proto__").
-      const fields = Object.fromEntries(pairs.filter(([name]) => name !== 'seen_at' && name !== 'via_bridge'));
+      // seen_at und via_bridge setzt der Server, remote_addr gehört nicht
+      // dazu - auch nicht, wenn die Box ein Feld so nennt (PHP überschreibt
+      // es mit der Absender-Adresse, der Leser lässt es weg).
+      const own = new Set(['seen_at', 'via_bridge', 'remote_addr']);
+      const fields = Object.fromEntries(pairs.filter(([name]) => !own.has(name)));
       return Object.assign(fields, { seen_at: box.seen_at, via_bridge: box.via_bridge });
     }),
     recipients: () => read(() => {
@@ -667,8 +768,15 @@ export async function startGo(root, bark, options = {}) {
 
   // ---- backend.storage ----------------------------------------------------
   const BLOCKED = { selftest: ['selftest.tmp'], durable: ['state.json.tmp'], volatile: ['runtime.json.tmp', 'sessions.json.tmp'] };
-  const asideHistory = join(asideDir, 'history.jsonl');
+  const asideName = (stem) => join(asideDir, `${stem}-${++asideSeq}`);
   const rmBusy = (path) => rmSync(path, { recursive: true, force: true, maxRetries: 20, retryDelay: 20 });
+  // history.jsonl unter einem neuen, nie benutzten Namen nach beiseite/ -
+  // ein Umbenennen überschreibt dort also nie etwas.
+  const takeHistoryPiece = async () => {
+    const piece = asideName('history-stueck');
+    await retryBusy(() => renameSync(file('history.jsonl'), piece));
+    historyPieces.push(piece);
+  };
 
   // Ein nicht leerer Ordner an name. Schreibt der Server gerade genau dort,
   // gewinnt der Ordner beim nächsten Versuch (sein Sichern scheitert ohnehin).
@@ -693,39 +801,63 @@ export async function startGo(root, bark, options = {}) {
     if (before) writeFileSync(file(name), before);
   };
 
+  // Verlauf: Keine Zeile darf verloren gehen, auch wenn der Server genau
+  // zwischen zwei Schritten anhängt. fail legt jede history.jsonl, die es
+  // vorfindet, als neues Stück beiseite (auch eine, die der Server zwischen
+  // Umbenennen und Ordner anlegt). repair fügt die Stücke in ihrer
+  // Reihenfolge zusammen und legt das Ergebnis per Verweis (link) an den
+  // Namen - ein Verweis ersetzt nie eine vorhandene Datei. Hat der Server in
+  // der Lücke schon wieder eine angelegt, wird auch sie ein Stück (sie ist
+  // jünger, kommt also ans Ende), und der Versuch beginnt von vorn. Danach
+  // steht jede je geschriebene Zeile in history.jsonl, in ihrer Reihenfolge.
+  const failHistory = async () => {
+    mkdirSync(asideDir, { recursive: true });
+    for (let i = 0; ; i++) {
+      if (isFile(file('history.jsonl'))) await takeHistoryPiece();
+      try {
+        mkdirSync(file('history.jsonl'));
+        break;
+      } catch (error) {
+        if (error.code !== 'EEXIST' || i >= 50) throw error;
+      }
+    }
+    writeFileSync(join(file('history.jsonl'), 'belegt'), 'x');
+  };
+  const repairHistory = async () => {
+    const gone = asideName('history-ordner');
+    await retryBusy(() => renameSync(file('history.jsonl'), gone));
+    for (let i = 0; historyPieces.length > 0; i++) {
+      const merged = asideName('history-zusammen');
+      writeFileSync(merged, historyPieces.map((piece) => {
+        const text = readFileSync(piece, 'utf8');
+        return text && !text.endsWith('\n') ? `${text}\n` : text;
+      }).join(''));
+      try {
+        linkSync(merged, file('history.jsonl'));
+        rmBusy(merged);
+        break;
+      } catch (error) {
+        rmBusy(merged);
+        if (error.code !== 'EEXIST' || i >= 50) throw error;
+        await takeHistoryPiece();
+      }
+    }
+    for (const piece of historyPieces) rmBusy(piece);
+    historyPieces = [];
+    rmBusy(gone);
+  };
+
   const storage = {
     fail: (what) => serial(async () => {
       if (failed.has(what)) return;
-      if (what === 'history') {
-        mkdirSync(asideDir, { recursive: true });
-        for (let i = 0; ; i++) {
-          if (isFile(file('history.jsonl'))) {
-            await retryBusy(() => renameSync(file('history.jsonl'), asideHistory));
-            historyAside = true;
-          }
-          try {
-            mkdirSync(file('history.jsonl'));
-            break;
-          } catch (error) {
-            // Der Server legte die Datei eben neu an: auch sie beiseite.
-            if (error.code !== 'EEXIST' || i >= 50) throw error;
-          }
-        }
-        writeFileSync(join(file('history.jsonl'), 'belegt'), 'x');
-      } else {
-        for (const name of BLOCKED[what]) await block(name);
-      }
+      if (what === 'history') await failHistory();
+      else for (const name of BLOCKED[what]) await block(name);
       failed.add(what);
     }),
     repair: (what) => serial(async () => {
       if (!failed.has(what)) return;
       if (what === 'history') {
-        // Erst den Ordner fort (ein Schritt), dann sofort die Datei zurück.
-        const gone = join(asideDir, `history-ordner-${Date.now()}`);
-        await retryBusy(() => renameSync(file('history.jsonl'), gone));
-        if (historyAside) await retryBusy(() => renameSync(asideHistory, file('history.jsonl')));
-        historyAside = false;
-        rmBusy(gone);
+        await repairHistory();
       } else {
         for (const name of BLOCKED[what]) unblock(name);
       }
@@ -755,9 +887,14 @@ export async function startGo(root, bark, options = {}) {
       return name.endsWith('.jsonl') ? raw.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l)) : JSON.parse(raw);
     },
     text: (name) => (isFile(checkName(name)) ? readFileSync(checkName(name), 'utf8') : null),
-    // Text wie gegeben, alles andere als JSON.
+    // Text wie gegeben, alles andere als JSON. Eine *.toml (etwa
+    // config.last-good.toml, mit der der Server startet, wenn config.toml
+    // nicht ladbar ist) erst nach dem Wächter über jede Konfiguration.
     write(name, value) {
-      writeFileSync(checkName(name), typeof value === 'string' ? value : `${JSON.stringify(value, null, 2)}\n`);
+      const path = checkName(name);
+      const text = typeof value === 'string' ? value : `${JSON.stringify(value, null, 2)}\n`;
+      if (name.endsWith('.toml')) guardConfigText(text, `backend.files.write(${name})`);
+      writeFileSync(path, text);
       return value;
     },
     corrupt: (name) => writeFileSync(checkName(name), '{kaputt'),
@@ -794,7 +931,9 @@ export async function startGo(root, bark, options = {}) {
     // Ohne Vorwarnung beenden (wie ein Absturz) - nichts wird aufgeräumt.
     hardKill: () => serial(kill),
     // Konfiguration = Standard des Prüfstands + overrides (nicht aufsummiert);
-    // null entfernt einen Schlüssel (es gilt der Standard des Servers).
+    // null entfernt einen Schlüssel (es gilt der Standard des Servers);
+    // state_dir, listen, control_socket nicht. Erst der Wächter, dann
+    // schreiben, dann fw-alarm reload (bzw. check-config, steht der Server).
     configure: (overrides = {}) => serial(async () => {
       writeConfig(overrides);
       const r = alive ? await cli(['reload'], { timeoutMs: 20000 }) : await cli(['check-config']);
@@ -807,43 +946,38 @@ export async function startGo(root, bark, options = {}) {
     configText: (overrides = {}) => configText(overrides),
     // config.toml genau so schreiben wie gegeben (ein Tippfehler von Hand) und
     // warten, bis der Server sie beurteilt hat; liefert, was health dann sagt.
-    // Erst urteilt fw-alarm check-config über eine Kopie: Eine GÜLTIGE Datei
-    // muss ein lokales bark_host nennen (ohne gälte der echte Bark-Server)
-    // und state_dir, listen, control_socket des Prüfstands behalten.
+    // Erst der Wächter; eine GÜLTIGE Fassung muss zudem state_dir, listen und
+    // control_socket des Prüfstands behalten. Gewartet wird auf das Urteil
+    // des Prüfers (er übernimmt eine Datei, die 2 s unverändert blieb):
+    //   gültig: bis config.last-good.toml genau diese Bytes hält (die Kopie
+    //           schreibt er nur aus einer übernommenen Fassung) UND health
+    //           config_ok=1 sagt; gilt sie schon, sofort;
+    //   kaputt: bis health config_ok=0 sagt (kaputt nach kaputt: sofort - der
+    //           Hinweis kann dann noch den alten Grund nennen).
+    // Nach 10 s ohne dieses Urteil wirft er mit der letzten Ausgabe von health.
     writeRawConfig: (text) => serial(async () => {
       if (typeof text !== 'string') throw new Error('writeRawConfig: der Inhalt als Text');
-      const probe = join(root, 'config.probe.toml');
-      writeFileSync(probe, text);
-      const verdict = await run(['check-config', '--config', probe], 30000);
-      rmSync(probe, { force: true });
-      const valid = verdict.code === 0;
-      if (valid && !localBarkHost(rawBarkHost(text))) {
-        throw new Error('writeRawConfig: eine gültige Konfiguration ohne bark_host auf diesem Rechner – '
-          + 'der Server sendete an den echten Bark-Server');
-      }
+      const valid = guardConfigText(text, 'writeRawConfig');
       const lines = new Set(text.split(/\r?\n/).map((line) => line.trim()));
       const lost = fixedLines.filter((line) => !lines.has(line));
       if (valid && lost.length) {
         throw new Error(`writeRawConfig: eine gültige Konfiguration ohne die Zeilen des Prüfstands ${lost.join(' | ')} `
           + '(backend.configText() liefert sie)');
       }
-      const want = valid ? '1' : '0';
-      const before = alive ? await health() : null;
+      const lastGood = () => (isFile(lastGoodPath) ? readFileSync(lastGoodPath, 'utf8') : null);
+      const judged = (h) => (valid ? h.config_ok === '1' && lastGood() === text : h.config_ok === '0');
       writeFileSync(configPath, text);
       configBroken = !valid;
       if (!alive) return health();
-      // Das Urteil kommt bei der zweiten Prüfung, die die Datei unverändert
-      // sieht (2–4 s). Zeigt health schon vorher dasselbe (gültig nach
-      // gültig, kaputt nach kaputt), ist nichts zu sehen: zwei Runden warten.
-      if (before.config_ok === want) {
-        await sleep(CHECKER_ROUNDS_MS);
-        return health();
-      }
       const end = Date.now() + RAW_CONFIG_WAIT_MS;
       for (;;) {
         const h = await health();
-        if (h.config_ok === want || Date.now() > end) return h;
-        await sleep(200);
+        if (judged(h)) return h;
+        if (Date.now() > end) {
+          throw new Error(`writeRawConfig: nach ${RAW_CONFIG_WAIT_MS / 1000} s kein Urteil des Servers `
+            + `(erwartet config_ok=${valid ? '1 und die Kopie config.last-good.toml mit genau diesem Text' : '0'}):\n${h.text}${h.stderr}`);
+        }
+        await sleep(100);
       }
     }),
     // Ein voller Prüf-Lauf im laufenden Server; liefert seine Ausgabe.
@@ -870,7 +1004,7 @@ export async function startGo(root, bark, options = {}) {
       rmSync(asideDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
       failed.clear();
       saved.clear();
-      historyAside = false;
+      historyPieces = [];
       expectUnhealthy = false;
       configBroken = false;
       writeConfig({});

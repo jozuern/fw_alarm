@@ -167,7 +167,7 @@ export async function startBarkMock() {
 //     ageCommand(which, s)     laufender Befehl: which 'created' | 'delivered' vor s
 //     ageWatcher(s)            Außen-Wächter zuletzt gesehen vor s (bark_failed_at bleibt)
 //     ageMark(name, s)         Merker des Wächters (WATCH_MARKS) = vor s; nur Zeitpunkte
-//                              (unter Go wirft ein Wahrheitswert oder Zähler)
+//                              (ein Wahrheitswert oder Zähler wirft, unter beiden Fassungen)
 //     ageRetry(kind, s)        nur Go (PHP wirft): Sperrfrist nach gescheitertem Versand einer
 //                              Meldung dieser Art (ADMIN_KINDS: box_offline, nas_web,
 //                              outside_watcher …) = frühester neuer Versuch vor s
@@ -192,7 +192,9 @@ export async function startBarkMock() {
 //     seedRecipients(entries, { version = 1, nextId = größte id + 1 })
 //                                                  Empfängerliste ersetzen, nur gültige Einträge
 //                                                  (unter Go bekommt ein Eintrag ohne mute_token
-//                                                  einen neuen, fehlende Felder ihren Standard)
+//                                                  einen neuen, fehlende Felder ihren Standard).
+//                                                  Version und nextId nie unter die gespeicherten
+//                                                  senken - darauf darf sich kein Test verlassen.
 //   Lesen - wie gespeichert, nicht wie angezeigt:
 //     boxStatus()      gepushte Felder als Objekt + seen_at (Zahl) + via_bridge ('0'|'1'),
 //                      ohne remote_addr; null = nie
@@ -220,10 +222,19 @@ export async function startBarkMock() {
 //
 // Die Eingaben prüft startBackend() für JEDEN Treiber gleich (STATE_INPUT,
 // STORAGE_INPUT unten): Dieselbe falsche Eingabe wirft unter PHP und Go
-// denselben Fehler, der Treiber bekommt nur geprüfte Werte. Und jeder Helfer
-// gibt zuerst die Kontrolle ab, bevor der Treiber etwas anfasst: Ein Aufruf
-// ohne await fällt so auch unter PHP auf (unter Go liefe er in einen
-// Neustart des Servers hinein).
+// denselben Fehler, der Treiber bekommt nur geprüfte Werte - auch die Art
+// jedes Werts bei setMarks, setCommand und seedRecipients wird hier für
+// beide geprüft. Und jeder Helfer gibt zuerst die Kontrolle ab, bevor der
+// Treiber etwas anfasst: Ein Aufruf ohne await fällt so auch unter PHP auf
+// (unter Go liefe er in einen Neustart des Servers hinein).
+//
+// Nur der Go-Treiber lehnt zusätzlich ab, was seine Ablage nicht speichern
+// kann (PHP schriebe es still hin):
+//   seedRecipients   bei eingeschaltetem Demo-Modus eine Liste ohne den
+//                    Demo-Empfänger (gleiche id, gleicher Key); eine Version
+//                    oder nextId unter der gespeicherten (unter Go sind sie
+//                    selbst die Hochwassermarken)
+//   setCommand       eine id außerhalb von 1 bis commands.next_id - 1
 const yieldFirst = () => new Promise((resolve) => setImmediate(resolve));
 
 // Die festen Tabellen unten (Name → Art des Werts) gelten für jeden Treiber;
@@ -448,13 +459,21 @@ function contractHelpers(kind, part, impl, inputs) {
 // Nur unter Go (unter PHP werfen sie):
 //   hardKill()             Server ohne Vorwarnung beenden (wie ein Absturz)
 //   writeRawConfig(text)   config.toml genau so schreiben (ein Tippfehler von Hand)
-//                          und warten, bis der Server sie beurteilt hat
-//   configText(overrides)  der Text, den configure(overrides) schriebe (Vorlage dafür)
+//                          und warten, bis der Server sie beurteilt hat (höchstens
+//                          10 s, sonst wirft es)
+//   configText(overrides)  der Text, den configure(overrides) schriebe (Vorlage
+//                          dafür; bark_host steht darin zuerst - jeder Anfang bis
+//                          zu einem Zeilenende ist kaputt oder trägt den lokalen Host)
 //   health()               was fw-alarm health sagt ({ ok, running, state,
 //                          save_ok, config_ok, hints, text })
-//   cli(args)              ein fw-alarm-Befehl mit --config/--last-good des Prüfstands
+//   cli(args)              ein fw-alarm-Befehl mit --config (außer args nennen ein
+//                          eigenes) und, wo er es kennt, --last-good des Prüfstands
 //   files                  der Datenordner von Go roh (nur go-*.test.mjs)
 //   startServer({ expectUnhealthy: true })  nach Absicht Kaputtem starten
+// Unter Go zeigt keine Konfiguration, die der Server liest, je auf einen fremden
+// Bark-Server: configure, writeRawConfig und files.write auf *.toml werfen sonst
+// (genau eine Zeile bark_host = "http://127.0.0.1:<port>" oder bark_host = "",
+// nie """ oder '''; Einzelheiten bei HOST_RULE in harness-go.mjs).
 // Was die Go-Fassung dabei tut und prüft, steht oben in harness-go.mjs.
 //
 // Die Treiber werden erst hier geladen: harness-php.mjs und harness-go.mjs
@@ -470,6 +489,17 @@ const DRIVERS = {
   },
 };
 const GO_ONLY = ['hardKill', 'writeRawConfig', 'configText', 'health', 'cli'];
+// Was jeder Treiber liefern muss (neben state und storage); fehlt etwas,
+// scheitert schon der Start.
+const DRIVER_VALUES = ['kind', 'base', 'dataDir', 'words'];
+const DRIVER_FUNCTIONS = ['configure', 'runWatchdog', 'reset', 'stop', 'startServer', 'stopServer', 'serverLog'];
+function checkDriver(kind, driver) {
+  const missing = [
+    ...DRIVER_VALUES.filter((name) => driver?.[name] === undefined || driver[name] === null),
+    ...DRIVER_FUNCTIONS.filter((name) => typeof driver?.[name] !== 'function'),
+  ];
+  if (missing.length) throw new Error(`Treiber "${kind}": ohne ${missing.join(', ')}`);
+}
 
 export async function startBackend(options = {}) {
   const kind = BACKEND_KIND;
@@ -485,6 +515,7 @@ export async function startBackend(options = {}) {
   try {
     driver = await loaded.start(root, bark, options);
     try {
+      checkDriver(kind, driver);
       // Dieselben Prüfungen der Eingaben für jeden Treiber (ABSICHTS-HELFER).
       state = contractHelpers(kind, 'state', driver.state, STATE_INPUT);
       storage = contractHelpers(kind, 'storage', driver.storage, STORAGE_INPUT);

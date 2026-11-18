@@ -41,7 +41,7 @@ die Chrome-Szenarien (`tests/dashboard/e2e/run.mjs`, README unter `tests/dashboa
 | `dashboard-log.test.mjs` | Verlauf im Dashboard: freigegebene Felder, Filter, Menge, rotierte Datei |
 | `php-storage.test.mjs` | Nur PHP (unter einer anderen Fassung übersprungen): was allein an PHPs Ablage hängt (Sperren, kaputte Dateien, `.bak`, `health_check_url`, Wächter als eigener Prozess) und was die Go-Fassung bewusst anders regelt – die Fälle stehen unverändert so da wie in ihrer Herkunftsdatei |
 | `php-health.test.mjs` | Nur PHP: Selbsttest des Datenordners (`api/health.php`): Antwort, Störungen, über einen Proxy 404 |
-| `go-driver.test.mjs` | Nur Go: der Treiber selbst – Starten, Anhalten, hartes Beenden, zweiter Server auf demselben Ordner, Konfiguration, Neustarts ohne tote Verbindungen, jeder Helfer schreibt, was der Server annimmt, Sichern scheitern lassen |
+| `go-driver.test.mjs` | Nur Go: der Treiber selbst – Starten, Anhalten, hartes Beenden, zweiter Server auf demselben Ordner, Konfiguration und der Wächter, der nie ein fremdes `bark_host` schreibt, Neustarts ohne tote Verbindungen, jeder Helfer schreibt, was der Server annimmt, die Prüfung nach jedem Start, Sichern scheitern lassen |
 
 ## Regeln für neue Tests
 
@@ -108,10 +108,11 @@ die Chrome-Szenarien (`tests/dashboard/e2e/run.mjs`, README unter `tests/dashboa
 `harness.mjs` lädt ihn und hält alles Gemeinsame: Prüfstand, Bark-Attrappe,
 die Helfer der Tests und die Prüfungen der Eingaben, die für jeden Treiber
 gleich sind (dieselbe falsche Eingabe, derselbe Fehler). Ein Treiber liefert
-`kind`, `base`, `dataDir`, `configure()`, `reset()`, `runWatchdog()`,
-`startServer()`/`stopServer()`, `stop()` und die Absichts-Helfer `state`,
-`storage` und `words`; fehlt ihm einer, scheitert schon der Start. Alles
-andere (Attrappe, übrige Helfer, Tests) bleibt gleich.
+`kind`, `base`, `dataDir`, `words`, `configure()`, `reset()`,
+`runWatchdog()`, `startServer()`/`stopServer()`, `serverLog()`, `stop()`
+und jeden Absichts-Helfer unter `state` und `storage`; `startBackend()`
+prüft all das gleich nach dem Start des Treibers und bricht ab, wenn etwas
+fehlt. Alles andere (Attrappe, übrige Helfer, Tests) bleibt gleich.
 
 **Go:** `bash tools/test-go.sh [dateien…]` baut `bin/fw-alarm` (ohne CGO, mit
 `vendor/`) und lässt die Dateien mit `FW_BACKEND=go` laufen; ohne Angabe die
@@ -122,7 +123,10 @@ Steuer-Socket im Temp-Ordner. Zustand ändert er, indem er den Server
 geordnet anhält (`fw-alarm stop`), die Dateien des Datenordners ändert und
 neu startet; gelesen wird nach `fw-alarm flush`. Nach jedem Start prüft er,
 dass der Server gesund ist und nichts abgelehnt hat – sonst wirft er mit
-der Ausgabe des Servers (Einzelheiten oben in `harness-go.mjs`). Ein Lauf
+der Ausgabe des Servers (Einzelheiten oben in `harness-go.mjs`). Keine
+Konfiguration, die er schreibt, zeigt auf einen fremden Bark-Server: Eine
+gültige muss genau eine Zeile `bark_host = "http://127.0.0.1:<port>"` (oder
+`bark_host = ""`) tragen, `"""`/`'''` sind ganz verboten. Ein Lauf
 mit `reset()` vor jedem Fall dauert dadurch etwa eine halbe Sekunde pro Fall
 länger als unter PHP.
 

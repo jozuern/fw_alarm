@@ -5,13 +5,18 @@
 // stehen kann. backend.files (der rohe Datenordner) nur hier und in den
 // übrigen go-*.test.mjs.
 import assert from 'node:assert/strict';
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { join } from 'node:path';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import {
   BACKEND_KIND, COMMAND_FIELDS, MARK_KINDS, RECIPIENT_FIELDS, now, request, sha256, startBackend,
 } from './harness.mjs';
 
 const near = (actual, expected, slack = 5) => Math.abs(actual - expected) <= slack;
+// Die Absagen des Wächters über jede Konfiguration.
+const ONE_HOST_LINE = /muss genau eine Zeile bark_host = "http:\/\/127\.0\.0\.1:<port>" enthalten – sonst sendete der Server an das echte Bark/;
+const TRIPLE_QUOTES = /dreifache Anführungszeichen/;
 const isDir = (path) => {
   try { return statSync(path).isDirectory(); } catch { return false; }
 };
@@ -117,11 +122,19 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
       assert.equal(judged.state, 'normal', 'es gilt die letzte gute');
       await backend.configure({});
       assert.equal((await backend.health()).ok, true);
-      await assert.rejects(backend.configure({ bark_host: 'https://api.day.app' }), /keine Adresse auf diesem Rechner/);
-      await assert.rejects(backend.configure({ bark_host: null }), /keine Adresse auf diesem Rechner/);
-      await assert.rejects(backend.writeRawConfig('bark_key_status = "x"\n'), /ohne bark_host auf diesem Rechner/);
+      await assert.rejects(backend.configure({ bark_host: 'https://example.invalid' }), ONE_HOST_LINE);
+      await assert.rejects(backend.configure({ bark_host: null }), ONE_HOST_LINE);
+      await assert.rejects(backend.writeRawConfig('bark_key_status = "x"\n'), ONE_HOST_LINE);
       const withoutPort = backend.configText().split('\n').filter((line) => !line.startsWith('listen =')).join('\n');
       await assert.rejects(backend.writeRawConfig(withoutPort), /ohne die Zeilen des Prüfstands listen = /);
+      assert.equal((await backend.health()).ok, true);
+      assert.match(backend.files.text('config.last-good.toml'), new RegExp(`^bark_host = "${backend.bark.base}"$`, 'm'));
+    });
+
+    it('configure() lehnt state_dir, listen und control_socket ab - der Treiber hinge sonst am alten Ordner', async () => {
+      for (const key of ['state_dir', 'listen', 'control_socket']) {
+        await assert.rejects(backend.configure({ [key]: 'x' }), /state_dir, listen und control_socket/, key);
+      }
       assert.equal((await backend.health()).ok, true);
     });
 
@@ -131,10 +144,111 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
       assert.equal(typo.config_ok, '0', typo.text);
       const fixed = await backend.writeRawConfig(good);
       assert.equal(fixed.config_ok, '1', fixed.text);
-      assert.match(backend.files.text('config.last-good.toml'), /^offline_after_seconds = 555$/m);
+      assert.equal(backend.files.text('config.last-good.toml'), good, 'zurück erst, wenn der Server genau sie übernommen hat');
       await backend.stopServer();
       await backend.startServer();
       assert.equal((await backend.health()).ok, true, 'ein Neustart mit der von Hand geschriebenen Fassung');
+    });
+
+    it('writeRawConfig mit der geltenden Fassung kehrt sofort zurück', async () => {
+      const started = Date.now();
+      const same = await backend.writeRawConfig(backend.configText());
+      assert.equal(same.config_ok, '1', same.text);
+      assert.ok(Date.now() - started < 1500, `${Date.now() - started} ms`);
+    });
+  });
+
+  // Eine Konfiguration, die der Server liest, darf nie auf einen fremden
+  // Bark-Server zeigen - über keinen Weg des Treibers. Fremd ist hier immer
+  // example.invalid (nie ein echter Name).
+  describe('Wächter über jede Konfiguration', () => {
+    // Die Fassung des Prüfstands ohne ihre bark_host-Zeile.
+    const withoutHost = () => backend.configText().split('\n').filter((line) => !line.startsWith('bark_host =')).join('\n');
+    // Nimmt der Parser des Servers diesen Text an? (check-config auf einer Kopie)
+    const parserAccepts = async (text, name = 'probe-test.toml') => {
+      const path = join(backend.root, name);
+      writeFileSync(path, text);
+      return (await backend.cli(['check-config', '--config', path])).code === 0;
+    };
+    // Weder geschrieben noch übernommen: es gilt weiter die Fassung des Prüfstands.
+    async function unchanged() {
+      const h = await backend.health();
+      assert.equal(h.ok, true, h.text);
+      assert.match(backend.files.text('config.last-good.toml'), new RegExp(`^bark_host = "${backend.bark.base}"$`, 'm'));
+    }
+
+    it('"""…""" und \'\'\'…\'\'\' als bark_host: abgelehnt, obwohl der Parser sie annimmt', async () => {
+      for (const quote of ['"""', "'''"]) {
+        const text = `${withoutHost()}bark_host = ${quote}https://example.invalid${quote}\n`;
+        assert.equal(await parserAccepts(text), true, `${quote}: der Parser nimmt sie an`);
+        await assert.rejects(backend.writeRawConfig(text), TRIPLE_QUOTES, quote);
+      }
+      await unchanged();
+    });
+
+    it('eine bark_host-Zeile in einem mehrzeiligen Text ersetzt den Schlüssel nicht: abgelehnt', async () => {
+      const text = `${withoutHost()}bark_alarm_body = """\nbark_host = "${backend.bark.base}"\n"""\n`;
+      assert.equal(await parserAccepts(text), true);
+      await assert.rejects(backend.writeRawConfig(text), TRIPLE_QUOTES);
+      await unchanged();
+    });
+
+    it('bark_host in anderer Schreibweise (Anführungszeichen um den Schlüssel, ohne Leerzeichen): abgelehnt', async () => {
+      for (const line of ['"bark_host" = "https://example.invalid"', 'bark_host="https://example.invalid"',
+        `bark_host="${backend.bark.base}"`, `  bark_host = "${backend.bark.base}"`]) {
+        const text = `${withoutHost()}${line}\n`;
+        assert.equal(await parserAccepts(text), true, line);
+        await assert.rejects(backend.writeRawConfig(text), ONE_HOST_LINE, line);
+      }
+      await unchanged();
+    });
+
+    it('ein gültiger Anfang ohne bark_host-Zeile: abgelehnt (der Server nähme den echten Bark-Server)', async () => {
+      const prefix = `${withoutHost().split('\n').slice(0, 4).join('\n')}\n`;
+      assert.equal(await parserAccepts(prefix), true, prefix);
+      await assert.rejects(backend.writeRawConfig(prefix), ONE_HOST_LINE);
+      await unchanged();
+    });
+
+    it('jeder Anfang der Fassung des Prüfstands (bis zu einem Zeilenende) ist kaputt oder trägt den lokalen Host', async () => {
+      const lines = backend.configText().split('\n');
+      assert.match(lines.find((line) => /^[a-z]/.test(line)), /^bark_host = /, 'bark_host ist der erste Schlüssel');
+      let valid = 0;
+      for (let n = 1; n <= lines.length; n++) {
+        const prefix = `${lines.slice(0, n).join('\n')}\n`;
+        if (!await parserAccepts(prefix)) continue;
+        valid += 1;
+        assert.match(prefix, new RegExp(`^bark_host = "${backend.bark.base}"$`, 'm'), `Anfang mit ${n} Zeilen`);
+      }
+      assert.ok(valid > 0);
+    });
+
+    it('backend.files.write auf config.last-good.toml und config.toml: derselbe Wächter', async () => {
+      await backend.stopServer();
+      const foreign = `${withoutHost()}bark_host = "https://example.invalid"\n`;
+      const before = backend.files.text('config.last-good.toml');
+      for (const name of ['config.last-good.toml', 'config.toml']) {
+        assert.throws(() => backend.files.write(name, foreign), ONE_HOST_LINE, name);
+        assert.throws(() => backend.files.write(name, `${withoutHost()}x = """y"""\n`), TRIPLE_QUOTES, name);
+      }
+      assert.equal(backend.files.text('config.last-good.toml'), before);
+      assert.equal(backend.files.exists('config.toml'), false);
+      backend.files.write('config.last-good.toml', backend.configText());
+      await backend.startServer();
+      await unchanged();
+    });
+
+    it('erlaubt: die Fassung des Prüfstands, bark_host = "" (sendet nichts) und kaputte Texte', async () => {
+      const empty = `${withoutHost()}bark_host = ""\n`;
+      const applied = await backend.writeRawConfig(empty);
+      assert.equal(applied.config_ok, '1', applied.text);
+      assert.equal(backend.files.text('config.last-good.toml'), empty);
+      const broken = await backend.writeRawConfig('bark_host = "https://example.invalid\n');
+      assert.equal(broken.config_ok, '0', 'ein kaputter Text geht durch - der Server übernimmt ihn nie');
+      assert.equal(backend.files.text('config.last-good.toml'), empty);
+      await backend.configure({ bark_host: '' });
+      await backend.configure({});
+      await unchanged();
     });
   });
 
@@ -181,6 +295,18 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
       await backend.storage.fail('history');
       await backend.storage.repair('history');
       assert.equal(backend.files.exists('history.jsonl'), false);
+    });
+
+    it('history: was der Server während der Störung schreiben wollte, steht nach repair hinter dem Alten', async () => {
+      const k1 = { event: 'key_added', label: 'K1', log_at: 1000 };
+      await backend.state.seedLog([k1]);
+      await backend.storage.fail('history');
+      // Ein Eintrag in der outbox: Der Server hängt ihn beim Start an - das
+      // scheitert am Ordner, er bleibt in der Warteschlange.
+      const k2 = { event: 'key_added', label: 'K2', log_at: 2000, uid: 'ab'.repeat(16) };
+      await editWhileStopped('state.json', (st) => { st.outbox = [k2]; });
+      await backend.storage.repair('history');
+      assert.deepEqual(await backend.state.log(), [k1, k2], 'flush hängt ihn an die zurückgeholte Datei an');
     });
   });
 
@@ -234,6 +360,16 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
         'ein Neustart verliert nichts');
     });
 
+    it('seedRecipients senkt unter Go weder die Version noch next_id (sie sind dort selbst die Hochwassermarken)', async () => {
+      await backend.state.seedRecipients([{ id: 4, key: 'annakey00001', label: 'Anna' }], { version: 7, nextId: 9 });
+      await assert.rejects(backend.state.seedRecipients([{ id: 1, key: 'annakey00001', label: 'Anna' }], { version: 6, nextId: 9 }),
+        /Version 6 unter der gespeicherten 7/);
+      await assert.rejects(backend.state.seedRecipients([{ id: 1, key: 'annakey00001', label: 'Anna' }], { version: 7 }),
+        /next_id 2 unter dem gespeicherten 9/);
+      await backend.state.seedRecipients([{ id: 1, key: 'bertkey00001', label: 'Bert' }], { version: 7, nextId: 9 });
+      assert.equal((await backend.state.recipients()).keys[0].label, 'Bert');
+    });
+
     it('der laufende Befehl: ohne ihn werfen setCommand und ageCommand, mit ihm ändern sie nur ihn', async () => {
       await assert.rejects(backend.state.setCommand({ acked_at: 1 }), /kein laufender Befehl/);
       await assert.rejects(backend.state.ageCommand('created', 1), /kein laufender Befehl/);
@@ -262,7 +398,10 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
       await assert.rejects(backend.state.ageDevice('fw-box-1', 10), /nie gemeldet/);
       const t = now();
       await editRuntime((rt) => {
-        rt.box = { seen_at: t, via_bridge: '1', remote_addr: '192.0.2.7', fields: [['device_id', 'fw-box-1'], ['rssi', '-61'], ['__proto__', 'x'], ['rssi', '-99']] };
+        rt.box = {
+          seen_at: t, via_bridge: '1', remote_addr: '192.0.2.7',
+          fields: [['device_id', 'fw-box-1'], ['rssi', '-61'], ['__proto__', 'x'], ['rssi', '-99'], ['remote_addr', 'gepusht']],
+        };
         rt.devices = { 'fw-box-1': { seen_at: t, fw_build: 'test' } };
       });
       const stored = await backend.state.boxStatus();
@@ -271,7 +410,7 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
       assert.equal(Object.hasOwn(stored, '__proto__'), true);
       assert.equal(stored.via_bridge, '1');
       assert.equal(stored.seen_at, t);
-      assert.equal('remote_addr' in stored, false);
+      assert.equal('remote_addr' in stored, false, 'auch ein gepushtes Feld dieses Namens nicht (PHP überschreibt es)');
 
       await backend.state.ageBoxStatus(200);
       assert.ok(near((await backend.state.boxStatus()).seen_at, now() - 200));
@@ -350,7 +489,7 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
     it('ein Dokument, das der Server ablehnt, lässt den Start scheitern - mit dem Grund', async () => {
       await backend.stopServer();
       backend.files.write('runtime.json', { schema: 1 });
-      await assert.rejects(backend.startServer(), /nicht gesund.*beiseitegelegt: runtime\.corrupt-/s);
+      await assert.rejects(backend.startServer(), /nicht gesund.*laufzeit_verworfen=true.*beiseitegelegt: runtime\.corrupt-/s);
     });
 
     it('startServer({ expectUnhealthy: true }) startet nach Absicht Kaputtes ohne Prüfung', async () => {
@@ -359,6 +498,51 @@ describe('Treiber für den Go-Server', { skip: BACKEND_KIND !== 'go' && 'nur Go'
       await backend.startServer({ expectUnhealthy: true });
       assert.ok(backend.files.list().some((n) => n.startsWith('sessions.corrupt-')));
       assert.equal((await manifest()).status, 200);
+    });
+
+    it('state.json kaputt, Vorfassung da: der Start auf dem Rückfall wirft - mit expectUnhealthy startet er', async () => {
+      await backend.stopServer();
+      backend.files.write('state.prev.json', backend.files.text('state.json'));
+      backend.files.corrupt('state.json');
+      await assert.rejects(backend.startServer(), /nicht gesund.*start=rueckfall.*ruecksprung=true/s);
+      await backend.stopServer();
+      backend.files.corrupt('state.json');
+      await backend.startServer({ expectUnhealthy: true });
+      assert.equal(backend.files.list().filter((n) => n.startsWith('state.corrupt-')).length >= 1, true);
+      assert.equal((await manifest()).status, 200);
+    });
+
+    it('runtime.json Unsinn: verworfen - der Start wirft, mit expectUnhealthy startet er', async () => {
+      await backend.stopServer();
+      backend.files.corrupt('runtime.json');
+      await assert.rejects(backend.startServer(), /nicht gesund.*laufzeit_verworfen=true/s);
+      await backend.stopServer();
+      backend.files.corrupt('runtime.json');
+      await backend.startServer({ expectUnhealthy: true });
+      assert.equal((await manifest()).status, 200);
+    });
+
+    it('ein Neuanfang auf einem nicht leeren Datenordner fällt auf (state.json verschwunden)', async () => {
+      await backend.stopServer();
+      backend.files.remove('state.json');
+      await assert.rejects(backend.startServer(), /nicht gesund.*start=neu auf einem nicht leeren Datenordner/s);
+    });
+  });
+
+  describe('Anfragen des Prüfstands', () => {
+    it('request() sendet connection: close', async () => {
+      const seen = [];
+      const server = createServer((req, res) => { seen.push(req.headers.connection); res.end('ok'); });
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      try {
+        const url = `http://127.0.0.1:${server.address().port}/`;
+        await request(url);
+        await request(url, { headers: { cookie: 'a=b' } });
+        assert.deepEqual(seen, ['close', 'close']);
+      } finally {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      }
     });
   });
 });
