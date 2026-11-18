@@ -294,7 +294,7 @@ Benutzer `fwalarm`, Rechte 0700):
 |---|---|
 | `state.json` | die „festen“ Daten, ein Dokument mit Schema-Nummer |
 | `state.prev.json` | der Stand vor dem letzten Sichern |
-| `recipients.rescue.json` | Not-Kopie nur für den Alarm: Keys, Namen, Stumm-Zustand, Demo-Empfänger. Nach jeder Änderung an Liste oder Demo-Modus neu geschrieben (ein Fehlschlag hält nichts auf); gelesen NUR im Notbetrieb |
+| `recipients.rescue.json` | Not-Kopie für den Alarm: Keys, Namen, Stumm-Zustand, Demo-Empfänger – und (Durchsicht von Aufgabe 15) die gespeicherten Einstellungen der Meldungen an den Admin, damit im Notbetrieb gerade die Meldung „Dashboard NOTBETRIEB“ so dringlich ankommt, wie der Admin sie eingestellt hat, abgeschaltete Arten abgeschaltet bleiben und der Stellvertreter erreicht wird (ohne die Kopie gälten die Standards: alles leise). Nach jeder Änderung an Liste oder Demo-Modus neu geschrieben (ein Fehlschlag hält nichts auf); gelesen NUR im Notbetrieb |
 | `runtime.json` | die „flüchtigen“ Daten |
 | `sessions.json` | Sitzungen, Schlüssel = SHA-256 der Sitzungs-ID |
 | `history.jsonl` | der Verlauf, eine JSON-Zeile pro Ereignis, Felder wie heute (`event`, `log_at` …) plus `uid`; ab 5 MB nach `history.1.jsonl` |
